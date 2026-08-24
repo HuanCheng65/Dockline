@@ -201,10 +201,20 @@ public func isRealWindow(_ record: WindowRecord) -> Bool {
     record.closeable
 }
 
-/// 对账口径：layer 0（普通窗口层）、非全透明、面积足够大，排除自身进程。
+/// 对账口径：layer 0（普通窗口层）、非全透明、面积足够大，排除自身进程与 XPC 服务。
+///
+/// `.prohibited` 那条放在最后，是因为它要查进程表，前面几条都是纯算术——
+/// 短路之后每轮只对几十个窗口查，不是对整张 CG 列表查。
+///
+/// 之所以必须在这里挡：`enumerateAXWindows` 一开头就跳过 `.prohibited`，
+/// 于是它们的 pid 永远进不了「AX 枚举成功」的集合，`axSilenceIsEvidence` 那一档对它们
+/// 恒为哑。不挡的话，XPC 服务名下任何 ordered-in 的 layer 0 surface 都会零检查地收进来
+/// （自动填充的密码面板即属此类）。与其在准入侧留个够不着的角落，不如认下同一个断言：
+/// 不能被激活的进程不可能拥有用户想找回来的窗口。
 public func isCandidate(_ window: CGWindowRecord) -> Bool {
     window.layer == 0
         && window.alpha > 0.05
         && window.bounds.width >= 60 && window.bounds.height >= 60
         && window.pid != getpid()
+        && NSRunningApplication(processIdentifier: window.pid)?.activationPolicy != .prohibited
 }
