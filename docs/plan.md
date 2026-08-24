@@ -2,7 +2,7 @@
 
 macOS 窗口检索与 Dock 重构 · v1.2 · 2026-08-24
 
-> **修订摘要。** v1.1：新增 §3.1 视觉规格；恢复 Dock 启动器职能并以「固定 App 是槽位」与窗口条统一；标题读取改为 CG 主路；新增 ordered-in 判别式与 AX 引用的机会式认领。v1.2：新增 §2「设计参照」并区分对内依据与对外表述；§3 接管最大化按「自有入口 + 结果纠正（默认关）」重写，取消拖窗口撞边、明确不拦截绿灯；新增原生标签页、跳转列表、全屏转场防闪三项；暂存架改为右缘拖放接收带；M2、M3 标记完成。
+> **修订摘要。** v1.1：新增 §3.1 视觉规格；恢复 Dock 启动器职能并以「固定 App 是槽位」与窗口条统一；标题读取改为 CG 主路；新增 ordered-in 判别式与 AX 引用的机会式认领。v1.2：新增 §2「设计参照」并区分对内依据与对外表述；§3 接管最大化按「自有入口 + 结果纠正（默认关）」重写，取消拖窗口撞边、明确不拦截绿灯；新增原生标签页、跳转列表、全屏转场防闪三项；暂存架改为右缘拖放接收带；M2、M3 标记完成。v1.3：§4 窗口准入按实测重写——关闭按钮判据扩至全体 App，「AX 沉默」区分反面证据与够不着，判决改为只在有新证据时变化。
 
 ---
 
@@ -218,9 +218,13 @@ Liquid Glass 自带这套能力，但**只对高度 ≤64pt 的玻璃开**——
 
 拖放接收走 `onDrop(of: [.fileURL])` + `NSItemProvider`，不用 SwiftUI 的 `dropDestination(for: URL.self)`：访达拖出来的是 `public.file-url`，后者收不到，实机表现为拖上去毫无反应。
 
-对账通道必须带 **ordered-in 判别式**（`SLSWindowIsOrderedIn`）：Tauri 系与菜单栏 App 关闭窗口时只做 `orderOut:` 而不销毁 NSWindow，这些窗口对象仍存活、仍有 Space 归属，不过滤会被当成真窗口（M0 实测噪声比 29:3）。判别规则为 **`ordered-in == true` 或 AX 报告 `AXMinimized == true`**——最小化窗口同样是 ordered-out，且在 CG 层面与僵尸 surface 无法区分，只能由 AX 认领（最小化窗口跨 Space 始终留在 AX 列表中，并集闭合无洞）。AX 侧另需按 subrole 过滤，只取 `AXStandardWindow`。
+对账通道必须带 **ordered-in 判别式**（`SLSWindowIsOrderedIn`）：Tauri 系与菜单栏 App 关闭窗口时只做 `orderOut:` 而不销毁 NSWindow，这些窗口对象仍存活、仍有 Space 归属，不过滤会被当成真窗口（M0 实测噪声比 29:3）。判别规则为 **`ordered-in == true` 或 AX 报告 `AXMinimized == true`**——最小化窗口同样是 ordered-out，且在 CG 层面与僵尸 surface 无法区分，只能由 AX 认领（最小化窗口跨 Space 始终留在 AX 列表中，并集闭合无洞）。AX 侧另需按 subrole 过滤，用排除名单而非白名单——**subrole 会随窗口状态翻转**：微信主窗口活动时报 `AXStandardWindow`，最小化后报 `AXDialog`（实测 2026-08）。白名单会让它一被最小化就从条上消失，即「窗口因为我们对它了解变多而消失」。
 
-**subrole 还不够：菜单栏 App 的面板会冒充 `AXStandardWindow`。** 实测 Stats 的 CPU / RAM 面板即如此——subrole 报的是标准窗口，尺寸 280×674 也过了门槛，只靠 subrole 拦不住。但它**没有关闭按钮**（`AXCloseButton` 为空，最小化与缩放同样没有），而对照组 Ghostty、VS Code 的窗口三个按钮齐备。关不掉的东西用户也不需要「找回来」，那是菜单栏图标的事。判据因此追加一条：**accessory App 的窗口还要有关闭按钮**。只对 accessory 生效——它们本来就不进系统程序坞，可以要更强的证据；regular App 的窗口一律照旧，不为一个边角情形动摇主路。这一项与 subrole、最小化等属性在同一次批量 IPC 里取回，不增开销。
+**真正分开「窗口」与「面板」的是关闭按钮，不是 subrole。** subrole 在两个方向上都不成立（同批实测）：Stats 的 RAM 面板报 `AXStandardWindow`、微信的表情面板报 `AXDialog`，两者都该踢；而微信主窗口在活动与最小化两态下恰好也是这两个值，两态都该收。同一对取值一收一踢，subrole 无法承担判据。关闭按钮却把两组分得干净——面板一律没有（`AXCloseButton` 为空，最小化与缩放同样没有），窗口一律有，且**最小化与全屏都不影响它**，因此不需要任何状态豁免。判据为：**有 AX 记录的窗口必须有关闭按钮**，对 regular 与 accessory 一视同仁。此前只对 accessory 生效，微信的表情面板正是从 regular 这一侧漏进来的。这一项与 subrole、最小化等属性在同一次批量 IPC 里取回，不增开销。
+
+**「AX 没有这个窗口」要分成两档，不能一概当作无知。** 上述两条判据此前都写成「有 AX 记录才检查」，于是 layer 0、ordered-in、尺寸达标而 AX 树上查无此窗的东西一道闸都不过：VS Code 的模态确认弹窗（Electron 的弹窗是独立 surface，不挂进 `AXWindows`）、调度中心里程序坞那张铺满屏幕的 surface，都是这么进来的。AX 对**当前 Space** 是全知的，所以枚举成功却查无此窗，在当前 Space 上是**反面证据**；无 Space 归属的同样算数——真窗口一定挂在某个 Space 上。其余情况（本轮没探、枚举超时、窗口在别的 Space）才是够不着，维持原有的宽容。已知不覆盖：`SLSGetActiveSpace` 只返回一个 Space，多显示器下副屏活跃 Space 上的面板仍会漏进来，失效方向保守（误收残留，不杀真窗口）。
+
+**判决只在有新证据时改变。** 稳态 tick 大多不探 AX（见第 2 节的预算），若每轮都拿手头恰好有的证据从头重判，被否决过的窗口会立刻复活：实测 Stats 的面板被通道二正确否决，4 秒后原样进了索引——那两个 tick 一个探了 AX 并否决、一个没探，而「没有 AX 记录」当时默认为收。因此否决判决必须留存，且**正面证据可以覆盖它**（否则真窗口的 CG surface 若早于 AX 注册一个 tick 出现，会被永久钉死）。与之配套：「已判定」的记号只在 AX 枚举**成功**时写入，枚举超时的 App 其窗口下一轮仍要复探。
 
 **召回路径。** 常规：AXRaise + NSRunningApplication.activate，最小化者先写 AXMinimized=false。跨 Space / 全屏窗口：activate 由系统自动切换 Space，动画原生。无 AX 引用的存量窗口走「激活 App」粗路，切换瞬间补抓 AX 引用转正；同 App 多个存量全屏窗口的死角以「点一次目标窗口完成认领」提示兜底。
 

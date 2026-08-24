@@ -54,12 +54,12 @@ public struct WindowRecord {
     public let minimized: Bool?
     public let fullscreen: Bool?
     public let frame: CGRect?
-    public let subrole: String?               // AXStandardWindow / AXDialog / ... 桌面窗口无 subrole
+    /// AXStandardWindow / AXDialog / ... 桌面窗口无 subrole。
+    /// 注意它会随状态翻转：微信主窗口活动时报 AXStandardWindow，最小化后报 AXDialog（实测 2026-08）。
+    public let subrole: String?
     public let spaces: [UInt64]?              // nil = SkyLight 不可用
-    /// 有没有关闭按钮。菜单栏 App 的面板会冒充 AXStandardWindow，但关不掉——见 isRealWindow。
+    /// 有没有关闭按钮。区分「窗口」与「面板」的唯一可靠判据——见 isRealWindow。
     public let closeable: Bool
-    /// LSUIElement（菜单栏 App）。系统程序坞从不收它们。
-    public let accessory: Bool
 }
 
 /// 每个 regular App 的 AX 通道健康度——用来区分「这个 App 真的没窗口」和「AX 问不出来」。
@@ -142,8 +142,7 @@ public func enumerateAXWindows(pids: Set<pid_t>? = nil) -> (windows: [WindowReco
                 frame: frame,
                 subrole: got[1] as? String,
                 spaces: wid.flatMap { SkyLight.spaces(for: $0) },
-                closeable: got[6] != nil,
-                accessory: app.activationPolicy == .accessory
+                closeable: got[6] != nil
             ))
         }
     }
@@ -190,14 +189,16 @@ private func cgWindows(_ option: CGWindowListOption) -> [CGWindowRecord] {
     }
 }
 
-/// 菜单栏 App 的面板会把 subrole 报成 `AXStandardWindow`，尺寸也够大，只靠 subrole 拦不住
-/// （实测 Stats 的 CPU / RAM 面板即如此）。但它没有关闭按钮——关不掉的东西，用户也不需要
-/// 「找回来」，那是菜单栏图标的事。
+/// 关不掉的东西，用户也不需要「找回来」——面板归它的图标或父窗口管，不该单独占一格。
 ///
-/// 判据只对 accessory App 生效：它们本来就不进系统程序坞，可以要更强的证据；
-/// regular App 的窗口一律照旧，不为一个边角情形冒动摇主路的风险。
+/// 判据是关闭按钮而不是 subrole，因为 subrole 在两个方向上都不成立（实测 2026-08）：
+///   · Stats 的 RAM 面板报 AXStandardWindow，微信的表情面板报 AXDialog——都该踢
+///   · 微信主窗口活动时报 AXStandardWindow，最小化后报 AXDialog——都该收
+/// 同一对 subrole 值一收一踢，关闭按钮却把两组分得干干净净。
+///
+/// 最小化与全屏都不影响关闭按钮（同批实测），所以这里不需要任何状态豁免。
 public func isRealWindow(_ record: WindowRecord) -> Bool {
-    !record.accessory || record.closeable
+    record.closeable
 }
 
 /// 对账口径：layer 0（普通窗口层）、非全透明、面积足够大，排除自身进程。

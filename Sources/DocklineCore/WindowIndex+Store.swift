@@ -115,14 +115,35 @@ func tabWindow(candidate: CGWindowRecord, host: CGWindowID,
         source: .tab(host: host))
 }
 
+/// 「AX 没有这个窗口」是反面证据，还是纯粹的够不着？
+///
+/// AX 对**当前 Space** 是全知的，所以枚举成功却查无此窗，在当前 Space 上就是证据。
+/// 有两类东西正是这么混进来的（实测 2026-08）：VS Code 的模态确认弹窗、调度中心里
+/// 程序坞那张铺满屏幕的 surface——它们都是 layer 0 的真 surface，却根本不挂在 AX 树上。
+/// 无 Space 归属的（调度中心那张即如此）同样算数：真窗口一定挂在某个 Space 上。
+///
+/// 其余情况一律返回 false，退回原来的宽容度——那份宽容本来就是为别的 Space 的存量窗口开的。
+///
+/// - Parameter spaces: nil = Space 归属没读出来。这与「读出来是空的」不是一回事，
+///   前者是读取失败，不能拿来当反面证据用——那正是本文件要根治的那类默认值。
+///
+/// 已知不覆盖：`SLSGetActiveSpace` 只返回一个 Space，多显示器下每块屏各有活跃 Space，
+/// 副屏活跃 Space 上的面板仍会漏进来。失效方向是保守的（误收残留，不会杀掉真窗口），
+/// 留待有多屏读数时再说。SkyLight 不可用时 activeSpace 为 nil，同样退回宽容。
+public func axSilenceIsEvidence(spaces: [UInt64]?) -> Bool {
+    guard let active = SkyLight.activeSpace, let spaces else { return false }
+    return spaces.isEmpty || spaces.contains(active)
+}
+
 /// 合并 AX 通道与 CG 对账通道，产出当前应当出现在 bar 上的窗口集合。
 ///
 /// 过滤规则（计划书 §4，由 M0/M0.5 实测确立）：
 ///  · CG 侧：layer 0、非全透明、尺寸达标、排除自身进程
 ///  · 真窗口判别：`ordered-in == true` **或** AX 报告 `AXMinimized == true`
 ///    （最小化窗口是 ordered-out，且在 CG 层面与「关掉但没销毁」的僵尸 surface 无法区分）
-///  · 有 AX 记录的窗口以 AX 的 subrole 为准，只收 `AXStandardWindow`；
-///    无 AX 记录的（其他 Space）只能靠 CG 判据，这是已知的精度损失
+///  · 有 AX 记录的：subrole 不在排除名单里，且关得掉（`isRealWindow`）
+///  · 无 AX 记录的：分两档——`axSilenceIsEvidence` 说是证据的踢掉，
+///    其余（够不着，主要是别的 Space 的存量窗口）只能靠 CG 判据，这是已知的精度损失
 public func buildWindowIndex(minimumSize: CGFloat = 120) -> [IndexedWindow] {
     var timing = IndexTiming()
     return buildWindowIndex(minimumSize: minimumSize, timing: &timing)
@@ -145,10 +166,13 @@ public func buildWindowIndex(minimumSize: CGFloat = 120, timing: inout IndexTimi
     let t1 = Date()
 
     var axByID: [CGWindowID: WindowRecord] = [:]
-    for record in enumerateAXWindows(pids: owners).windows {
+    let probed = enumerateAXWindows(pids: owners)
+    for record in probed.windows {
         guard let id = record.windowID else { continue }
         axByID[id] = record
     }
+    // 枚举成功的进程。只有对这些进程，「AX 树里没有这个窗口」才是一句有内容的话。
+    let answered = Set(probed.probes.filter { $0.axWindowCount != nil }.map(\.pid))
     let t2 = Date()
     timing.cgList = t1.timeIntervalSince(t0) * 1000
     timing.axProbe = t2.timeIntervalSince(t1) * 1000
@@ -175,12 +199,18 @@ public func buildWindowIndex(minimumSize: CGFloat = 120, timing: inout IndexTimi
             }
             continue
         }
-        if let ax, !isDisplayableSubrole(ax.subrole) {
-            reject("subrole 在排除名单里：\(ax.subrole ?? "nil")")
-            continue
-        }
-        if let ax, !isRealWindow(ax) {
-            reject("菜单栏 App 的面板：没有关闭按钮")
+        if let ax {
+            if !isDisplayableSubrole(ax.subrole) {
+                reject("subrole 在排除名单里：\(ax.subrole ?? "nil")")
+                continue
+            }
+            if !isRealWindow(ax) {
+                reject("面板：没有关闭按钮")
+                continue
+            }
+        } else if answered.contains(cg.pid),
+                  axSilenceIsEvidence(spaces: SkyLight.spaces(for: cg.windowID)) {
+            reject("AX 树里没有它，而它不在别的 Space")
             continue
         }
 
@@ -209,8 +239,23 @@ public final class WindowIndexStore {
     private var byID: [CGWindowID: IndexedWindow] = [:]
     private var established = false
     private let minimumSize: CGFloat
-    /// 已经做过判定的 wid——含被 subrole/尺寸否掉的，避免对它们无休止地重复探测
+    /// 已经做过判定的 wid，避免对它们无休止地重复探测。只在 AX 枚举**成功**时写入——
+    /// 否则一个超时的 App，它的窗口会被当成「判过了」，从此再不复探。
     private var evaluated = Set<CGWindowID>()
+    /// 判定为「不该上条」的 wid。
+    ///
+    /// 判决必须留下来，否则稳态下的 tick 会把它推翻：那些 tick 大多不探 AX，
+    /// 于是在零证据的情况下从头重判一次，而「没有 AX 记录」这一档默认是收。
+    /// 实测过的后果：Stats 的面板被通道二正确否决，4 秒后原样进了索引。
+    ///
+    /// 反过来，正面证据必须能覆盖它（见下面 isDisplayableSubrole 通过后的 remove），
+    /// 否则就是同一个 bug 的镜像：真窗口的 CG surface 若比它的 AX 注册早一个 tick 出现，
+    /// 会被永久钉死在这里。有了覆盖，通道二的 kAXWindowCreated 能在 ~100ms 内救回来。
+    ///
+    /// 已知残余：若该 App 的 AXObserver 订阅始终没建起来（Electron 系冷启动慢，会留在
+    /// `failedProcesses` 里），上面那条救援路径就不存在，而稳态对账也不会再探它。
+    /// 兜底靠激活时的订阅重试与 Space 切换时的认领，有界但不即时。
+    private var rejected = Set<CGWindowID>()
     /// 上一 tick 的 ordered-in 状态。探测的触发条件是「状态跃迁」，不是「状态本身」：
     /// 最小化窗口稳定处于 ordered-out，那是它的常态而非变化。
     private var lastOrderedIn: [CGWindowID: Bool] = [:]
@@ -261,19 +306,23 @@ public final class WindowIndexStore {
         }
 
         var axByID: [CGWindowID: WindowRecord] = [:]
+        var answered = Set<pid_t>()
         if !probePIDs.isEmpty {
-            for record in enumerateAXWindows(pids: probePIDs).windows {
+            let probed = enumerateAXWindows(pids: probePIDs)
+            for record in probed.windows {
                 guard let id = record.windowID else { continue }
                 axByID[id] = record
             }
+            answered = Set(probed.probes.filter { $0.axWindowCount != nil }.map(\.pid))
         }
         let t3 = Date()
         timing = IndexTiming(cgList: t1.timeIntervalSince(t0) * 1000,
                              orderedIn: t2.timeIntervalSince(t1) * 1000,
                              axProbe: t3.timeIntervalSince(t2) * 1000)
 
-        // 本轮探测过的进程，其名下所有候选窗口都已做出判定，不必再探第二次
-        for candidate in candidates where probePIDs.contains(candidate.pid) {
+        // 枚举成功的进程，其名下所有候选窗口都已做出判定，不必再探第二次。
+        // 枚举失败的不写入——那不是「判过了」，是「没问出来」，下一轮还要再问。
+        for candidate in candidates where answered.contains(candidate.pid) {
             evaluated.insert(candidate.windowID)
         }
         lastOrderedIn = orderedIn
@@ -281,6 +330,7 @@ public final class WindowIndexStore {
         let alive = Set(candidates.map(\.windowID))
         evaluated.formIntersection(alive)
         rejectedTabs.formIntersection(alive)
+        rejected.formIntersection(alive)
 
         let liveWindows = candidates.filter { orderedIn[$0.windowID] == true }
 
@@ -306,9 +356,23 @@ public final class WindowIndexStore {
                                                       previous: previous)
                 continue
             }
-            if let ax, !isDisplayableSubrole(ax.subrole) { continue }
-            if let ax, !isRealWindow(ax) { continue }
-            if ax == nil, previous == nil, !live { continue }
+            // 证据分三档，判决只在有新证据时改变：
+            //  · AX 有记录 —— 跑谓词，结论落定，覆盖此前的判决
+            //  · AX 明确沉默 —— 枚举成功却查无此窗，且不在别的 Space：反面证据，踢并记住
+            //  · AX 够不着 —— 本轮没探，或枚举失败：没有证据，沿用上一轮的判决
+            if let ax {
+                guard isDisplayableSubrole(ax.subrole), isRealWindow(ax) else {
+                    rejected.insert(candidate.windowID)
+                    continue
+                }
+                rejected.remove(candidate.windowID)
+            } else if answered.contains(candidate.pid),
+                      axSilenceIsEvidence(spaces: SkyLight.spaces(for: candidate.windowID)) {
+                rejected.insert(candidate.windowID)
+                continue
+            } else if rejected.contains(candidate.windowID) {
+                continue
+            }
 
             fresh[candidate.windowID] = merge(candidate: candidate, ax: ax,
                                               previous: previous, minimized: minimized)
@@ -333,16 +397,24 @@ public final class WindowIndexStore {
                 lastSkipped.append("\(record.appName) 取不到 wid（\(record.title ?? "无标题")）")
                 continue
             }
+            // 几何要先看：位置与尺寸和 subrole、关闭按钮在同一次批量 IPC 里取回，
+            // 读不到几何就说明那次读取整体失败了（App 卡在 1 秒超时上、或窗口在两次调用之间没了）。
+            // 这种情况下 subrole 也是 nil，若先跑下面两条，就会把一次读取失败记成
+            // 「它不是我们要的那类东西」——那正是本文件要根治的毛病，只是换了个方向。
+            guard let frame = record.frame else {
+                lastSkipped.append("wid \(id) 读不到几何")
+                continue
+            }
+            // 这两条才是类别判决，通道三要用，所以记下来。下面的尺寸一条不记：
+            // 那是量出来多大的问题，不是它是什么东西的问题。
             guard isDisplayableSubrole(record.subrole) else {
+                rejected.insert(id)
                 lastSkipped.append("wid \(id) subrole=\(record.subrole ?? "nil") 被排除")
                 continue
             }
             guard isRealWindow(record) else {
-                lastSkipped.append("wid \(id) 是菜单栏 App 的面板（没有关闭按钮）")
-                continue
-            }
-            guard let frame = record.frame else {
-                lastSkipped.append("wid \(id) 读不到几何")
+                rejected.insert(id)
+                lastSkipped.append("wid \(id) 是面板（没有关闭按钮）")
                 continue
             }
             guard frame.width >= minimumSize, frame.height >= minimumSize else {
@@ -361,6 +433,8 @@ public final class WindowIndexStore {
                 fullscreen: record.fullscreen == true,
                 spaces: record.spaces ?? byID[id]?.spaces ?? [],
                 source: .ax)
+            // 正面证据覆盖此前的判决——CG surface 早于 AX 注册一步出现时，靠这里救回来
+            rejected.remove(id)
             if byID[id] != updated {
                 byID[id] = updated
                 changed = true
@@ -385,6 +459,7 @@ public final class WindowIndexStore {
         order.removeAll { $0 == id }
         byID[id] = nil
         evaluated.remove(id)
+        rejected.remove(id)
         lastOrderedIn[id] = nil
         return true
     }
