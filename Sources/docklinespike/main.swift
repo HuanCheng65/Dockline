@@ -480,6 +480,26 @@ case "bench":
     commandBench()
 case "index":
     commandIndex()
+case "probe":
+    var after: Double = 0
+    var minimum: CGFloat = 120
+    var rest = Array(arguments.dropFirst())
+    while let flag = rest.first {
+        rest.removeFirst()
+        guard let value = rest.first.flatMap(Double.init) else {
+            FileHandle.standardError.write("用法: docklinespike probe [--after 秒] [--min 边长]\n".data(using: .utf8)!)
+            exit(1)
+        }
+        rest.removeFirst()
+        switch flag {
+        case "--after": after = value
+        case "--min": minimum = CGFloat(value)
+        default:
+            FileHandle.standardError.write("probe: 无法识别的选项 \(flag)\n".data(using: .utf8)!)
+            exit(1)
+        }
+    }
+    commandProbe(after: after, minimumSize: minimum)
 case "activate":
     guard let p = arguments.dropFirst().first.flatMap(Int32.init) else {
         FileHandle.standardError.write("用法: docklinespike activate <pid>\n".data(using: .utf8)!)
