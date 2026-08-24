@@ -32,6 +32,7 @@ xcrun actool "$ROOT/Resources/Dockline.icon" \
     --platform macosx --minimum-deployment-target 26.0 \
     --app-icon Dockline --output-partial-info-plist "$ROOT/.build/icon.plist" >/dev/null
 cp "$BIN" "$APP/Contents/MacOS/Dockline"
+cp -R "$ROOT/Sources/Dockline/Resources/zh-Hans.lproj" "$APP/Contents/Resources/"
 # 活动状态的上报入口。放进 bundle，用户自行 ln -s 到 PATH 上。
 cp "$ROOT/.build/$CONFIG/dockctl" "$APP/Contents/MacOS/dockctl"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
@@ -44,6 +45,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>Dockline</string>
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
     <key>CFBundleName</key><string>Dockline</string>
+    <key>CFBundleDevelopmentRegion</key><string>zh-Hans</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>zh-Hans</string></array>
     <!-- IconFile 指 .icns，IconName 指 Assets.car 里那份；两个都要，缺 IconName 的话
          macOS 26 取不到分层效果，图标会退成一张平图 -->
     <key>CFBundleIconFile</key><string>Dockline</string>
