@@ -712,6 +712,47 @@ final class BarModel: ObservableObject {
         NSRunningApplication(processIdentifier: pid)?.terminate()
     }
 
+    /// 关掉一个窗口。按的是窗口自己的关闭按钮，和用户点红灯完全同一条路径——
+    /// 有未保存内容的 App 照常弹它自己的确认框。
+    func close(_ window: IndexedWindow) {
+        guard let element = window.element else {
+            Timeline.log("⚠️ 关闭跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
+            return
+        }
+        guard let button = axCopy(element, kAXCloseButtonAttribute) else {
+            Timeline.log("⚠️ 关闭跳过 wid \(window.id) \(window.appName)：这个窗口没有关闭按钮")
+            return
+        }
+        AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+    }
+
+    func isHidden(pid: pid_t) -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.isHidden ?? false
+    }
+
+    func toggleHidden(pid: pid_t) {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+        _ = app.isHidden ? app.unhide() : app.hide()
+    }
+
+    /// 把这个 App 的全部窗口一起调到前台。系统程序坞的「显示全部窗口」在我们这儿
+    /// 没有意义——条上本来就全在，缺的是「一次全叫上来」。
+    func raiseAll(pid: pid_t) {
+        NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+    }
+
+    func windowCount(pid: pid_t) -> Int {
+        windows.count { $0.pid == pid }
+    }
+
+    func appURL(pid: pid_t) -> URL? {
+        NSRunningApplication(processIdentifier: pid)?.bundleURL
+    }
+
+    func revealInFinder(_ url: URL) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     /// 拖动结束或滑块松手时落盘。拖动过程中只改内存，不必每一帧写文件。
     func commitIconSize() {
         pins.setIconSize(iconSize)
@@ -790,6 +831,21 @@ final class BarModel: ObservableObject {
     func detachFromCluster(_ window: CGWindowID) {
         clusters.detach(window)
         rebuildItems()
+    }
+
+    /// 把窗口收进一个已有的编组。菜单里给不出「新建编组」——只剩一个成员的簇会自己
+    /// 解散，从一个窗口起头建不出簇来，那条路只有捏合。
+    func addToCluster(_ window: CGWindowID, _ id: Int) {
+        clusters.merge([window], intoCluster: id)
+        rebuildItems()
+    }
+
+    /// 条上现有的编组，供右键菜单列出可加入的目标。
+    var clusterChoices: [(id: Int, name: String)] {
+        barItems.compactMap {
+            guard case .cluster(let cluster) = $0 else { return nil }
+            return (cluster.id, cluster.heading)
+        }
     }
 
     /// 簇的整体开关（计划书 §3）。与单个窗口是同一条规则：不在眼前就带到眼前，
@@ -919,6 +975,8 @@ final class BarModel: ObservableObject {
 
     /// 可接收文件的项：项 id -> 它在面板里的位置
     private var dropZones: [String: CGRect] = [:]
+    /// 右键命中区。与拖放区分开：每一格都能有菜单，拖放只认文件夹与废纸篓。
+    private var menuZones: [String: CGRect] = [:]
     /// 正被拖拽悬停的项——不给高亮的话，用户不知道松手会掉进哪儿
     @Published private(set) var fileDropTarget: String?
 
@@ -928,6 +986,18 @@ final class BarModel: ObservableObject {
 
     func dropZone(at point: CGPoint) -> String? {
         dropZones.first { $0.value.contains(point) }?.key
+    }
+
+    func setMenuZone(_ id: String, _ rect: CGRect?) {
+        if let rect { menuZones[id] = rect } else { menuZones[id] = nil }
+    }
+
+    func menuZone(at point: CGPoint) -> String? {
+        menuZones.first { $0.value.contains(point) }?.key
+    }
+
+    func barContains(_ point: CGPoint) -> Bool {
+        barFrame.contains(point)
     }
 
     func setFileDropTarget(_ id: String?) {

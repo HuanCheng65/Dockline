@@ -284,7 +284,6 @@ struct BarContent: View {
             action: { model.setBarFrame($0) }
         // 背板不参与命中测试，条的空白处要自己给出可右键的形状
         .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius, style: .continuous))
-        .contextMenu { globalMenu }
     }
 
     private func row(_ layout: BarLayout) -> some View {
@@ -309,6 +308,9 @@ struct BarContent: View {
                 .transition(flight(item, overflowing: !layout.overflow.isEmpty))
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.rootSpace)).midX }
                     action: { cellAnchors[item.id] = $0 }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
+                    action: { model.setMenuZone(item.id, $0) }
+                .onDisappear { model.setMenuZone(item.id, nil) }
             }
         }
         .padding(.horizontal, BarMetrics.barPaddingH)
@@ -497,11 +499,6 @@ struct BarContent: View {
                 .hoverTracked(item.id, $hoveredItem)
                 .clickable(item.id, $pressedItem) { model.open(url) }
                 .help(model.displayName(of: url))
-                .contextMenu {
-                    Button("打开") { model.open(url) }
-                    Button("更改…") { model.chooseLauncher() }
-                    globalMenu
-                }
 
         case .separator:
             // 计划书 §3.1：分隔线只隔「不是窗口的东西」，窗口之间一律不隔。
@@ -560,7 +557,6 @@ struct BarContent: View {
                 }
                 // 单击 = 整体开关。与单个窗口同一条规则，簇上没有例外。
                 .onTapGesture { model.toggleCluster(cluster.id) }
-                .contextMenu { clusterMenu(cluster) }
 
         case .folder(let url):
             BareItem(icon: model.icon(file: url), metrics: metrics, backing: backing(item.id))
@@ -568,11 +564,6 @@ struct BarContent: View {
                 .clickable(item.id, $pressedItem) { model.open(url) }
                 .dropZone(item.id, model: model)
                 .help(model.displayName(of: url))
-                .contextMenu {
-                    Button("打开") { model.open(url) }
-                    Divider()
-                    Button("从 Dockline 中移除") { model.removeFolder(url) }
-                }
 
         case .trash:
             BareItem(icon: NSImage(named: model.trashFull ? NSImage.trashFullName
@@ -582,21 +573,6 @@ struct BarContent: View {
                 .clickable(item.id, $pressedItem) { model.open(model.trashURL) }
                 .help(model.trashFull ? "废纸篓（非空）" : "废纸篓")
                 .dropZone(item.id, model: model)
-                .contextMenu {
-                    Button("打开") { model.open(model.trashURL) }
-                    Button("清倒废纸篓…") { model.emptyTrash() }
-                        .disabled(!model.trashFull)
-                }
-        }
-    }
-
-    /// 用 Toggle 而不是两条互斥的按钮——菜单里会显示勾选标记，与系统程序坞一致。
-    @ViewBuilder
-    private func pinMenu(bundleID: String?) -> some View {
-        if let bundleID {
-            Toggle("保留在 Dockline 中", isOn: Binding(
-                get: { model.pins.isPinned(bundleID) },
-                set: { _ in model.togglePin(bundleID) }))
         }
     }
 
@@ -641,7 +617,6 @@ struct BarContent: View {
                         },
                         onTap: { tap(slot) })
             .help(slot.help)
-            .contextMenu { slotMenu(slot) }
     }
 
     private func tap(_ slot: Slot) {
@@ -660,68 +635,6 @@ struct BarContent: View {
         }
     }
 
-    /// 槽位的右键菜单。窗口与未打开的 App 共用一个函数——菜单内容不同，
-    /// 但外层必须是同一个修饰器，否则 `.contextMenu` 的类型一变，这一格又成了另一棵树。
-    @ViewBuilder
-    private func slotMenu(_ slot: Slot) -> some View {
-        if let cell = slot.cell {
-            windowMenu(cell)
-        } else if let app = slot.app {
-            Button("打开") { model.launch(app) }
-            pinMenu(bundleID: app.bundleID)
-            if let pid = app.pid {
-                Divider()
-                Button("退出") { model.quit(pid: pid) }
-            }
-        }
-    }
-
-    /// 窗口格的右键菜单。「铺满」针对的是具体某一个窗口，所以菜单挂在格子上。
-    @ViewBuilder
-    private func windowMenu(_ cell: BarWindow) -> some View {
-        // 标题固定。菜单内容在每次重绘时都会求值（实测 8 秒 20 次），
-        // 「已经铺满了吗」要读一次窗口几何，不能挂在这里。
-        // 系统「窗口」菜单里的「缩放」同样是一个标题、两个方向。
-        Button("铺满") { model.fill(cell.window) }
-        // 整组的动作挂在簇那一格上，不在成员身上重复
-        if model.clusters.clusterID(of: cell.id) != nil {
-            Button("移出编组") { model.detachFromCluster(cell.id) }
-        }
-        pinMenu(bundleID: cell.bundleID)
-        Divider()
-        Button("退出") { model.quit(pid: cell.pid) }
-    }
-
-    /// 没有指示点——点表示的是「这里有窗口可以召回」，不是「进程活着」。
-    /// 进程在不在，点一下都会到该到的地方，用户不需要分辨。
-    /// 簇的管理菜单。改名 / 换色 / 解散 / 逐个移出。
-    @ViewBuilder
-    private func clusterMenu(_ cluster: BarCluster) -> some View {
-        Button("重新命名…") { model.renameCluster(cluster.id) }
-        Toggle("显示簇名", isOn: Binding(get: { cluster.showsName },
-                                     set: { _ in model.toggleClusterName(cluster.id) }))
-        Menu("颜色") {
-            ForEach(ClusterColor.allCases) { color in
-                Button(color.name) { model.recolorCluster(cluster.id, to: color) }
-            }
-        }
-        Divider()
-        ForEach(cluster.windows) { cell in
-            Button("移出「\(cell.window.title)」") { model.detachFromCluster(cell.id) }
-        }
-        Divider()
-        Button("解散编组") { model.dissolveCluster(cluster.id) }
-    }
-
-    /// Dockline 自身的菜单项。只出现在启动台（Dockline 自己的部件）和条的空白处——
-    /// 窗口格子与 App 槽位代表的是别的 App，把「退出 Dockline」摆进去容易被误点成
-    /// 「退出那个 App」。
-    @ViewBuilder
-    private var globalMenu: some View {
-        Divider()
-        Button("设置…") { model.showSettings() }
-        Button("退出 Dockline") { NSApp.terminate(nil) }
-    }
 }
 
 /// 条上方那一层浮出来的面板是谁的。

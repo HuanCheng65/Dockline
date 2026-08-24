@@ -70,6 +70,20 @@ final class BarPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
+    /// SwiftUI 的右键处理发生在宿主内部；在窗口分发事件之前截住，确保动态菜单只在
+    /// 用户真正右键的这一刻构造。落在透明区域时 `model.menu` 返回 nil，照常向下分发。
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .rightMouseDown, let contentView {
+            let local = contentView.convert(event.locationInWindow, from: nil)
+            let point = CGPoint(x: local.x, y: contentView.bounds.height - local.y)
+            if let menu = model.menu(at: point) {
+                NSMenu.popUpContextMenu(menu, with: event, for: contentView)
+                return
+            }
+        }
+        super.sendEvent(event)
+    }
+
     // MARK: 强制活跃外观（私有）
     //
     // 面板永远不是 key window，Liquid Glass 会据此按「非活跃」外观再压一层，
