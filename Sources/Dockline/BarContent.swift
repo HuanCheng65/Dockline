@@ -148,7 +148,17 @@ struct BarContent: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 调度中心期间整条让位：不滑走而是淡出——MC 自己就是一段位移动画，
+            // 再叠一段位移只会打架，而且淡出比滑出快，让得出去才是重点。
+            .opacity(model.yielding ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: model.yielding)
             .coordinateSpace(name: Self.rootSpace)
+            // 条以上那块空间由面板按需长出来（见 BarPanel）。悬停也算——浮出前的
+            // 那两百多毫秒里就得把地方准备好，等浮层出现再长就晚了。
+            .onChange(of: hoveredItem != nil || panel != nil || preview != nil
+                          || dragging != nil) { _, needed in
+                model.needsFloatRoom(needed)
+            }
             .animation(.easeOut(duration: 0.16), value: preview)
             .animation(.spring(response: 0.30, dampingFraction: 0.78), value: panel?.kind)
         }

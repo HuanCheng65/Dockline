@@ -37,6 +37,9 @@ final class BarModel: ObservableObject {
     @Published private(set) var hidden = false
     /// 条正在换屏：先滑下去，挪好了再滑上来。
     @Published private(set) var sliding = false
+    /// 调度中心期间让位。它是这套压制里的逃生口：MC 一开系统程序坞无条件出现，
+    /// 而我们的面板浮在它上面，不让开就把逃生口挡死了。
+    @Published private(set) var yielding = false
     /// 正在启动的 App。系统 Dock 用图标弹跳表示「点到了，正在开」——
     /// 开一个 App 到窗口出现有好几秒，没有反馈时用户会以为没点上。
     @Published private(set) var launching: Set<String> = []
@@ -89,15 +92,21 @@ final class BarModel: ObservableObject {
     private var coalesceScheduled = false
     private var suppressReadySync = false
     private let fullscreenWatch = FullscreenWatch()
+    private let missionControl = MissionControlWatch()
     /// 活动状态，按上报进程。计划书 §3。
     @Published private(set) var activities: [pid_t: Activity] = [:]
     private let activityCenter = ActivityCenter()
     /// 该把条搬到哪块屏。面板的几何归 BarPanel 管，这里只发信号。
     var onFollowScreen: ((NSScreen) -> Void)?
+    /// 浮层要不要用到条以上的空间。面板的几何同样归 BarPanel 管。
+    var onFloatRoom: ((Bool) -> Void)?
+    private var roomRelease: DispatchWorkItem?
     private var mouseMonitor: Any?
     private var dwell: DispatchWorkItem?
     private var moveDwell: DispatchWorkItem?
     private var inFullscreenSpace = false
+    /// event tap 为防转场闪烁而预先藏过条；Space 通知到达后要无条件校正一次可见性。
+    private var fullscreenPredictionPending = false
 
     // MARK: 启动
 
@@ -179,17 +188,31 @@ final class BarModel: ObservableObject {
         center.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
                            object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
+            let predicted = fullscreenPredictionPending
+            fullscreenPredictionPending = false
             fullscreenWatch.confirm()
-            refreshFullscreenState()
+            refreshFullscreenState(reconcilePrediction: predicted)
             claimVisibleWindows()
         }
         // 预判全屏动作，抢在系统的转场快照之前隐藏
-        fullscreenWatch.onPredict = { [weak self] in self?.hidden = true }
+        fullscreenWatch.onPredict = { [weak self] in
+            self?.fullscreenPredictionPending = true
+            self?.hidden = true
+        }
         fullscreenWatch.onTimeout = { [weak self] in
             guard let self else { return }
+            fullscreenPredictionPending = false
             hidden = inFullscreenSpace
         }
         fullscreenWatch.start()
+        missionControl.onChange = { [weak self] active in
+            guard let self, yielding != active else { return }
+            yielding = active
+            Timeline.log(active ? "调度中心打开，条让位" : "调度中心关闭，条回位")
+            // 让回来的时候条底下压的常常已经不是原来那块东西了
+            if !active { sampleBackdrop() }
+        }
+        missionControl.start()
         activityCenter.onChange = { [weak self] in
             guard let self else { return }
             activities = activityCenter.activities
@@ -347,13 +370,18 @@ final class BarModel: ObservableObject {
     /// 停留时长。触底是个高频误触的位置——全屏视频的控制条就在那儿。
     private static let dwellDuration: TimeInterval = 0.2
 
-    private func refreshFullscreenState() {
-        guard let fullscreen = SkyLight.activeSpaceIsFullscreen else {
-            // SLSSpaceGetType 不可用。不静默当成「不是全屏」——那会让 bar 在全屏下一直挡着。
-            Timeline.log("⚠️ SLSSpaceGetType 不可用，全屏自动隐藏关闭：\(SkyLight.missingSymbols)")
+    private func refreshFullscreenState(reconcilePrediction: Bool = false) {
+        guard let display = maximizer.barDisplay,
+              let fullscreen = SkyLight.activeSpaceIsFullscreen(on: display) else {
+            // Managed Display Spaces 不可用。不静默当成「不是全屏」——那会让 bar 在全屏下一直挡着。
+            Timeline.log("⚠️ 逐屏 Space 类型不可用，全屏自动隐藏关闭：\(SkyLight.missingSymbols)")
             return
         }
-        guard fullscreen != inFullscreenSpace else { return }
+        guard fullscreen != inFullscreenSpace else {
+            // 预判发生在另一块显示器时，本屏 Space 没变，但条已经被预先藏过；必须撤销。
+            if reconcilePrediction { hidden = fullscreen }
+            return
+        }
         inFullscreenSpace = fullscreen
         hidden = fullscreen
         if !fullscreen {
@@ -641,7 +669,12 @@ final class BarModel: ObservableObject {
     }
 
     func setRootOffset(_ offset: CGPoint) {
+        guard offset != rootOffset else { return }
         rootOffset = offset
+        // 条与浮层的矩形都是根坐标系里的量，根一挪它们当场过期。留着的话下一次采样会把
+        // 新的平移量加到旧的矩形上，采到屏幕上的另一块地方——面板按需改高度时每次都会撞上。
+        barFrame = .zero
+        floatFrame = nil
     }
 
     /// 浮层出现 / 移动时报上来，消失时报 nil
@@ -651,11 +684,33 @@ final class BarModel: ObservableObject {
         sampleBackdrop()
     }
 
+    /// 条上有悬停或浮层，条以上那块空间就要用起来了。
+    ///
+    /// 长高是立刻的——浮层要先有地方才画得下；落回则等一下：指针在相邻格子之间挪动时
+    /// 悬停会短暂落空，立刻收回会把面板一路撑起放下。
+    private static let roomReleaseDelay: TimeInterval = 0.4
+
+    func needsFloatRoom(_ needed: Bool) {
+        roomRelease?.cancel()
+        roomRelease = nil
+        guard !needed else {
+            onFloatRoom?(true)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            roomRelease = nil
+            onFloatRoom?(false)
+        }
+        roomRelease = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.roomReleaseDelay, execute: work)
+    }
+
     /// 采一次条与浮层玻璃板的亮度。单次约 35ms，异步；`BackdropSensor` 内部有 1 秒去抖。
     /// 采的是容器内侧那条纯玻璃，位置由 `BackdropSensor.band` 从容器矩形算出。
     private func sampleBackdrop() {
         // 滑动途中条不在位，这时抓到的是它还没盖住的桌面
-        guard !hidden, !sliding, let display = maximizer.barDisplay else { return }
+        guard !hidden, !sliding, !yielding, let display = maximizer.barDisplay else { return }
         if barFrame != .zero {
             backdrop.sample(probe: probe(barFrame), on: display)
         }
@@ -675,6 +730,8 @@ final class BarModel: ObservableObject {
         let changed = maximizer.barDisplay != display
         maximizer.barDisplay = display
         corrector.barDisplay = display
+        // 每块显示器有自己当前的 Space。条搬屏时必须立刻切换到那块屏的全屏状态。
+        if changed { refreshFullscreenState() }
         // 换了屏，条底下就是另一块桌面了
         if changed { sampleBackdrop() }
     }

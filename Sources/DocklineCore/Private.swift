@@ -21,6 +21,13 @@ public enum SkyLight {
     private typealias GetActiveSpaceFn = @convention(c) (Int32) -> UInt64
     private typealias WindowIsOrderedInFn = @convention(c) (Int32, CGWindowID, UnsafeMutablePointer<Bool>) -> Int32
     private typealias SpaceGetTypeFn = @convention(c) (Int32, UInt64) -> Int32
+    private typealias CopyManagedDisplaySpacesFn =
+        @convention(c) (Int32) -> Unmanaged<CFArray>?
+    /// 窗口服务器事件的回调：(事件号, 数据, 长度, 注册时给的上下文)
+    public typealias NotifyProc =
+        @convention(c) (UInt32, UnsafeMutableRawPointer?, Int, UnsafeMutableRawPointer?) -> Void
+    private typealias RegisterNotifyProcFn =
+        @convention(c) (NotifyProc, UInt32, UnsafeMutableRawPointer?) -> Void
 
     private static let handle: UnsafeMutableRawPointer? =
         dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
@@ -35,6 +42,9 @@ public enum SkyLight {
     private static let getActiveSpace = sym("SLSGetActiveSpace", as: GetActiveSpaceFn.self)
     private static let windowIsOrderedIn = sym("SLSWindowIsOrderedIn", as: WindowIsOrderedInFn.self)
     private static let spaceGetType = sym("SLSSpaceGetType", as: SpaceGetTypeFn.self)
+    private static let copyManagedDisplaySpaces =
+        sym("CGSCopyManagedDisplaySpaces", as: CopyManagedDisplaySpacesFn.self)
+    private static let registerNotifyProc = sym("SLSRegisterNotifyProc", as: RegisterNotifyProcFn.self)
 
     /// 启动自检：任一符号缺失即视为整族不可用。
     public static var missingSymbols: [String] {
@@ -45,6 +55,8 @@ public enum SkyLight {
         if getActiveSpace == nil { missing.append("SLSGetActiveSpace") }
         if windowIsOrderedIn == nil { missing.append("SLSWindowIsOrderedIn") }
         if spaceGetType == nil { missing.append("SLSSpaceGetType") }
+        if copyManagedDisplaySpaces == nil { missing.append("CGSCopyManagedDisplaySpaces") }
+        if registerNotifyProc == nil { missing.append("SLSRegisterNotifyProc") }
         return missing
     }
 
@@ -78,6 +90,30 @@ public enum SkyLight {
     public static var activeSpaceIsFullscreen: Bool? {
         guard let cid = connection, let active = activeSpace, let fn = spaceGetType else { return nil }
         return fn(cid, active) == fullscreenSpaceType
+    }
+
+    /// 指定显示器当前 Space 是否为原生全屏。多显示器各自有 Current Space，不能使用
+    /// `SLSGetActiveSpace`：后者返回全局最近激活的 Space，会把另一块屏上的 Dockline 也收掉。
+    public static func activeSpaceIsFullscreen(on display: CGDirectDisplayID) -> Bool? {
+        guard let cid = connection, let fn = copyManagedDisplaySpaces else { return nil }
+        let uuid = CGDisplayCreateUUIDFromDisplayID(display).takeRetainedValue()
+        let identifier = CFUUIDCreateString(nil, uuid) as String
+        guard let raw = fn(cid)?.takeRetainedValue() as? [[String: Any]],
+              let managed = raw.first(where: {
+                  $0["Display Identifier"] as? String == identifier
+              }),
+              let current = managed["Current Space"] as? [String: Any],
+              let type = current["type"] as? NSNumber else { return nil }
+        return type.int32Value == fullscreenSpaceType
+    }
+
+    /// 订阅窗口服务器的一类事件。事件号没有公开清单，取值由实测确定，见调用点。
+    /// 返回 false = 符号不可用，调用点负责报告并关掉对应功能。
+    public static func onEvent(_ type: UInt32, context: UnsafeMutableRawPointer?,
+                               _ proc: NotifyProc) -> Bool {
+        guard let fn = registerNotifyProc else { return false }
+        fn(proc, type, context)
+        return true
     }
 
     /// kCGSAllSpacesMask == 0x7：返回该窗口所属的全部 space id。

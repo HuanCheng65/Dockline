@@ -17,9 +17,19 @@ final class BarPanel: NSPanel {
     /// 条当前所在的屏。多屏下条只有一条，跟着指针走（计划书 §3.1）。
     private var current: CGDirectDisplayID?
 
-    /// 按最大图标尺寸留足，不随条高变化——面板是全宽透明的，多留没有代价，
-    /// 却省掉了「改尺寸要同时改窗口 frame」这条容易漏的路径。
-    /// 还要容下浮在条上方的悬停预览卡。面板是全宽透明的，多留没有代价。
+    /// 浮层要用的空间已经长出来了没有。见 `compactHeight`。
+    private var expanded = false
+
+    /// 常态高度：只装得下玻璃条本身。
+    ///
+    /// 面板原先一直是全高的，其中只有底部那一条是玻璃、其余全透明。截屏工具按窗口边界
+    /// 出候选，于是屏幕下半部分始终压着一个我们的巨大候选框。浮层的高度因此改成按需长出来。
+    /// 两个高度都按最大图标档算，不随当前条高变化——省掉「改图标尺寸要同时重摆面板」这条
+    /// 容易漏的路径。
+    private static let compactHeight: CGFloat =
+        BarMetrics.maxIcon + 20 + BarMetrics.bottomGap * 2 + 8
+
+    /// 还要容下浮在条上方的簇扇面与悬停预览卡。
     private static let panelHeight: CGFloat =
         BarMetrics.maxIcon + 20 + BarMetrics.bottomGap + 30
             // 簇的扇面浮在条的上方，预览卡再往上让一层——不留够，最上面那张会被面板裁掉
@@ -56,6 +66,7 @@ final class BarPanel: NSPanel {
         contentView = catcher
 
         model.onFollowScreen = { [weak self] screen in self?.place(on: screen) }
+        model.onFloatRoom = { [weak self] needed in self?.setExpanded(needed) }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -125,17 +136,26 @@ final class BarPanel: NSPanel {
         }
     }
 
-    /// 面板几何与窗口数无关，只跟屏走。
+    /// 浮层要用的空间：要画之前先把面板长上去，收起之后再落回常态高度。
+    /// 面板贴着屏幕底边、往上长，条在 AppKit 坐标里的位置不变，因此不会打断悬停。
+    private func setExpanded(_ value: Bool) {
+        guard expanded != value else { return }
+        expanded = value
+        layout()
+    }
+
+    /// 面板几何与窗口数无关，只跟屏和浮层的需要走。
     private func apply(_ screen: NSScreen) {
         current = displayID(screen)
+        let height = expanded ? Self.panelHeight : Self.compactHeight
         let frame = screen.frame
         model.availableWidth = screen.visibleFrame.width
         model.setBarDisplay(displayID(screen))
         // 根坐标系（面板左上角起）→ 屏幕左上原点坐标 的平移量。面板贴着屏幕底边、
         // 占满整宽，所以横向为 0，纵向就是屏幕高减去面板高。
-        model.setRootOffset(CGPoint(x: 0, y: screen.frame.height - Self.panelHeight))
+        model.setRootOffset(CGPoint(x: 0, y: screen.frame.height - height))
         setFrame(NSRect(x: frame.minX, y: frame.minY,
-                        width: frame.width, height: Self.panelHeight),
+                        width: frame.width, height: height),
                  display: true)
     }
 }
