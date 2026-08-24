@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: -apple-system, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif; }
+    a { color: oklch(0.62 0.14 258); } a:hover { color: oklch(0.52 0.14 258); }
+    .desk { position: relative; overflow: hidden; border-radius: 14px; }
+    .isle-d {
+      background: linear-gradient(180deg, rgba(255,255,255,0.21) 0%, rgba(255,255,255,0.08) 100%);
+      backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+      box-shadow: 0 14px 36px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.45), inset 0 0 0 0.5px rgba(255,255,255,0.22);
+    }
+    .isle-l {
+      background: linear-gradient(180deg, rgba(255,255,255,0.66) 0%, rgba(255,255,255,0.40) 100%);
+      backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+      box-shadow: 0 14px 32px rgba(0,0,0,0.13), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 0 0 0.5px rgba(255,255,255,0.6);
+    }
+    .wcell { display: flex; align-items: center; gap: 7px; padding: 5px 5px; border-radius: 14px; }
+    .wlbl { font-size: 11.5px; letter-spacing: 0.05px; max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 4px; }
+  </style>
+</helmet>
+
+<div style="width: 1040px; background: oklch(0.16 0.012 258); padding: 26px 26px 30px; box-sizing: border-box; color: oklch(0.94 0.006 258);">
+
+  <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px;">
+    <div style="font-size: 19px; font-weight: 600; letter-spacing: -0.2px;">方向 B · 分簇玻璃岛</div>
+    <div style="font-size: 13px; line-height: 1.55; color: oklch(0.70 0.010 258); max-width: 760px;">每个 App 一座独立玻璃岛。分组由材质本身表达——Liquid Glass 的玻璃块靠近时会融合，同 App 窗口自然融成一片，不需要任何分隔线。歧义时岛向右展开，图标旁跟标签，bar 高度不变。<br><span style="color: oklch(0.62 0.010 258);">代价：App 一多，岛也多，视觉节奏更碎；展开标签会让整条明显变宽。</span></div>
+  </div>
+
+  <div class="desk" style="height: 232px; background: linear-gradient(155deg, oklch(0.34 0.09 268) 0%, oklch(0.22 0.07 292) 46%, oklch(0.15 0.04 250) 100%);">
+    <div style="position: absolute; left: 92px; top: 26px; width: 420px; height: 150px; border-radius: 11px; background: linear-gradient(180deg, oklch(0.30 0.02 258), oklch(0.24 0.015 258)); box-shadow: 0 20px 50px rgba(0,0,0,0.42);"></div>
+    <div style="position: absolute; right: 74px; top: 52px; width: 300px; height: 132px; border-radius: 11px; background: linear-gradient(180deg, oklch(0.86 0.03 88), oklch(0.72 0.05 62)); box-shadow: 0 20px 50px rgba(0,0,0,0.36);"></div>
+
+    <!-- 悬停预览：260ms 后浮出 -->
+    <div style="position: absolute; left: 50%; transform: translateX(-118px); bottom: 92px; width: 214px;">
+      <div class="isle-d" style="border-radius: 15px; padding: 9px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="height: 96px; border-radius: 9px; background: linear-gradient(165deg, oklch(0.32 0.02 258), oklch(0.22 0.015 258)); box-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.14);"></div>
+        <div style="display: flex; flex-direction: column; gap: 2px;">
+          <div style="font-size: 12px; font-weight: 500; letter-spacing: -0.05px;">yarn bench — moor</div>
+          <div style="font-size: 10.5px; color: oklch(0.68 0.010 258);">Ghostty</div>
+        </div>
+      </div>
+      <div style="width: 10px; height: 10px; margin: -5px auto 0; transform: rotate(45deg); border-radius: 2px; background: rgba(255,255,255,0.11); backdrop-filter: blur(30px);"></div>
+    </div>
+
+    <div style="position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; display: flex; align-items: center; gap: 10px;">
+
+      <div class="isle-d" style="border-radius: 22px; padding: 5px;">
+        <div class="wcell" style="background: rgba(255,255,255,0.15);">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.60 0.17 268)"/><path d="M11 27c0-8 4-14 9-14s9 6 9 14" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/></svg>
+        </div>
+      </div>
+
+      <div class="isle-d" style="border-radius: 22px; padding: 5px;">
+        <div class="wcell">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.66 0.15 152)"/><path d="M12 16h16v11a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2z" fill="#fff" opacity="0.92"/><circle cx="17" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/><circle cx="23" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/></svg>
+        </div>
+      </div>
+
+      <!-- 同 App 多窗口：岛内展开，图标 + 标签 -->
+      <div class="isle-d" style="border-radius: 22px; padding: 5px; display: flex; gap: 3px;">
+        <div class="wcell">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.80 0.008 258);">QQBot</div>
+        </div>
+        <div class="wcell" style="background: rgba(255,255,255,0.15);">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.95 0.006 258); font-weight: 500;">bench</div>
+        </div>
+        <div class="wcell" style="opacity: 0.42;">
+          <svg width="40" height="40" viewBox="0 0 40 40" style="filter: grayscale(1);"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.72 0.008 258);">moor</div>
+        </div>
+      </div>
+
+      <div class="isle-d" style="border-radius: 22px; padding: 5px; display: flex; gap: 3px;">
+        <div class="wcell">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.16 258)"/><path d="M17 15l-5 5 5 5M23 15l5 5-5 5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.80 0.008 258);">plan.md</div>
+        </div>
+        <div class="wcell">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.16 258)"/><path d="M17 15l-5 5 5 5M23 15l5 5-5 5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.80 0.008 258);">BarModel</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="desk" style="height: 178px; margin-top: 14px; background: linear-gradient(155deg, oklch(0.88 0.05 232) 0%, oklch(0.82 0.07 258) 52%, oklch(0.90 0.04 92) 100%);">
+    <div style="position: absolute; left: 120px; top: 20px; width: 380px; height: 104px; border-radius: 11px; background: rgba(255,255,255,0.72); box-shadow: 0 16px 40px rgba(0,0,0,0.16);"></div>
+    <div style="position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; display: flex; align-items: center; gap: 10px;">
+      <div class="isle-l" style="border-radius: 22px; padding: 5px;">
+        <div class="wcell" style="background: rgba(255,255,255,0.75);">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.60 0.17 268)"/><path d="M11 27c0-8 4-14 9-14s9 6 9 14" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/></svg>
+        </div>
+      </div>
+      <div class="isle-l" style="border-radius: 22px; padding: 5px;">
+        <div class="wcell">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.66 0.15 152)"/><path d="M12 16h16v11a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2z" fill="#fff" opacity="0.92"/><circle cx="17" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/><circle cx="23" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/></svg>
+        </div>
+      </div>
+      <div class="isle-l" style="border-radius: 22px; padding: 5px; display: flex; gap: 3px;">
+        <div class="wcell">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.40 0.010 258);">QQBot</div>
+        </div>
+        <div class="wcell" style="background: rgba(255,255,255,0.75);">
+          <svg width="40" height="40" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.24 0.012 258); font-weight: 500;">bench</div>
+        </div>
+        <div class="wcell" style="opacity: 0.40;">
+          <svg width="40" height="40" viewBox="0 0 40 40" style="filter: grayscale(1);"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div class="wlbl" style="color: oklch(0.48 0.010 258);">moor</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 26px; margin-top: 20px; font-size: 11.5px; color: oklch(0.66 0.010 258); flex-wrap: wrap;">
+    <div>分组 = 一座岛，无分隔线</div>
+    <div>标签在图标右侧，上限 84pt</div>
+    <div>悬停 260ms 浮出预览（标题 + App + 缩略图）</div>
+    <div>bar 高度恒定，歧义只影响宽度</div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

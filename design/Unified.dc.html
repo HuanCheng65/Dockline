@@ -1,0 +1,157 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: -apple-system, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif; }
+    a { color: oklch(0.62 0.14 258); } a:hover { color: oklch(0.52 0.14 258); }
+    .desk { position: relative; overflow: hidden; border-radius: 14px; }
+    .slab {
+      background: linear-gradient(180deg, rgba(255,255,255,0.20) 0%, rgba(255,255,255,0.07) 100%);
+      backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%);
+      box-shadow: 0 16px 44px rgba(0,0,0,0.34), inset 0 1px 0 rgba(255,255,255,0.45), inset 0 0 0 0.5px rgba(255,255,255,0.22);
+      position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; border-radius: 21px; padding: 5px 7px;
+    }
+    /* 所有顶层项共用同一个盒模型 → 图标天然在一条基线上 */
+    .row { display: flex; align-items: center; gap: 2px; }
+    .item { padding: 3px; border-radius: 17px; display: flex; gap: 2px; }
+    .live { background: rgba(255,255,255,0.10); box-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.13); }
+    .cell { padding: 4px; border-radius: 14px; display: flex; align-items: center; gap: 6px; }
+    .front { background: rgba(255,255,255,0.22); box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.36); }
+    .dim { opacity: 0.42; }
+    .bare { padding: 7px; border-radius: 17px; display: flex; }
+    .lb { font-size: 11.5px; max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 3px; color: oklch(0.86 0.008 258); }
+    .cnt { font-size: 10px; font-weight: 600; min-width: 15px; height: 15px; border-radius: 8px; padding: 0 4px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.22); color: oklch(0.96 0.004 258); box-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.22); }
+    .sep { width: 1px; height: 34px; margin: 0 7px; background: linear-gradient(180deg, transparent, rgba(255,255,255,0.22), transparent); }
+    .cap { font-size: 12px; color: oklch(0.60 0.010 258); margin: 18px 0 8px; }
+    .note { font-size: 11.5px; line-height: 1.62; color: oklch(0.64 0.010 258); }
+    .sw { width: 26px; height: 16px; border-radius: 6px; flex: none; }
+  </style>
+</helmet>
+
+<div style="width: 1240px; background: oklch(0.16 0.012 258); padding: 26px 26px 30px; box-sizing: border-box; color: oklch(0.94 0.006 258);">
+
+  <div style="display: flex; flex-direction: column; gap: 6px;">
+    <div style="font-size: 19px; font-weight: 600; letter-spacing: -0.2px;">方向 D · 一条到底 · 固定槽位展开</div>
+    <div style="font-size: 13px; line-height: 1.55; color: oklch(0.70 0.010 258); max-width: 920px;">一整块玻璃条，高度恒定，标签在图标右侧，承接系统 Dock 全部职能。<b style="color: oklch(0.90 0.006 258); font-weight: 600;">固定 App 是槽位不是图标</b>——没运行时是启动图标，运行中原地展开为它的窗口格子。状态不用小圆点，改由<b style="color: oklch(0.90 0.006 258); font-weight: 600;">格子底色的三个档位</b>承载：无底＝未运行，浅底＝有窗口，亮底＝当前前台。所有顶层项共用同一个盒模型，图标与底色天然对齐。</div>
+  </div>
+
+  <div class="cap">① 空间充裕 · 图标 38pt · 多窗口组常驻标签</div>
+  <div class="desk" style="height: 168px; background: linear-gradient(155deg, oklch(0.34 0.09 268) 0%, oklch(0.22 0.07 292) 46%, oklch(0.15 0.04 250) 100%);">
+    <div style="position: absolute; left: 150px; top: 18px; width: 430px; height: 98px; border-radius: 11px; background: linear-gradient(180deg, oklch(0.30 0.02 258), oklch(0.24 0.015 258)); box-shadow: 0 20px 50px rgba(0,0,0,0.42);"></div>
+    <div style="position: absolute; right: 108px; top: 34px; width: 280px; height: 88px; border-radius: 11px; background: linear-gradient(180deg, oklch(0.86 0.03 88), oklch(0.72 0.05 62)); box-shadow: 0 20px 50px rgba(0,0,0,0.36);"></div>
+
+    <div class="slab"><div class="row">
+      <!-- 最左：启动台（不是窗口，无底） -->
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.42 0.03 258)"/><g fill="#fff" opacity="0.9"><rect x="12" y="12" width="6.5" height="6.5" rx="1.8"/><rect x="21.5" y="12" width="6.5" height="6.5" rx="1.8"/><rect x="12" y="21.5" width="6.5" height="6.5" rx="1.8"/><rect x="21.5" y="21.5" width="6.5" height="6.5" rx="1.8"/></g></svg></div>
+      <div class="sep"></div>
+
+      <!-- 访达：1 窗口，当前前台 -->
+      <div class="item live"><div class="cell front"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.15 232)"/><rect x="11" y="12" width="18" height="16" rx="3" fill="#fff" opacity="0.92"/><path d="M20 12v16" stroke="oklch(0.55 0.14 232)" stroke-width="1.6"/></svg></div></div>
+      <!-- Arc：1 窗口 -->
+      <div class="item live"><div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.60 0.17 268)"/><path d="M11 27c0-8 4-14 9-14s9 6 9 14" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/></svg></div></div>
+      <!-- Ghostty：3 窗口，托盘即浅底 -->
+      <div class="item live">
+        <div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb">QQBot</div></div>
+        <div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb">bench</div></div>
+        <div class="cell dim"><svg width="38" height="38" viewBox="0 0 40 40" style="filter: grayscale(1);"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb" style="color: oklch(0.74 0.008 258);">moor</div></div>
+      </div>
+      <!-- Code：2 窗口 -->
+      <div class="item live">
+        <div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.16 258)"/><path d="M17 15l-5 5 5 5M23 15l5 5-5 5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb">plan.md</div></div>
+        <div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.16 258)"/><path d="M17 15l-5 5 5 5M23 15l5 5-5 5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb">BarModel</div></div>
+      </div>
+      <!-- 未固定的窗口：与固定的混排，不隔线 -->
+      <div class="item live"><div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.70 0.14 212)"/><circle cx="20" cy="20" r="8" fill="#fff" opacity="0.92"/><circle cx="20" cy="20" r="3" fill="oklch(0.60 0.13 212)"/></svg></div></div>
+      <!-- 固定但未运行：无底 -->
+      <div class="item"><div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.66 0.15 152)"/><path d="M12 16h16v11a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2z" fill="#fff" opacity="0.92"/><circle cx="17" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/><circle cx="23" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/></svg></div></div>
+
+      <div class="sep"></div>
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><path d="M8 14a2 2 0 0 1 2-2h6l2.5 3H30a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z" fill="oklch(0.68 0.10 232)"/></svg></div>
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><path d="M8 14a2 2 0 0 1 2-2h6l2.5 3H30a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z" fill="oklch(0.72 0.09 92)"/></svg></div>
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><path d="M13 15h14l-1.4 14a2 2 0 0 1-2 1.8h-7.2a2 2 0 0 1-2-1.8z" fill="none" stroke="oklch(0.80 0.01 258)" stroke-width="2"/><path d="M11 15h18M17 11h6" stroke="oklch(0.80 0.01 258)" stroke-width="2" stroke-linecap="round"/></svg></div>
+    </div></div>
+  </div>
+
+  <div class="cap">② 内容宽度超过屏幕阈值 · 全部多窗口组一起收起为「图标 + 数量」· 悬停的那组单独展开</div>
+  <div class="desk" style="height: 148px; background: linear-gradient(155deg, oklch(0.34 0.09 268) 0%, oklch(0.22 0.07 292) 46%, oklch(0.15 0.04 250) 100%);">
+    <div style="position: absolute; left: 180px; top: 16px; width: 400px; height: 84px; border-radius: 11px; background: linear-gradient(180deg, oklch(0.30 0.02 258), oklch(0.24 0.015 258)); box-shadow: 0 20px 50px rgba(0,0,0,0.42);"></div>
+    <div class="slab"><div class="row">
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.42 0.03 258)"/><g fill="#fff" opacity="0.9"><rect x="12" y="12" width="6.5" height="6.5" rx="1.8"/><rect x="21.5" y="12" width="6.5" height="6.5" rx="1.8"/><rect x="12" y="21.5" width="6.5" height="6.5" rx="1.8"/><rect x="21.5" y="21.5" width="6.5" height="6.5" rx="1.8"/></g></svg></div>
+      <div class="sep"></div>
+      <div class="item live"><div class="cell front"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.15 232)"/><rect x="11" y="12" width="18" height="16" rx="3" fill="#fff" opacity="0.92"/><path d="M20 12v16" stroke="oklch(0.55 0.14 232)" stroke-width="1.6"/></svg></div></div>
+      <div class="item live"><div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.60 0.17 268)"/><path d="M11 27c0-8 4-14 9-14s9 6 9 14" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round"/></svg></div></div>
+      <!-- 悬停中的组：展开 -->
+      <div class="item live" style="background: rgba(255,255,255,0.15);">
+        <div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb">QQBot</div></div>
+        <div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb">bench</div></div>
+        <div class="cell dim"><svg width="38" height="38" viewBox="0 0 40 40" style="filter: grayscale(1);"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="lb" style="color: oklch(0.74 0.008 258);">moor</div></div>
+      </div>
+      <div class="item live"><div class="cell" style="gap: 5px;"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.16 258)"/><path d="M17 15l-5 5 5 5M23 15l5 5-5 5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="cnt">2</div></div></div>
+      <div class="item live"><div class="cell" style="gap: 5px;"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.70 0.14 212)"/><circle cx="20" cy="20" r="8" fill="#fff" opacity="0.92"/><circle cx="20" cy="20" r="3" fill="oklch(0.60 0.13 212)"/></svg><div class="cnt">4</div></div></div>
+      <div class="item"><div class="cell"><svg width="38" height="38" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.66 0.15 152)"/><path d="M12 16h16v11a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2z" fill="#fff" opacity="0.92"/><circle cx="17" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/><circle cx="23" cy="22" r="1.6" fill="oklch(0.55 0.14 152)"/></svg></div></div>
+      <div class="sep"></div>
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><path d="M8 14a2 2 0 0 1 2-2h6l2.5 3H30a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z" fill="oklch(0.68 0.10 232)"/></svg></div>
+      <div class="bare"><svg width="38" height="38" viewBox="0 0 40 40"><path d="M13 15h14l-1.4 14a2 2 0 0 1-2 1.8h-7.2a2 2 0 0 1-2-1.8z" fill="none" stroke="oklch(0.80 0.01 258)" stroke-width="2"/><path d="M11 15h18M17 11h6" stroke="oklch(0.80 0.01 258)" stroke-width="2" stroke-linecap="round"/></svg></div>
+    </div></div>
+  </div>
+
+  <div class="cap">③ 仍超阈值 · 整体缩放至 28pt 下限（macOS Dock 的做法）</div>
+  <div class="desk" style="height: 126px; background: linear-gradient(155deg, oklch(0.34 0.09 268) 0%, oklch(0.22 0.07 292) 46%, oklch(0.15 0.04 250) 100%);">
+    <div style="position: absolute; left: 200px; top: 14px; width: 380px; height: 68px; border-radius: 11px; background: linear-gradient(180deg, oklch(0.30 0.02 258), oklch(0.24 0.015 258)); box-shadow: 0 20px 50px rgba(0,0,0,0.42);"></div>
+    <div class="slab" style="border-radius: 18px; padding: 4px 6px;"><div class="row">
+      <div class="bare" style="padding: 5px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.42 0.03 258)"/><g fill="#fff" opacity="0.9"><rect x="12" y="12" width="6.5" height="6.5" rx="1.8"/><rect x="21.5" y="12" width="6.5" height="6.5" rx="1.8"/><rect x="12" y="21.5" width="6.5" height="6.5" rx="1.8"/><rect x="21.5" y="21.5" width="6.5" height="6.5" rx="1.8"/></g></svg></div>
+      <div class="sep" style="height: 26px; margin: 0 5px;"></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell front" style="padding: 3px; border-radius: 11px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.15 232)"/><rect x="11" y="12" width="18" height="16" rx="3" fill="#fff" opacity="0.92"/><path d="M20 12v16" stroke="oklch(0.55 0.14 232)" stroke-width="1.6"/></svg></div></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.60 0.17 268)"/><path d="M11 27c0-8 4-14 9-14s9 6 9 14" stroke="#fff" stroke-width="3.4" fill="none" stroke-linecap="round"/></svg></div></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px; gap: 4px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.30 0.02 258)"/><path d="M14 17l4 3.5-4 3.5M21 25h6" stroke="oklch(0.82 0.14 152)" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="cnt" style="height: 13px; min-width: 13px; font-size: 9px;">3</div></div></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px; gap: 4px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.62 0.16 258)"/><path d="M17 15l-5 5 5 5M23 15l5 5-5 5" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="cnt" style="height: 13px; min-width: 13px; font-size: 9px;">5</div></div></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px; gap: 4px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.70 0.14 212)"/><circle cx="20" cy="20" r="8" fill="#fff" opacity="0.92"/><circle cx="20" cy="20" r="3" fill="oklch(0.60 0.13 212)"/></svg><div class="cnt" style="height: 13px; min-width: 13px; font-size: 9px;">4</div></div></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.55 0.16 28)"/><circle cx="20" cy="20" r="7" fill="#fff" opacity="0.9"/></svg></div></div>
+      <div class="item live" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.58 0.13 318)"/><path d="M13 25l6-9 4 5 4-6" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+      <div class="item" style="padding: 2px; border-radius: 14px;"><div class="cell" style="padding: 3px;"><svg width="28" height="28" viewBox="0 0 40 40"><rect width="40" height="40" rx="10" fill="oklch(0.66 0.15 152)"/><path d="M12 16h16v11a2 2 0 0 1-2 2H14a2 2 0 0 1-2-2z" fill="#fff" opacity="0.92"/><circle cx="17" cy="22" r="1.8" fill="oklch(0.55 0.14 152)"/><circle cx="23" cy="22" r="1.8" fill="oklch(0.55 0.14 152)"/></svg></div></div>
+      <div class="sep" style="height: 26px; margin: 0 5px;"></div>
+      <div class="bare" style="padding: 5px;"><svg width="28" height="28" viewBox="0 0 40 40"><path d="M8 14a2 2 0 0 1 2-2h6l2.5 3H30a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z" fill="oklch(0.68 0.10 232)"/></svg></div>
+      <div class="bare" style="padding: 5px;"><svg width="28" height="28" viewBox="0 0 40 40"><path d="M13 15h14l-1.4 14a2 2 0 0 1-2 1.8h-7.2a2 2 0 0 1-2-1.8z" fill="none" stroke="oklch(0.80 0.01 258)" stroke-width="2.4"/><path d="M11 15h18M17 11h6" stroke="oklch(0.80 0.01 258)" stroke-width="2.4" stroke-linecap="round"/></svg></div>
+    </div></div>
+  </div>
+
+  <div style="display: flex; gap: 30px; margin-top: 22px;">
+    <div class="note" style="flex: 1;">
+      <b style="color: oklch(0.88 0.006 258);">底色三档 · 取代小圆点</b>
+      <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px;">
+        <div style="display: flex; align-items: center; gap: 9px;"><span class="sw" style="background: transparent; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.10);"></span><span>无底 —— 固定但未运行，就是个启动器</span></div>
+        <div style="display: flex; align-items: center; gap: 9px;"><span class="sw" style="background: rgba(255,255,255,0.10); box-shadow: inset 0 0 0 0.5px rgba(255,255,255,0.13);"></span><span>浅底 —— 有窗口 / 在运行</span></div>
+        <div style="display: flex; align-items: center; gap: 9px;"><span class="sw" style="background: rgba(255,255,255,0.22); box-shadow: inset 0 0.5px 0 rgba(255,255,255,0.36);"></span><span>亮底 —— 当前前台窗口</span></div>
+        <div style="margin-top: 4px;">同一属性的三个档位，不是三种符号。不占额外一行，因此不存在对齐问题。</div>
+      </div>
+    </div>
+    <div class="note" style="flex: 1;">
+      <b style="color: oklch(0.88 0.006 258);">宽度降级阶梯</b>
+      <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 8px;">
+        <div>① 常驻标签，每窗口约 130pt。</div>
+        <div>② 内容宽度超过屏幕阈值 → 全部组一起收起为「图标 + 数量」，约 70pt/组，悬停单独展开。<b style="color: oklch(0.80 0.008 258);">全体一起切</b>，逐组切会让宽度随窗口切换不停抖。</div>
+        <div>③ 仍超 → 整体缩放至 28pt 下限。先砍文字再砍尺寸：文字 9pt 就没法看，图标 28pt 还认得出。</div>
+        <div>④ 仍超 → 横向滚动。</div>
+      </div>
+    </div>
+    <div class="note" style="flex: 0.8;">
+      <b style="color: oklch(0.88 0.006 258);">分隔线只隔「不是窗口的东西」</b>
+      <div style="margin-top: 8px;">最左的启动台、最右的固定文件夹与垃圾桶各用一条竖线隔开。<b style="color: oklch(0.80 0.008 258);">固定 App 的窗口和未固定 App 的窗口之间不隔线</b>——「我固定过它」是你的元数据，不是窗口的属性，用线把窗口分成两等只会干扰找窗口本身。</div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

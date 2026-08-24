@@ -1,0 +1,50 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.14902,0.16863,0.20000,1.00000",
+      "srgb:0.08235,0.09412,0.11373,1.00000"
+    ],
+    "orientation" : {
+      "start" : {
+        "x" : 0.5,
+        "y" : 0
+      },
+      "stop" : {
+        "x" : 0.5,
+        "y" : 0.7
+      }
+    }
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "layer4-amber.svg",
+          "name" : "layer4-amber"
+        },
+        {
+          "image-name" : "layer3-slots.svg",
+          "name" : "layer3-slots"
+        },
+        {
+          "image-name" : "layer2-slab.svg",
+          "name" : "layer2-slab"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
