@@ -85,8 +85,6 @@ final class BarModel: ObservableObject {
     private let tilePlugins = DockTilePlugins()
     private let badgeReader = BadgeReader()
     private let settings = SettingsWindowController()
-    /// 本会话开过窗口的 App。用于「窗口全关了但进程还在」时保住槽位。
-    private var everHadWindows = Set<AppKey>()
     private var pendingApps = Set<pid_t>()
     private var coalesceScheduled = false
     private var suppressReadySync = false
@@ -163,8 +161,6 @@ final class BarModel: ObservableObject {
             observers.stop(pid: pid)
             store.removeApp(pid: pid)
             activityCenter.remove(pid: pid)
-            if let id = bundleID(of: pid) { everHadWindows.remove(.bundle(id)) }
-            everHadWindows.remove(.process(pid))
             publish()
         }
         center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -566,20 +562,16 @@ final class BarModel: ObservableObject {
     private func rebuildItems() {
         // 开出窗口即到达，弹跳该收了——但要等这一轮跳完，见 landBounce
         for id in windows.compactMap(\.bundleID) where launching.contains(id) { landBounce(id) }
-        for window in windows {
-            everHadWindows.insert(window.bundleID.map(AppKey.bundle) ?? .process(window.pid))
-        }
-        // 「保留」只给 regular App——这正是系统程序坞自己的判据：LSUIElement（accessory）
-        // 的 App 从来不进程序坞。只判「进程还活着」的后果是菜单栏 App 开一次面板就永久占位
-        // （Stats 的弹窗、调度中心里的程序坞、Clash Verge 关掉窗口之后）。
+        // 留位判据就是系统程序坞自己的判据：运行中的 regular App。LSUIElement（accessory）
+        // 的 App 不在其列，所以 Stats、Clash Verge 这些窗口全关之后不留位——但它们的真窗口
+        // 照常进条（§4），变的只是关完之后不替它们守位置。
         //
-        // 注意这不影响「有窗口时露面」：accessory App 的真窗口照常进条（§4），
-        // 变的只是窗口全关之后不再替它守位置。
-        let retained = everHadWindows.filter {
-            guard case .bundle(let id) = $0 else { return false }
-            return NSRunningApplication.runningApplications(withBundleIdentifier: id)
-                .contains { $0.activationPolicy == .regular }
-        }
+        // 这里刻意不累积「本会话开过窗口」。那样的集合只能靠亲眼看见窗口来增长，Dockline
+        // 一重启就清零，微信、QQ 这类关掉窗口但进程还在的 App 要等用户用别的方式再开一次
+        // 窗口才回得来。留位状态必须当场从世界推导，不能攒——攒出来的东西都过不了重启。
+        let retained = Set(NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { $0.bundleIdentifier.map(AppKey.bundle) })
         // 正在启动的 App 也占一个位置，哪怕它既没被固定、这个会话里也还没开过窗口——
         // 否则「启动中」这个状态无处可画，弹跳等于不存在。系统程序坞也是这么做的：
         // 启动的一瞬间就插一格进去，窗口出来之后原地变成它的窗口格（id 不变，见 BarItem.id）。
