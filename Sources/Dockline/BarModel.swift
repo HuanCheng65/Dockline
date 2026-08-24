@@ -266,6 +266,7 @@ final class BarModel: ObservableObject {
         for window in store.windows {
             guard let element = window.element else { continue }
             observers.watch(window: element, pid: window.pid)
+            corrector.note(wid: window.id, element: element)
         }
         diagnostics.watchedProcesses = observers.watchedProcessCount
         diagnostics.unclaimedWindows = store.windows.count { $0.element == nil }

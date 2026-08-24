@@ -110,6 +110,19 @@ final class TilingCorrector {
 
     private var pending: [CGWindowID: DispatchWorkItem] = [:]
     private var lastWrite: [CGWindowID: Date] = [:]
+    /// 用户自己把窗口放在哪儿。缩放的还原点。
+    private var placed: [CGWindowID: CGRect] = [:]
+    /// 纠正后写下去的矩形，按窗口。存在即表示这个窗口此刻是被纠正过的状态。
+    private var corrected: [CGWindowID: CGRect] = [:]
+
+    /// 记下窗口被发现时所在的位置。
+    ///
+    /// 还原要用，而窗口在第一次被缩放之前不一定发生过任何几何变化——那时订阅它的
+    /// 这一刻就是唯一的记录机会。已经记过的不再读，稳态 tick 上的 AX 探测因此仍为 0。
+    func note(wid: CGWindowID, element: AXUIElement) {
+        guard enabled, placed[wid] == nil, let rect = axRect(element) else { return }
+        placed[wid] = flipY(rect)
+    }
 
     func handle(_ element: AXUIElement) {
         guard enabled, let wid = windowID(of: element).id else { return }
@@ -126,34 +139,58 @@ final class TilingCorrector {
         let frame = flipY(rect)                                     // AppKit 系
         let center = CGPoint(x: frame.midX, y: frame.midY)
         guard let display = NSScreen.screens.first(where: { $0.frame.contains(center) }),
-              displayID(display) == barDisplay else { return }
+              displayID(display) == barDisplay else {
+            placed[wid] = frame
+            corrected[wid] = nil
+            return
+        }
         let barTop = display.frame.minY + BarMetrics.reservedBottom
-        // 底边已经在 bar 之上，没有要纠正的
-        guard frame.minY < barTop - 1 else { return }
-
         let candidates = tilingRects(of: display)
-        guard candidates.contains(where: { near($0, frame, within: Self.tolerance) }) else {
-            if let miss = candidates.first(where: { near($0, frame, within: Self.nearMiss) }) {
+        let onCandidate = candidates.contains { near($0, frame, within: Self.tolerance) }
+
+        // 纠正过的窗口又落回落点，只可能是用户再次触发了缩放，而那是「还原」的意思。
+        // 系统自己的还原此刻已经指望不上：底边被抬起来之后，窗口的 frame 不再等于系统
+        // 认定的缩放矩形，AppKit 据此判定它没缩放过，于是再缩放一次、并把自己记的还原点
+        // 覆盖成纠正后的矩形——原尺寸就此永久丢失。还原语义因此得由这里承担。
+        if onCandidate, corrected[wid] != nil, let origin = placed[wid] {
+            corrected[wid] = nil
+            write(origin, to: element, wid: wid, as: "还原")
+            return
+        }
+        guard onCandidate else {
+            // 纠正后的位置不是用户放的，不能当作还原点
+            if let goal = corrected[wid], near(goal, frame, within: Self.tolerance) { return }
+            placed[wid] = frame
+            corrected[wid] = nil
+            if frame.minY < barTop - 1,
+               let miss = candidates.first(where: { near($0, frame, within: Self.nearMiss) }) {
                 Timeline.log("纠正未命中 wid \(wid)：实际 \(frame)，最近的落点 \(miss)")
             }
             return
         }
+        // 底边已经在 bar 之上，没有要纠正的
+        guard frame.minY < barTop - 1 else { return }
 
-        var corrected = frame
-        corrected.size.height -= barTop - frame.minY
-        corrected.origin.y = barTop
+        var goal = frame
+        goal.size.height -= barTop - frame.minY
+        goal.origin.y = barTop
+        corrected[wid] = goal
+        write(goal, to: element, wid: wid, as: "纠正")
+    }
+
+    private func write(_ goal: CGRect, to element: AXUIElement, wid: CGWindowID, as what: String) {
         lastWrite[wid] = Date()
         do {
-            let outcome = try setFrame(element, to: flipY(corrected))
+            let outcome = try setFrame(element, to: flipY(goal))
             if outcome.fits {
-                Timeline.log("纠正 wid \(wid) → \(corrected)")
+                Timeline.log("\(what) wid \(wid) → \(goal)")
             } else {
                 // 未正确实现 AX 位置写入的 App 改不动，这是该功能的已知失败模式。
-                Timeline.log("⚠️ 纠正未生效 wid \(wid)：目标 \(corrected)，"
+                Timeline.log("⚠️ \(what)未生效 wid \(wid)：目标 \(goal)，"
                              + "实际 \(outcome.after.map { flipY($0) }.map(String.init(describing:)) ?? "读不回")")
             }
         } catch {
-            Timeline.log("⚠️ 纠正失败 wid \(wid)：\(error)")
+            Timeline.log("⚠️ \(what)失败 wid \(wid)：\(error)")
         }
     }
 
