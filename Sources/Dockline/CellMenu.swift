@@ -1,4 +1,5 @@
 import AppKit
+import DocklineCore
 
 /// 带闭包的菜单项。NSMenuItem 只认 target/action，这里把闭包包成一个自持有的项。
 final class ActionItem: NSMenuItem {
@@ -33,9 +34,16 @@ extension BarModel {
         guard let id = menuZone(at: point) else {
             return barContains(point) ? globalMenu() : nil
         }
-        guard let item = barItems.first(where: { $0.id == id }) else { return nil }
         let menu = NSMenu()
         menu.autoenablesItems = false
+        // 浮层里的窗口（簇扇面、标签面板、溢出面板）。它们不在条上，但仍然是窗口，
+        // 菜单与条上的格子一致——收进溢出区不该让一个窗口失去它的操作。
+        if let wid = Self.panelWindow(id) {
+            guard let window = windows.first(where: { $0.id == wid }) else { return nil }
+            addWindow(window, to: menu)
+            return menu
+        }
+        guard let item = barItems.first(where: { $0.id == id }) else { return nil }
         switch item {
         case .launcher(let url):
             menu.addItem(ActionItem("打开") { [weak self] in self?.open(url) })
@@ -56,22 +64,32 @@ extension BarModel {
         case .cluster(let cluster):
             addCluster(cluster, to: menu)
         case .window(let cell):
-            addWindow(cell, to: menu)
+            addWindow(cell.window, to: menu)
         case .dormant(let app):
             menu.addItem(ActionItem("打开") { [weak self] in self?.launch(app) })
             menu.addItem(.separator())
             addApp(pid: app.pid, bundleID: app.bundleID, url: app.url, to: menu)
-        case .separator, .notice, .overflow:
+        case .overflow:
+            // 溢出入口是 Dockline 自己的控件，和启动台一样带自身的菜单项
+            addGlobal(to: menu, leading: false)
+        case .separator, .notice:
             return nil
         }
         return menu
     }
 
+    /// 浮层里的窗口卡登记的 id 形如 `panel.w<窗口号>`，见 `BarContent`。
+    private static func panelWindow(_ id: String) -> CGWindowID? {
+        guard id.hasPrefix("panel.w") else { return nil }
+        return CGWindowID(id.dropFirst("panel.w".count))
+    }
+
     // MARK: 各段
 
-    private func addWindow(_ cell: BarWindow, to menu: NSMenu) {
-        menu.addItem(ActionItem("铺满") { [weak self] in self?.fill(cell.window) })
-        menu.addItem(ActionItem("关闭窗口") { [weak self] in self?.close(cell.window) })
+    /// 入参是窗口本身而不是条上的格子：浮层里的窗口没有格子，菜单却该一模一样。
+    private func addWindow(_ cell: IndexedWindow, to menu: NSMenu) {
+        menu.addItem(ActionItem("铺满") { [weak self] in self?.fill(cell) })
+        menu.addItem(ActionItem("关闭窗口") { [weak self] in self?.close(cell) })
         if clusters.clusterID(of: cell.id) != nil {
             menu.addItem(ActionItem("移出编组") { [weak self] in self?.detachFromCluster(cell.id) })
         }

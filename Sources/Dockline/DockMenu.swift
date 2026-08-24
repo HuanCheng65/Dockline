@@ -23,8 +23,10 @@ enum DockMenu {
         let children: [Item]
     }
 
-    /// 等菜单元素出现 / 等条目填满的上限。实测各 20ms 与 45ms，留足余量。
-    private static let timeout = 1.0
+    /// 等菜单元素出现 / 等条目填满的上限。实测各 20ms 与 45ms，这里留一个数量级的余量。
+    /// 不能再宽：两轮等待加消息超时是叠加的，App 卡住时用户要等这么多倍才见到菜单，
+    /// 而右键的响应延迟是最敏感的。等不到就没有动态项，菜单其余部分照常成立。
+    private static let timeout = 0.4
     private static let step = 0.02
 
     // MARK: 系统项的标题

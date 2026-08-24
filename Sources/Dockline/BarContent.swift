@@ -56,7 +56,8 @@ struct BarContent: View {
     private static let panelDwell: TimeInterval = 0.22
 
     private static let barSpace = "moor.bar"
-    private static let rootSpace = "moor.root"
+    /// 浮层也要按这个坐标系报位置（见 `WindowPanel`），因此不是 private
+    static let rootSpace = "moor.root"
 
     @StateObject private var thumbnails = Thumbnails()
     /// 指针停在某个窗口格上超过 dwell 后要预览的目标
@@ -105,6 +106,7 @@ struct BarContent: View {
                                     else if hoveredItem == key { hoveredItem = nil }
                                 },
                                 onRecall: { model.recall($0) },
+                                onMenuZone: { model.setMenuZone("panel.w\($0)", $1) },
                                 metrics: layout.metrics,
                                 drag: panelDrag)
                         // 量尺寸与悬停判定都必须挂在 .position 之前。`.position` 交回来的是

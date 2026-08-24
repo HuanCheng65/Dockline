@@ -176,6 +176,8 @@ struct WindowPanel: View {
     let hovered: (CGWindowID) -> Bool
     let onHover: (CGWindowID, Bool) -> Void
     let onRecall: (IndexedWindow) -> Void
+    /// 每张卡片在根坐标系里的位置，供右键落点判定；消失时传 nil
+    let onMenuZone: (CGWindowID, CGRect?) -> Void
     let metrics: BarMetrics
     let drag: DragBinding
 
@@ -289,6 +291,9 @@ struct WindowPanel: View {
         .background { BackingFill(backing: hovered(cell.id) ? .light : .none,
                                   radius: Self.cardRadius) }
         .contentShape(Rectangle())
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarContent.rootSpace)) }
+            action: { onMenuZone(cell.id, $0) }
+        .onDisappear { onMenuZone(cell.id, nil) }
         .onHover { onHover(cell.id, $0) }
         .onTapGesture { onRecall(cell.window) }
     }
