@@ -136,7 +136,7 @@ private struct DockTab: View {
                             .foregroundStyle(.green)
                     }
                     Button("恢复系统程序坞") { model.restoreSystemDock() }
-                    Text("恢复后，系统程序坞的自动隐藏、唤出延迟与图标跳动将回到接管前的设置。")
+                    Text("恢复后，系统程序坞的位置、自动隐藏、唤出延迟与图标跳动将回到接管前的设置。")
                         .font(.callout).foregroundStyle(.secondary)
                     Text("如果已移除 Dockline，可在「终端」中执行以下命令恢复：")
                         .font(.callout).foregroundStyle(.secondary)
@@ -150,7 +150,9 @@ private struct DockTab: View {
                     Text("系统程序坞会在指针移到屏幕底部时滑出，与 Dockline 重叠。")
                         .font(.callout).foregroundStyle(.secondary)
                     Button("隐藏系统程序坞") { model.suppressSystemDock() }
-                    Text("将开启自动隐藏、把唤出延迟设为极大值，并关闭图标跳动。原有设置会被记录，可随时恢复。")
+                    Text("将把系统程序坞移到屏幕左侧、开启自动隐藏、把唤出延迟设为极大值，并关闭图标跳动。"
+                         + "移到左侧是因为全屏时底部的唤出无法关闭，只能让它避开 Dockline。"
+                         + "原有设置会被记录，可随时恢复。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
