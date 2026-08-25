@@ -232,6 +232,7 @@ final class BarModel: ObservableObject {
     func setBarFrame(_ rect: CGRect) {
         guard rect != barFrame else { return }
         barFrame = rect
+        barHitFrame = anchored(rect)
         sampleBackdrop()
     }
 
@@ -317,28 +318,60 @@ final class BarModel: ObservableObject {
         if !value { sampleBackdrop() }
     }
 
-    // MARK: 拖入文件
+    // MARK: 命中区
     //
-    // 落点由视图侧登记（SwiftUI 根坐标系），命中判定与执行都在这里，
-    // 因为收拖放的是面板的 contentView，它只知道坐标。
+    // 落点由视图侧登记（SwiftUI 根坐标系，左上原点），命中判定与执行都在这里，
+    // 因为收拖放与右键的是面板的 contentView，它只知道坐标。
+    //
+    // **一律换算成「离面板底边多远」再存。** 面板会按需长高——浮层要用到条以上的空间，
+    // 而条钉在底边上，所以离底边的距离不随高度变，按左上原点存则会整体偏掉一个高度差。
+    // 这不是理论问题：拖拽经过条上的格子会浮出预览、面板当场长高，而视图侧的矩形要等
+    // 下一轮布局才重新上报，那几毫秒里松手就是一次落空，文件原地飞回去（实测复现）。
+    // AppKit 交给我们的落点本来就是从窗口底边量的，两边都不再碰 `bounds.height`，
+    // 这个竞态窗口就不存在了，也不必在改高度时作废任何东西。
 
-    /// 可接收文件的项：项 id -> 它在面板里的位置
+    /// 面板当前的高度，由 `BarPanel` 在改几何时先一步报上来。
+    private var panelHeight: CGFloat = 0
+
+    /// 可接收文件的项：项 id -> 它离面板底边的位置
     private var dropZones: [String: CGRect] = [:]
     /// 右键命中区。与拖放区分开：每一格都能有菜单，拖放只认文件夹与废纸篓。
     private var menuZones: [String: CGRect] = [:]
+    /// 条自己的命中区，供「右键落在条的空白处」判定。
+    private var barHitFrame: CGRect = .zero
     /// 正被拖拽悬停的项——不给高亮的话，用户不知道松手会掉进哪儿
     @Published private(set) var fileDropTarget: String?
 
+    func setPanelHeight(_ height: CGFloat) {
+        panelHeight = height
+    }
+
+    /// 左上原点的根坐标 → 离底边的距离。
+    private func anchored(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX, y: panelHeight - rect.maxY,
+               width: rect.width, height: rect.height)
+    }
+
     func setDropZone(_ id: String, _ rect: CGRect?) {
-        if let rect { dropZones[id] = rect } else { dropZones[id] = nil }
+        dropZones[id] = rect.map(anchored)
     }
 
     func dropZone(at point: CGPoint) -> String? {
         dropZones.first { $0.value.contains(point) }?.key
     }
 
+    /// 落空时把登记在册的接收区一并记下来。只记落点说不出问题出在哪一侧——
+    /// 是指针没落进去，还是这一格根本没登记上。
+    var dropZoneReport: String {
+        guard !dropZones.isEmpty else { return "一个都没登记" }
+        return dropZones.sorted { $0.key < $1.key }.map { id, rect in
+            String(format: "%@ x %.0f–%.0f y %.0f–%.0f",
+                   id, rect.minX, rect.maxX, rect.minY, rect.maxY)
+        }.joined(separator: "  ")
+    }
+
     func setMenuZone(_ id: String, _ rect: CGRect?) {
-        if let rect { menuZones[id] = rect } else { menuZones[id] = nil }
+        menuZones[id] = rect.map(anchored)
     }
 
     func menuZone(at point: CGPoint) -> String? {
@@ -346,7 +379,7 @@ final class BarModel: ObservableObject {
     }
 
     func barContains(_ point: CGPoint) -> Bool {
-        barFrame.contains(point)
+        barHitFrame.contains(point)
     }
 
     func setFileDropTarget(_ id: String?) {

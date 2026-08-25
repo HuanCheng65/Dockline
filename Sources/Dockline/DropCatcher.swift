@@ -15,6 +15,11 @@ final class DropCatcher: NSView {
     var hover: ((String?) -> Void)?
     /// 松手。返回 false 表示没接住。
     var drop: ((String, [URL]) -> Bool)?
+    /// 登记在册的接收区。只在落空时读一次，用来分辨「落点不对」和「接收区不对」。
+    var zoneReport: (() -> String)?
+
+    /// 上一次命中的目标。只在变化时记一笔——拖拽移动是连续事件，逐条记会把日志淹掉。
+    private var lastTarget: String??
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -24,10 +29,10 @@ final class DropCatcher: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("不从 nib 加载") }
 
-    /// AppKit 的原点在左下，SwiftUI 的在左上。
+    /// 落点按「离窗口底边多远」交出去，与命中区的存法一致（见 `BarModel` 的命中区一节）。
+    /// 不换算成左上原点：那一步要减去 `bounds.height`，而面板的高度是会变的。
     private func point(_ sender: NSDraggingInfo) -> CGPoint {
-        let local = convert(sender.draggingLocation, from: nil)
-        return CGPoint(x: local.x, y: bounds.height - local.y)
+        convert(sender.draggingLocation, from: nil)
     }
 
     private func urls(_ sender: NSDraggingInfo) -> [URL] {
@@ -40,16 +45,24 @@ final class DropCatcher: NSView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let target = zone?(point(sender))
+        let location = point(sender)
+        let target = zone?(location)
+        if lastTarget != target {
+            lastTarget = target
+            Timeline.log(String(format: "拖放经过  目标 %@  位置 (%.0f, %.0f)",
+                                target ?? "—", location.x, location.y))
+        }
         hover?(target)
         return target == nil ? [] : .move
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        lastTarget = nil
         hover?(nil)
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
+        lastTarget = nil
         hover?(nil)
     }
 
@@ -57,7 +70,9 @@ final class DropCatcher: NSView {
         let location = point(sender)
         let files = urls(sender)
         guard let target = zone?(location), !files.isEmpty else {
-            Timeline.log("⚠️ 拖放落空  位置 \(location)  文件 \(files.count) 个")
+            Timeline.log(String(format: "⚠️ 拖放落空  位置 (%.1f, %.1f)  文件 %d 个  接收区 %@",
+                                location.x, location.y, files.count,
+                                zoneReport?() ?? "（没登记）"))
             return false
         }
         Timeline.log("拖放松手  目标 \(target)  \(files.count) 个文件")

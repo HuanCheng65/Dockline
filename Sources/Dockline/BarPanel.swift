@@ -61,6 +61,7 @@ final class BarPanel: NSPanel {
         catcher.zone = { [weak model] point in model?.dropZone(at: point) }
         catcher.hover = { [weak model] id in model?.setFileDropTarget(id) }
         catcher.drop = { [weak model] id, urls in model?.acceptDrop(id, urls) ?? false }
+        catcher.zoneReport = { [weak model] in model?.dropZoneReport ?? "（模型已释放）" }
         let host = NSHostingView(rootView: BarContent(model: model))
         host.frame = catcher.bounds
         host.autoresizingMask = [.width, .height]
@@ -80,8 +81,8 @@ final class BarPanel: NSPanel {
     /// 用户真正右键的这一刻构造。落在透明区域时 `model.menu` 返回 nil，照常向下分发。
     override func sendEvent(_ event: NSEvent) {
         if event.type == .rightMouseDown, let contentView {
-            let local = contentView.convert(event.locationInWindow, from: nil)
-            let point = CGPoint(x: local.x, y: contentView.bounds.height - local.y)
+            // 落点按「离底边多远」交出去，与命中区的存法一致（见 `BarModel` 的命中区一节）
+            let point = contentView.convert(event.locationInWindow, from: nil)
             if let menu = model.menu(at: point) {
                 NSMenu.popUpContextMenu(menu, with: event, for: contentView)
                 return
@@ -125,6 +126,8 @@ final class BarPanel: NSPanel {
     /// 面板几何与窗口数无关，只跟屏和浮层的需要走。
     private func apply() {
         let height = expanded ? Self.panelHeight : Self.compactHeight
+        // 必须先于 setFrame：视图侧随后上报的矩形要按这个高度换算成离底边的距离
+        model.setPanelHeight(height)
         let frame = homeScreen.frame
         model.availableWidth = homeScreen.visibleFrame.width
         model.setBarDisplay(displayID(homeScreen))
