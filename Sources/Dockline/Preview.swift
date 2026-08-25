@@ -102,8 +102,15 @@ struct PreviewCard: View {
     private static let appNameHeight: CGFloat = 14
     /// 只报名字那一档的高度
     static let nameHeight: CGFloat = 26
-    private static var textHeight: CGFloat {
-        textInset * 2 + titleHeight + 2 + appNameHeight
+    private static func textHeight(showsAppName: Bool) -> CGFloat {
+        textInset * 2 + titleHeight + (showsAppName ? 2 + appNameHeight : 0)
+    }
+
+    /// App 名与窗口标题一模一样时不报第二遍——「访达 / 访达」两行说的是同一件事。
+    /// 窗口只有一个、标题就是 App 名的程序（访达、系统设置、计算器）天天会撞上。
+    private static func showsAppName(_ title: String, _ detail: Detail?) -> Bool {
+        guard let detail else { return false }
+        return detail.appName != title
     }
 
     /// 缩略图的圆角与卡片同心——外圆角减去这一圈内边距，两条弧才是平行的。
@@ -129,7 +136,8 @@ struct PreviewCard: View {
         }
         let image = imageSize(detail.image)
         return CGSize(width: min(maxWidth, max(minWidth, image.width + pad * 2)),
-                      height: image.height + pad * 2 + textHeight)
+                      height: image.height + pad * 2
+                          + textHeight(showsAppName: showsAppName(title, detail)))
     }
 
     var body: some View {
@@ -143,7 +151,7 @@ struct PreviewCard: View {
                     .truncationMode(.tail)
                     .frame(height: detail == nil ? Self.nameHeight : Self.titleHeight,
                            alignment: detail == nil ? .center : .topLeading)
-                if let detail {
+                if let detail, Self.showsAppName(title, detail) {
                     Text(detail.appName)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)

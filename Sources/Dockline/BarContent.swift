@@ -57,6 +57,9 @@ struct BarContent: View {
     @State private var panelHide: DispatchWorkItem?
     /// 从面板里往外拖的窗口
     @State private var overflowAnchor: CGFloat = 0
+    /// 浮层的上一档，用来撑过「旧的没了、新的还没到」那一帧。见 `body`。
+    @State private var lingering: FloatStage?
+    @State private var lingerWork: DispatchWorkItem?
     /// 键盘选中那块底色在格与格之间滑动所需的命名空间
     @Namespace private var keyFocus
     /// 当前这个浮层是键盘切换开的，不是悬停开的。收的时候要认这一点：
@@ -91,6 +94,11 @@ struct BarContent: View {
 
     var body: some View {
         let layout = model.layout()
+        // 收场留一拍：指针从一格挪到另一格时，先来「离开旧格」再来「进入新格」，
+        // 夹在中间那一帧两头都不成立。照那一帧办事，浮层会被整个撤掉再重新长出来，
+        // 看起来就是闪一下。`lingering` 让它把这一帧撑过去。
+        let live = floatStage(layout)
+        let stage = live ?? lingering
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
                 // 面板占满屏幕底部整条；全透明像素不参与命中测试，点击直接穿透到下方窗口
@@ -100,7 +108,7 @@ struct BarContent: View {
                     .offset(y: model.hidden ? BarMetrics.barHeight + BarMetrics.bottomGap + 6 : 0)
                     .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.hidden)
                     .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
-                if let stage = floatStage(layout) {
+                if let stage {
                     let size = floatSize(stage, in: geometry.size, layout: layout)
                     floatContent(stage, in: layout, available: geometry.size.width)
                         // 底边对齐：浮层贴着条的上沿往上长，长大缩小时下面这条边不动，
@@ -168,6 +176,14 @@ struct BarContent: View {
             // 停在一格上犹豫，就把带缩略图的预览卡长出来——键盘与指针最终落到同一处。
             // 一路划过去时不截图：那会把按需的缩略图变成常驻采样（§2）。
             // 选中不动、只是刚显形也算一次「停稳」，所以两个来源都要听。
+            .onChange(of: live) { _, current in
+                lingerWork?.cancel()
+                lingerWork = nil
+                guard current == nil else { lingering = current; return }
+                let work = DispatchWorkItem { lingering = nil }
+                lingerWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.lingerGrace, execute: work)
+            }
             .onChange(of: model.keySelection) { _, _ in syncKeyPreview(layout) }
             .onChange(of: model.keyVisible) { _, _ in syncKeyPreview(layout) }
             // 名牌与选中底色换一格都是滑过去，不是这边灭那边亮——
@@ -655,6 +671,8 @@ struct BarContent: View {
 
     /// 条与浮层之间那道缝。三档共用一个值——各留各的，换档时浮层会上下跳一下。
     private static let floatGap: CGFloat = 9
+    /// 浮层收场前的宽限。只需要盖住事件之间那一两帧，不是让它赖着不走。
+    private static let lingerGrace: TimeInterval = 0.1
 
     private struct FloatStage: Equatable {
         enum Kind: Equatable {
@@ -685,42 +703,35 @@ struct BarContent: View {
     }
 
     private func floatSize(_ stage: FloatStage, in size: CGSize, layout: BarLayout) -> CGSize {
+        guard case .list(let kind) = stage.kind else {
+            return PreviewCard.size(title: cardTitle(stage), detail: cardDetail(stage))
+        }
+        guard let content = panelContent(kind, in: layout) else { return .zero }
+        return CGSize(width: WindowPanel.width(content.windows.count, available: size.width),
+                      height: WindowPanel.height(content.windows.count, available: size.width))
+    }
+
+    private func cardTitle(_ stage: FloatStage) -> String {
         switch stage.kind {
-        case .name(let text):
-            return PreviewCard.size(title: text, detail: nil)
-        case .preview(let target):
-            return PreviewCard.size(title: target.window.title, detail: detail(of: target))
-        case .list(let kind):
-            guard let content = panelContent(kind, in: layout) else { return .zero }
-            return CGSize(width: WindowPanel.width(content.windows.count, available: size.width),
-                          height: WindowPanel.height(content.windows.count, available: size.width))
+        case .name(let text): return text
+        case .preview(let target): return target.window.title
+        case .list: return ""
         }
     }
 
-    private func detail(of target: PreviewTarget) -> PreviewCard.Detail {
-        PreviewCard.Detail(window: target.window,
-                           appName: target.appName,
-                           image: thumbnails.images[target.window.id],
-                           unavailable: thumbnails.unavailable.contains(target.window.id))
+    /// nil = 还只是名字那一档
+    private func cardDetail(_ stage: FloatStage) -> PreviewCard.Detail? {
+        guard case .preview(let target) = stage.kind else { return nil }
+        return PreviewCard.Detail(window: target.window,
+                                  appName: target.appName,
+                                  image: thumbnails.images[target.window.id],
+                                  unavailable: thumbnails.unavailable.contains(target.window.id))
     }
 
     @ViewBuilder
     private func floatContent(_ stage: FloatStage, in layout: BarLayout,
                               available: CGFloat) -> some View {
-        switch stage.kind {
-        case .name(let text):
-            PreviewCard(title: text, detail: nil)
-        case .preview(let target):
-            PreviewCard(title: target.window.title, detail: detail(of: target))
-                // 缩略图的刷新跟着这一档走，换档时随视图一起注销
-                .task(id: target.window.id) {
-                    while !Task.isCancelled {
-                        try? await Task.sleep(for: .seconds(1.2))
-                        guard !Task.isCancelled else { return }
-                        thumbnails.capture(target.window.id)
-                    }
-                }
-        case .list(let kind):
+        if case .list(let kind) = stage.kind {
             if let content = panelContent(kind, in: layout) {
                 WindowPanel(windows: content.windows,
                             heading: content.heading,
@@ -743,6 +754,20 @@ struct BarContent: View {
                             metrics: layout.metrics,
                             drag: panelDrag)
             }
+        } else {
+            // 名字与预览必须落在同一个分支里。分成两个分支，SwiftUI 就当它们是两棵树，
+            // 换档时只剩互相淡入淡出可做——那正是「闪一下」。同一棵树，标题才是同一个
+            // Text、待在同一个位置，缩略图从它上方长出来。
+            // `.task` 也必须无条件挂：只挂在其中一档上，修饰符链一变，identity 照样断。
+            PreviewCard(title: cardTitle(stage), detail: cardDetail(stage))
+                .task(id: cardDetail(stage)?.window.id) {
+                    guard let id = cardDetail(stage)?.window.id else { return }
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(1.2))
+                        guard !Task.isCancelled else { return }
+                        thumbnails.capture(id)
+                    }
+                }
         }
     }
 
