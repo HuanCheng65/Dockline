@@ -11,8 +11,8 @@ final class Maximizer {
     /// 铺满前的几何。还原要用，所以必须在铺满的那一刻记下来。
     private var restore: [CGWindowID: CGRect] = [:]
 
-    /// bar 所在的那块屏。只有它要扣掉 bar 的高度——别的屏上 bar 不存在（多显示器见 M5）。
-    var barDisplay: CGDirectDisplayID?
+    /// 有 bar 的那些屏。只有它们要扣掉 bar 的高度。
+    var barDisplays: Set<CGDirectDisplayID> = []
 
     /// 铺满；已经铺满则还原。
     func toggle(_ window: IndexedWindow) {
@@ -70,7 +70,7 @@ final class Maximizer {
     /// 目标矩形。visibleFrame 已经排除了菜单栏，刘海机型的菜单栏本身就高于刘海，顶边无需另算。
     private func target(on display: NSScreen) -> CGRect {
         var area = display.visibleFrame
-        if displayID(display) == barDisplay {
+        if let id = displayID(display), barDisplays.contains(id) {
             let barTop = display.frame.minY + BarMetrics.reservedBottom
             if area.minY < barTop {
                 area.size.height -= barTop - area.minY
@@ -90,7 +90,7 @@ final class Maximizer {
 /// 默认关闭，因为它修改的是别的 App 的窗口。
 final class TilingCorrector {
     var enabled = false
-    var barDisplay: CGDirectDisplayID?
+    var barDisplays: Set<CGDirectDisplayID> = []
 
     /// 等几何静止再判。拖拽改尺寸的过程中通知是连续的，逐条判会一路纠正一路打架。
     private static let settle: TimeInterval = 0.12
@@ -134,7 +134,7 @@ final class TilingCorrector {
         let frame = flipY(rect)                                     // AppKit 系
         let center = CGPoint(x: frame.midX, y: frame.midY)
         guard let display = NSScreen.screens.first(where: { $0.frame.contains(center) }),
-              displayID(display) == barDisplay else {
+              let id = displayID(display), barDisplays.contains(id) else {
             placed[wid] = frame
             corrected[wid] = nil
             return

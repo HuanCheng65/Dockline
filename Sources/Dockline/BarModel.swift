@@ -19,8 +19,6 @@ final class BarModel: ObservableObject {
     @Published private(set) var floatScheme: ColorScheme = .light
     /// 全屏场景自动隐藏（计划书 §4）。触底唤出时置回 false。
     @Published private(set) var hidden = false
-    /// 条正在换屏：先滑下去，挪好了再滑上来。
-    @Published private(set) var sliding = false
     /// 调度中心期间让位。它是这套压制里的逃生口：MC 一开系统程序坞无条件出现，
     /// 而我们的面板浮在它上面，不让开就把逃生口挡死了。
     @Published private(set) var yielding = false
@@ -38,13 +36,10 @@ final class BarModel: ObservableObject {
     /// 这条 bar 所在的屏。
     private(set) var display: CGDirectDisplayID?
 
-    /// 该把条搬到哪块屏。面板的几何归 BarPanel 管，这里只发信号。
-    var onFollowScreen: ((NSScreen) -> Void)?
-    /// 浮层要不要用到条以上的空间。面板的几何同样归 BarPanel 管。
+    /// 浮层要不要用到条以上的空间。面板的几何归 BarPanel 管。
     var onFloatRoom: ((Bool) -> Void)?
     private var roomRelease: DispatchWorkItem?
     private var dwell: DispatchWorkItem?
-    private var moveDwell: DispatchWorkItem?
     private var inFullscreenSpace = false
     /// event tap 为防转场闪烁而预先藏过条；Space 通知到达后要无条件校正一次可见性。
     private var fullscreenPredictionPending = false
@@ -171,29 +166,23 @@ final class BarModel: ObservableObject {
         sampleBackdrop()
     }
 
-    /// 盯着指针有两个用处：全屏下的触底唤出，多屏时的搬屏。都用不上就不必挂监听。
-    var wantsPointer: Bool { inFullscreenSpace || NSScreen.screens.count > 1 }
-
-    /// 屏幕接上或拔掉了。
-    func screensChanged() {
-        world.updateMouseMonitor()
-    }
+    /// 盯着指针只为全屏下的触底唤出。不在全屏 Space 里就不必挂监听。
+    var wantsPointer: Bool { inFullscreenSpace }
 
     /// 监听撤掉了，正在计时的停留判定也要一起作废——否则它还会再触发一次，
     /// 而那一次背后已经没有指针位置了。
     func cancelPointerDwell() {
         dwell?.cancel()
         dwell = nil
-        moveDwell?.cancel()
-        moveDwell = nil
     }
 
+    /// 只在全屏 Space 里成立：非全屏时条常驻，指针离开底边不该把它收起来。
+    /// 指针不在本屏时同样不理会——每块屏的条各自唤出。
     func pointerMoved(to point: CGPoint) {
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) else { return }
+        guard inFullscreenSpace,
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
+              displayID(screen) == display else { return }
         let y = point.y - screen.frame.minY
-        followPointer(to: screen, atBottom: y <= Self.revealBand)
-        // 以下只在全屏 Space 里成立：非全屏时条常驻，指针离开底边不该把它收起来
-        guard inFullscreenSpace else { return }
         if hidden {
             guard y <= Self.revealBand else { dwell?.cancel(); dwell = nil; return }
             guard dwell == nil else { return }
@@ -210,24 +199,6 @@ final class BarModel: ObservableObject {
             dwell = nil
             hidden = true
         }
-    }
-
-    /// 条搬到指针所在的那块屏。手势与系统程序坞一致：指针压到那块屏的底边并停一下才搬，
-    /// 路过不算——否则光是把鼠标划过去，条就跟着跑了。
-    private func followPointer(to screen: NSScreen, atBottom: Bool) {
-        guard atBottom, displayID(screen) != display else {
-            moveDwell?.cancel()
-            moveDwell = nil
-            return
-        }
-        guard moveDwell == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            moveDwell = nil
-            onFollowScreen?(screen)
-        }
-        moveDwell = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.dwellDuration, execute: work)
     }
 
     // MARK: 几何与背景亮度
@@ -280,8 +251,7 @@ final class BarModel: ObservableObject {
     /// 采一次条与浮层玻璃板的亮度。单次约 35ms，异步；`BackdropSensor` 内部有 1 秒去抖。
     /// 采的是容器内侧那条纯玻璃，位置由 `BackdropSensor.band` 从容器矩形算出。
     func sampleBackdrop() {
-        // 滑动途中条不在位，这时抓到的是它还没盖住的桌面
-        guard !hidden, !sliding, !yielding, let display else { return }
+        guard !hidden, !yielding, let display else { return }
         if barFrame != .zero {
             backdrop.sample(probe: probe(barFrame), on: display)
         }
@@ -301,8 +271,7 @@ final class BarModel: ObservableObject {
     func setBarDisplay(_ display: CGDirectDisplayID?) {
         let changed = self.display != display
         self.display = display
-        world.maximizer.barDisplay = display
-        world.corrector.barDisplay = display
+        world.refreshBarDisplays()
         guard changed else { return }
         // 条上该有哪些窗口，是按这块屏挑出来的
         rebuildItems()
@@ -310,17 +279,6 @@ final class BarModel: ObservableObject {
         refreshFullscreenState()
         // 换了屏，条底下就是另一块桌面了
         sampleBackdrop()
-    }
-
-    /// 条滑回来大约要这么久。采样得等它落位。
-    private static let slideDuration: TimeInterval = 0.36
-
-    func setSliding(_ value: Bool) {
-        sliding = value
-        guard !value else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.slideDuration) { [weak self] in
-            self?.sampleBackdrop()
-        }
     }
 
     func setYielding(_ value: Bool) {

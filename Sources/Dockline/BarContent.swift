@@ -92,10 +92,8 @@ struct BarContent: View {
                 Color.clear
                 glassBar(layout)
                     .padding(.bottom, BarMetrics.bottomGap)
-                    .offset(y: model.hidden || model.sliding
-                                ? BarMetrics.barHeight + BarMetrics.bottomGap + 6 : 0)
+                    .offset(y: model.hidden ? BarMetrics.barHeight + BarMetrics.bottomGap + 6 : 0)
                     .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.hidden)
-                    .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.sliding)
                     .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
                 if let panel, !model.hidden,
                    let content = panelContent(panel.kind, in: layout) {

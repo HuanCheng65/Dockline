@@ -14,8 +14,8 @@ import SwiftUI
 final class BarPanel: NSPanel {
     let model: BarModel
 
-    /// 条当前所在的屏。多屏下条只有一条，跟着指针走（计划书 §3.1）。
-    private var current: CGDirectDisplayID?
+    /// 这条 bar 钉在哪块屏上。每块屏各有一条，谁也不搬家（计划书 §6 M5）。
+    private var homeScreen: NSScreen
 
     /// 浮层要用的空间已经长出来了没有。见 `compactHeight`。
     private var expanded = false
@@ -36,8 +36,9 @@ final class BarPanel: NSPanel {
             + BarMetrics.maxIcon + 20 + 10
             + PreviewCard.imageHeight + 90
 
-    init(world: World) {
+    init(world: World, screen: NSScreen) {
         model = BarModel(world: world)
+        homeScreen = screen
         super.init(contentRect: NSRect(x: 0, y: 0, width: 800, height: Self.panelHeight),
                    styleMask: [.nonactivatingPanel, .borderless],
                    backing: .buffered,
@@ -66,16 +67,9 @@ final class BarPanel: NSPanel {
         catcher.addSubview(host)
         contentView = catcher
 
-        model.onFollowScreen = { [weak self] screen in self?.place(on: screen) }
         model.onFloatRoom = { [weak self] needed in self?.setExpanded(needed) }
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification,
-            object: nil, queue: .main) { [weak self] _ in
-                self?.layout()
-                self?.model.screensChanged()
-            }
         checkActiveAppearanceOverride()
-        layout()
+        apply()
     }
 
     /// nonactivating 面板不该成为 key/main，否则会抢走用户当前 App 的焦点。
@@ -113,28 +107,11 @@ final class BarPanel: NSPanel {
         }
     }
 
-    /// 屏幕参数变化时重摆。条留在原来那块屏上，那块屏没了才回到主屏。
-    func layout() {
-        guard let screen = NSScreen.screens.first(where: { displayID($0) == current })
-                ?? NSScreen.main else { return }
-        place(on: screen)
-    }
-
-    /// 滑下去到挪窗口之间等这么久。
-    private static let slideOut: TimeInterval = 0.22
-
-    /// 把面板摆到指定的屏。换屏时先让条滑下去，挪好了再滑上来——凭空闪现看不出它去了哪。
-    func place(on screen: NSScreen) {
-        guard let leaving = current, leaving != displayID(screen) else {
-            apply(screen)
-            return
-        }
-        model.setSliding(true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.slideOut) { [weak self] in
-            guard let self else { return }
-            apply(screen)
-            model.setSliding(false)
-        }
+    /// 这块屏的分辨率或排布变了，重摆一次。`NSScreen` 对象在屏幕参数变化时会被重建，
+    /// 拿到的是一个新的、代表同一块屏的对象。
+    func update(screen: NSScreen) {
+        homeScreen = screen
+        apply()
     }
 
     /// 浮层要用的空间：要画之前先把面板长上去，收起之后再落回常态高度。
@@ -142,19 +119,18 @@ final class BarPanel: NSPanel {
     private func setExpanded(_ value: Bool) {
         guard expanded != value else { return }
         expanded = value
-        layout()
+        apply()
     }
 
     /// 面板几何与窗口数无关，只跟屏和浮层的需要走。
-    private func apply(_ screen: NSScreen) {
-        current = displayID(screen)
+    private func apply() {
         let height = expanded ? Self.panelHeight : Self.compactHeight
-        let frame = screen.frame
-        model.availableWidth = screen.visibleFrame.width
-        model.setBarDisplay(displayID(screen))
+        let frame = homeScreen.frame
+        model.availableWidth = homeScreen.visibleFrame.width
+        model.setBarDisplay(displayID(homeScreen))
         // 根坐标系（面板左上角起）→ 屏幕左上原点坐标 的平移量。面板贴着屏幕底边、
         // 占满整宽，所以横向为 0，纵向就是屏幕高减去面板高。
-        model.setRootOffset(CGPoint(x: 0, y: screen.frame.height - height))
+        model.setRootOffset(CGPoint(x: 0, y: homeScreen.frame.height - height))
         setFrame(NSRect(x: frame.minX, y: frame.minY,
                         width: frame.width, height: height),
                  display: true)

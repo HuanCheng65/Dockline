@@ -3,7 +3,7 @@ import DocklineCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let world = World()
-    private var bar: BarPanel?
+    private lazy var bars = BarController(world: world)
     private var reconcileTimer: Timer?
 
     /// 计划书 §4 通道三：CGWindowList 对账兜底，1–2 秒周期。
@@ -28,11 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .data(using: .utf8)!)
         }
 
-        let panel = BarPanel(world: world)
-        bar = panel
+        bars.start()
         world.start()
         tick()
-        panel.orderFrontRegardless()
 
         reconcileTimer = Timer.scheduledTimer(withTimeInterval: Self.reconcileInterval,
                                               repeats: true) { [weak self] _ in self?.tick() }

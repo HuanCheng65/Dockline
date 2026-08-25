@@ -90,10 +90,19 @@ final class World: ObservableObject {
     func register(_ bar: BarModel) {
         registered.append(WeakBar(bar: bar))
         bar.rebuildItems()
+        refreshBarDisplays()
     }
 
     func unregister(_ bar: BarModel) {
         registered.removeAll { $0.bar === bar || $0.bar == nil }
+        refreshBarDisplays()
+    }
+
+    /// 铺满与结果纠正要知道哪些屏上有 bar——有 bar 的屏才扣掉底部那一条。
+    func refreshBarDisplays() {
+        let displays = Set(bars.compactMap(\.display))
+        maximizer.barDisplays = displays
+        corrector.barDisplays = displays
     }
 
     /// 世界的内容变了，每条 bar 都要重排一次自己的版面。
