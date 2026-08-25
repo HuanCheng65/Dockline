@@ -1468,7 +1468,7 @@ private struct DockCell: View {
     @ViewBuilder
     private var edge: some View {
         if let activity = slot.activity {
-            ActivityEdge(activity: activity, radius: metrics.cellRadius)
+            ActivityEdge(activity: activity, radius: metrics.cellRadius, isFront: slot.isFront)
                 .help(activity.summary ?? "")
         }
     }
@@ -1620,6 +1620,9 @@ private struct ClusterLine: View {
 private struct ActivityEdge: View {
     let activity: Activity
     let radius: CGFloat
+    /// 这一格是不是前台窗口。前台格子自己已经带着亮底与一圈描边，终态再叠一圈彩色的
+    /// 上去，两条边挤在同一个圆角上，读起来就是一格画了两遍。
+    let isFront: Bool
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -1643,7 +1646,11 @@ private struct ActivityEdge: View {
                 case .waiting:
                     shape.stroke(.tint, lineWidth: 2)
                 case .finished(let outcome):
-                    shape.stroke(Self.color(outcome).opacity(0.8), lineWidth: 2)
+                    // 前台那一格不画。终态本身仍在——格子第二行还写着「✓ 已完成」，
+                    // 面板里也还是那一档；退掉的只是这一圈颜色。
+                    if !isFront {
+                        shape.stroke(Self.color(outcome).opacity(0.8), lineWidth: 2)
+                    }
                 }
             }
         }
