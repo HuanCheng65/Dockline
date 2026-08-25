@@ -268,6 +268,47 @@ public final class WindowIndexStore {
     /// 不记住否决结果的话，这类候选每轮对账都要重查一次（自绘标签栏的 App 永远查不过）。
     private var rejectedTabs = Set<CGWindowID>()
 
+    // MARK: 不应答的进程
+    //
+    // 卡住的 App 每个恰好烧满 AX 的超时（本机实测 1005ms、返回 -25204），健康的只要
+    // 30–48ms。屏幕上恰好摆着几个这样的窗口，一轮对账就堵住主线程好几秒——开机时尤其
+    // 明显，因为那一轮要探所有有窗口的进程。两道闸：整轮有时间预算，不应答的记下来退避。
+
+    /// 一轮 AX 探测的时间上限。健康的 App 30–48ms 一个，这个额度够十几个；
+    /// 探不完的留给下一轮，窗口晚一拍出现，好过整个界面冻住。
+    private static let probeBudget: TimeInterval = 0.5
+    /// 退避时长。够长到不再拖慢每一轮，够短到 App 自己缓过来之后不会被晾太久。
+    private static let stallBackoff: TimeInterval = 30
+    /// pid → 什么时候才重新问它。
+    private var stalled: [pid_t: Date] = [:]
+    /// 这一轮跳过或判定为不应答的进程，供上层记一行日志。空 = 没有。
+    public private(set) var lastStalled: [String] = []
+
+    /// 谁没答上来。
+    ///
+    /// **答不上来与被跳过要分开记**：前者要罚（下一轮别再问），后者是我们主动没问，
+    /// 罚它等于把退避无限续期，App 好了也回不来。预算用完而没轮到的同理——那是我们
+    /// 的安排，不是它的错。
+    private func noteStalls(_ probes: [AppProbe], deferred: [pid_t],
+                            skipped: Set<pid_t>, at now: Date) {
+        var notes: [String] = []
+        for probe in probes where probe.axWindowCount == nil {
+            stalled[probe.pid] = now.addingTimeInterval(Self.stallBackoff)
+            notes.append("\(probe.name)(pid \(probe.pid), AXError \(probe.axError.rawValue))")
+        }
+        // 答上来了就把罚单撤掉，不必等退避到期
+        for probe in probes where probe.axWindowCount != nil { stalled[probe.pid] = nil }
+        // 进程没了就别留着，pid 会被复用。只在名单非空时查——稳态下它是空的，
+        // 而这条路每个对账 tick 都会走一遍（计划书 §2 的稳态预算）。
+        if !stalled.isEmpty {
+            let alive = Set(NSWorkspace.shared.runningApplications.map(\.processIdentifier))
+            stalled = stalled.filter { alive.contains($0.key) }
+        }
+        if !deferred.isEmpty { notes.append("另有 \(deferred.count) 个没轮到（预算用完）") }
+        if !skipped.isEmpty { notes.append("另有 \(skipped.count) 个在退避里") }
+        lastStalled = notes
+    }
+
     public private(set) var timing = IndexTiming()
     /// 上一次 refreshApp 中被跳过的窗口及原因——诊断「新窗口为何没有立刻出现」
     public private(set) var lastSkipped: [String] = []
@@ -312,13 +353,19 @@ public final class WindowIndexStore {
 
         var axByID: [CGWindowID: WindowRecord] = [:]
         var answered = Set<pid_t>()
+        // 已知不应答的进程这一轮不问。它们每个恰好烧满一秒超时，而退避到期前
+        // 再问一次的期望收益是零——真好转了会有 AX 事件走通道二把它捞回来。
+        let now = Date()
+        let skipped = probePIDs.filter { (stalled[$0] ?? .distantPast) > now }
+        probePIDs.subtract(skipped)
         if !probePIDs.isEmpty {
-            let probed = enumerateAXWindows(pids: probePIDs)
+            let probed = enumerateAXWindows(pids: probePIDs, budget: Self.probeBudget)
             for record in probed.windows {
                 guard let id = record.windowID else { continue }
                 axByID[id] = record
             }
             answered = Set(probed.probes.filter { $0.axWindowCount != nil }.map(\.pid))
+            noteStalls(probed.probes, deferred: probed.deferred, skipped: skipped, at: now)
         }
         let t3 = Date()
         timing = IndexTiming(cgList: t1.timeIntervalSince(t0) * 1000,

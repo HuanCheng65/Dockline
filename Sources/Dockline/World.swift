@@ -77,6 +77,8 @@ final class World: ObservableObject {
     private let settings = SettingsWindowController()
     private var pendingApps = Set<pid_t>()
     private var coalesceScheduled = false
+    /// 上一次报过的「不应答 App」名单，用来去重
+    private var lastStalledReport: [String] = []
     private var suppressReadySync = false
     private let fullscreenWatch = FullscreenWatch()
     private let missionControl = MissionControlWatch()
@@ -432,6 +434,13 @@ final class World: ObservableObject {
         let before = Set(store.windows.map(\.id))
         let changed = store.reconcile()
         diagnostics.timing = store.timing
+        // 有 App 答不上 AX 就说出来。它一个就要烧掉整整一秒的超时，而这一秒是记在
+        // 主线程账上的——不出声的话，症状只会以「启动卡住好几秒」的样子出现，
+        // 而那个样子指不到原因。去重是因为退避期内每一轮都会重复报同一批。
+        if !store.lastStalled.isEmpty, store.lastStalled != lastStalledReport {
+            Timeline.log("⚠️ 这些 App 不应答 AX，暂时跳过：\(store.lastStalled.joined(separator: "、"))")
+        }
+        lastStalledReport = store.lastStalled
         for window in store.windows where !before.contains(window.id) {
             Timeline.log("★ 进入索引  wid \(window.id) \(window.appName) — \(window.title)  [对账兜底]")
         }

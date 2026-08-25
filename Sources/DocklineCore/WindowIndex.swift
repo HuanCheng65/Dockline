@@ -87,9 +87,21 @@ public struct CGWindowRecord {
 
 /// - Parameter pids: 只探这些进程。nil = 全部运行中 App（仅诊断用；稳态路径必须传 pid 集合，
 ///   因为逐 App 的 AX 调用是跨进程 IPC，全量一次约 1.9s，远超计划书 §2 的 tick 预算）。
-public func enumerateAXWindows(pids: Set<pid_t>? = nil) -> (windows: [WindowRecord], probes: [AppProbe]) {
+/// - Parameter budget: 这一轮最多花多少秒。超了就把剩下的进程留给下一轮——它们不会进
+///   `probes`，因此也不会被记成「判过了」，下一轮照样会探（见 `WindowIndexStore.reconcile`
+///   里 `answered` 的用法）。
+///
+///   **有这个预算，是因为「探完为止」这个不变量的代价由别人家的 App 决定。** 无响应的
+///   App 每个恰好烧满超时（本机实测 1005ms，返回 `-25204`），健康的只要 30–48ms；
+///   开机时屏幕上恰好摆着几个这样的窗口，主线程就一口气堵上好几秒，看起来就是启动卡死。
+///   窗口晚一拍出现，比整个界面冻住好。nil = 不设上限，只给诊断用。
+public func enumerateAXWindows(pids: Set<pid_t>? = nil,
+                               budget: TimeInterval? = nil)
+    -> (windows: [WindowRecord], probes: [AppProbe], deferred: [pid_t]) {
     var records: [WindowRecord] = []
     var probes: [AppProbe] = []
+    var deferred: [pid_t] = []
+    let began = DispatchTime.now().uptimeNanoseconds
     let apps = NSWorkspace.shared.runningApplications
         .filter { pids?.contains($0.processIdentifier) ?? true }
         // .accessory 也要收：Clash Verge / OrbStack 这类菜单栏 App 一样有真窗口。
@@ -99,6 +111,13 @@ public func enumerateAXWindows(pids: Set<pid_t>? = nil) -> (windows: [WindowReco
 
     for app in apps {
         let pid = app.processIdentifier
+        // 预算用完了就停。判定放在每个 App 之前，不是之后：超时那一下本身就是最贵的，
+        // 让它先发生再来判断，等于每一轮都白付一次。
+        if let budget,
+           Double(DispatchTime.now().uptimeNanoseconds - began) / 1e9 >= budget {
+            deferred.append(pid)
+            continue
+        }
         let axApp = AXUIElementCreateApplication(pid)
         // 不设超时会在无响应 App 上卡住默认 6 秒；1 秒足够且失败可见。
         AXUIElementSetMessagingTimeout(axApp, 1.0)
@@ -146,7 +165,7 @@ public func enumerateAXWindows(pids: Set<pid_t>? = nil) -> (windows: [WindowReco
             ))
         }
     }
-    return (records, probes)
+    return (records, probes, deferred)
 }
 
 // MARK: - 通道三：CGWindowList 对账

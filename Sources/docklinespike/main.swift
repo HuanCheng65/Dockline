@@ -83,7 +83,7 @@ func commandList() {
     }
 
     let started = Date()
-    let (axWindows, probes) = enumerateAXWindows()
+    let (axWindows, probes, _) = enumerateAXWindows()
     let axElapsed = Date().timeIntervalSince(started)
     let candidates = enumerateCGWindows().filter(isCandidate)
 
@@ -251,7 +251,7 @@ func commandBench() {
     print(String(format: "  ⇒ 一次完整对账 tick ≈ %.1fms", cgTimes.reduce(0,+)/10 + orderedMs + spacesMs))
 
     let t3 = Date()
-    let (axWindows, probes) = enumerateAXWindows()
+    let (axWindows, probes, _) = enumerateAXWindows()
     print(String(format: "  （对照）AX 全量枚举: %.0fms / %d 个 App —— 仅冷启动付一次", Date().timeIntervalSince(t3) * 1000, probes.count))
 
     // ── 标题覆盖率：决定屏幕录制权限能否取代标题缓存
