@@ -1,6 +1,6 @@
 # Dockline 项目计划书
 
-macOS 窗口检索与 Dock 重构 · v1.11 · 2026-08-25
+macOS 窗口检索与 Dock 重构 · v1.12 · 2026-08-25
 
 ---
 
@@ -324,7 +324,7 @@ SLSSpaceAddWindowsAndRemoveFromSpaces(cid, space, [wid], 0x7);
 |---|---|---|---|
 | 第 0 层 | `_AXUIElementGetWindow` | AX 元素 ↔ CGWindowID 桥接 | 极低。AltTab / yabai / Ice 长期使用，十余年未变 |
 | 第 1 层 | SkyLight 只读族：`SLSMainConnectionID`、`SLSCopyWindowsWithOptionsAndTags` 及窗口迭代器、`SLSCopySpacesForWindows`、`SLSGetActiveSpace`、`SLSWindowIsOrderedIn`、`SLSSpaceGetType`、`SLSSetWindowAlpha`、`CGSGetWindowLevel` | 快速全局枚举（含其他 Space）、Space 归属读取、**真窗口判别（ordered-in）**、**全屏 Space 判定**、逐窗口透明度（透镜压暗） | 中低。无需关 SIP，社区大项目常年在用，跨大版本偶有签名调整。逐项封装 + 启动自检，失败时降级公开 API |
-| 第 1.5 层 | `SLSBridgedMoveWindowsToManagedSpaceOperation` 及其提交路径 | 把一个窗口迁到当前 Space，供拖格子分屏对跨 Space 的窗口成立 | **当前不可用，未引入。** spike 已判定：提交函数在本机不存在，经典写函数对别人家的窗口无效（第 6 节 M6）。这一层是第 2 节例外条款**唯一**允许的写操作，先占位；真出现了再按那条款的两项硬约束接入 |
+| 第 1.5 层 | `SLSBridgedMoveWindowsToManagedSpaceOperation` + 基类的 `performWithWMBridgeDelegate` | 把一个窗口迁到当前 Space，供拖格子分屏对跨 Space 的窗口成立 | **可用（实测 13–19ms，SIP 开启，见第 6 节 M6），尚未引入。** 风险高于第 1 层：一个私有 ObjC 类加一个私有方法，随点版本更新可能变。但**判定得起也降级得了**——类与选择子都能在运行时探，缺了就整条能力不可用。这是第 2 节例外条款**唯一**允许的写操作 |
 | 第 1.6 层 | `SLSSpaceCreate` / `SLSSpaceSetAbsoluteLevel` / `SLSShowSpaces` / `SLSSpaceAddWindowsAndRemoveFromSpaces` / `SLSSpaceDestroy` | 自建 private Space 并把**自己的**面板挂进去，使条在 Space 切换时钉住不动（第 4 节 spike） | 中。不需要关 SIP，作用面只有自己进程的窗口与自己建的 Space，sketchybar 长期在用。失败即降级回 `.canJoinAllSpaces` |
 | 第 2 层 | 对**别人家窗口**的 Space 写操作（切换 / 注入式跨 Space 移动），yabai 式 Dock 注入 scripting addition | —— | **永不进入。** 需关 SIP，且硬编码系统版本号与十六进制指令模式；Tahoe 26.1 / 26.2 点版本更新均出现静默失效实例。与第 1.5 / 1.6 层的区别在**作用面与手段**：动自己的窗口、自己的 Space 不在此列，注入式的那条永不进入 |
 | 边缘 hack | CGSHWCaptureWindowList（缩略图备胎）；AltTab 式「短暂拉取其他 Space 窗口获 AX 引用」 | 未读数、截图备选、存量窗口引用 | 第三项有闪屏与 1 秒预算的已知缺陷，仅在懒获取策略不足时评估 |
@@ -407,17 +407,29 @@ SLSSpaceAddWindowsAndRemoveFromSpaces(cid, space, [wid], 0x7);
 
 **取消是 Esc 或掉回条上**，都是原生拖放里现成的。手势没法从外面掐断，所以取消的实现是「把状态收干净，松手时不做事」。
 
-**跨 Space 的窗口分两条路走。** 摆位要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有引用。**拿得到迁移能力时**：把窗口迁到当前 Space，再走召回、摆位、化开那一串——这正是这个功能最有价值的场景，别处都要先切过去、找到它、拖住标题栏。**拿不到时降级为不上膛**：预览不出现，那次拖拽退回普通重排，并记一行原因。宁可提上去没反应，也不要把用户甩到另一个桌面去、还什么都没摆成。当前落地的是降级那一支，迁移那一支等下面的 spike。
+**跨 Space 的窗口分两条路走。** 摆位要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有引用。**拿得到迁移能力时**：把窗口迁到当前 Space，再走召回、摆位、化开那一串——这正是这个功能最有价值的场景，别处都要先切过去、找到它、拖住标题栏。**拿不到时降级为不上膛**：预览不出现，那次拖拽退回普通重排，并记一行原因。宁可提上去没反应，也不要把用户甩到另一个桌面去、还什么都没摆成。
+
+下面的 spike 已经判定这条能力在当前系统上**成立**，两支都已落地：能力在就迁，缺了就不上膛。降级那一支不是备胎而是主干的一部分——能力在不在按类与选择子探、不按系统版本号判（§2），下一个点版本把它拿掉时，这个功能应当自己安静地退回「做不了」，而不是做出别的事来。
 
 右键菜单里那一排落点走同一条规则：拿不到迁移能力时，跨 Space 的窗口那一排整排不可用，而不是点下去静默地什么都不发生。
 
-*Spike · 跨 Space 迁移（已完成，结论是做不到）。* 判据是「SIP 开着时能把另一个 Space 上的一扇普通窗口迁到当前 Space」。**本机（26.5.2）四条路全部试过，对别人家的窗口一条都不成立**（`docklinespike bridge`）。
+*Spike · 跨 Space 迁移（已完成，结论是做得到）。* 判据是「SIP 开着时能把另一个 Space 上的一扇普通窗口迁到当前 Space」。**成立**（`docklinespike bridge`）：本机 26.5.2、SIP 开启、普通 App 进程、不注入程序坞、不做 Mach-O 模式扫描，迁移耗时 **13–19ms**。在微信、Arc、Bitwarden 三个 App 上复现。
 
-**证据链有三环，缺一环结论就不成立。** 其一，`SLSMoveWindowsToManagedSpace` 符号在，而且**对本进程自己的窗口是好用的**——建一扇窗、等它的归属稳住、空转两秒确认不会自己漂，再调，归属当场就变了。所以调用的形状、CFArray 里数字的类型、目标 Space 的取值全都是对的。其二，同一个调用对别人家的窗口毫无反应；换成「加进目标 Space 再从旧的移出」那一对、换成用窗口所有者的连接号去调、换成构造 `SLSBridgedMoveWindowsToManagedSpaceOperation` 走 `invokeFallback`，四条一律无效，且都不给错误码。**所以卡的是连接的权限，不是调用的写法。** 其三，yabai 那条「SIP 开着也能走」的路依赖 `SLSPerformAsynchronousBridgedWindowManagementOperation`，而**这个符号在本机不存在**——不在 SkyLight 的导出表里，加载 SkyLight 与 WindowManagement 之后按 `RTLD_DEFAULT` 也解析不到。存在的只有操作类本身和 `SLSWindowManagementBridgeSetDelegate`，而后者是**设置**方：装 delegate 的是 WindowManager 那种进程，普通客户端手里没有。yabai 自己也把那次调用套在「符号存在吗」的判断里，正说明它本来就可能缺。
+**能走通的是这一条，而且只有这一条：**
 
-因此这条能力在当前系统上**不存在**，不是我们没找对写法。剩下的理论可能只有一条：那些操作类都实现了 `NSSecureCoding`，说明它们本来是被编码后送给 WindowManager 执行的，客户端要走同一条路就得连上那个私有 XPC 服务——比一个私有符号更脆、也更没有边界，不做。
+```objc
+id op = [[SLSBridgedMoveWindowsToManagedSpaceOperation alloc]
+            initWithWindows:@[@(wid)] spaceID:space];
+[op performWithWMBridgeDelegate];      // 基类 SLSAsynchronousBridgedWindowManagementOperation 上
+```
 
-**落地即维持降级**：跨 Space 的窗口不参与分屏手势（见上）。**并且不预埋「符号出现就启用」的分支**——那条分支今天没有任何办法验证，属于写下来就没人能保证它对的代码。`docklinespike bridge` 留着，换了系统版本重跑一次三十秒就有答案，那时再按结果加。
+**另外四条路对别人家的窗口全部无效**，且都不给错误码：`SLSMoveWindowsToManagedSpace` 直连、拿窗口所有者的连接号调同一个函数、`SLSAddWindowsToSpaces` + `SLSRemoveWindowsFromSpaces` 那一对、以及同一个操作对象上的 `invokeFallback`。其中直连那条**对本进程自己的窗口是好用的**（建一扇窗、等归属稳住、空转两秒确认不会自己漂，再调，归属当场就变），所以调用形状、CFArray 里数字的类型、目标 Space 的取值全都对——差别只在窗口归谁。这条对照是整个结论的地基：没有它，「别人家的迁不动」分不出是权限还是写法。
+
+**迁完还要拿得到 AX 引用才谈得上摆位**，这一步同样量了：归属变化之后 **36–60ms** 就能在该进程的 `AXWindows` 里找到它，不需要先激活那个 App。少数窗口（Bitwarden 的弹窗、微信那扇无标题的）始终不进 `AXWindows`——那是这些窗口本来就有的性质，与迁移无关，它们在同一个 Space 上也一样摆不动。
+
+因此完整次序是：**迁 → 等归属确认 → 等 AX 引用 → 召回 → 写几何**。前两步各十几到几十毫秒，都要等实际信号，不能靠 sleep 蒙。
+
+**它推翻的那个错误判断，错法值得记一句。** 由「`SLSWindowManagementBridgeSetDelegate` 是设置方，装 delegate 的该是 WindowManager 那种进程」推出 `performWithWMBridgeDelegate` 走不通，**于是根本没试**，实际一调就通；又由「导出表里没有提交函数、`dlsym` 也找不到」推出能力不存在，而非导出实现本来就不在导出表里（yabai 走的就是扫 Mach-O 找它），何况 `nm` 与 `dyld_info -symbols` 对共享缓存里的镜像一行都读不出来，那次检查本身无效。**能直接调的东西不要用推理替代，符号缺席不等于能力缺席。**
 
 **簇与没有窗口的槽位不参与**：一个簇往哪半边贴是歧义的。整组摊开是另一件事，见 M8。
 
@@ -547,7 +559,7 @@ MVP 阶段以自身行为变化为准：Mission Control 使用频率是否显著
 
 指示点在各种桌面背景下的对比度是否足够（见 3.1 已知弱点）。玻璃板亮度的 2 秒采样周期需实机复核（两个阈值已按实测定，见 3.1）。35ms / 次的代价是否值得，以及条横跨明暗交界时取整条的中位数是否够用（分区取色是备选，见 3.1），都要看实际观感。降级阶梯的触发阈值（占屏幕可见宽度 0.96）与两处跳变的迟滞余量（标签收拢、溢出释放，均取 6%）需实机调参；每次档位变化都记进日志（该行的去重键要带上宽度，只按档位去重的话，宽度变了而档位没变就不重记，读到的那对宽度会停在第一帧，反过来误导调参）。键盘切换有四个数是拍的，都需实机回调：显形延迟 180ms、会话期间其余项压暗到 0.38、浮层换档时内容交接 120ms、浮层收场前的宽限 100ms（它只用来盖住指针跨格时「旧的没了、新的还没到」那一两帧，不是让浮层赖着不走）。拖放停留唤前的停留时长 0.5 秒同样待调：短了会在拖着文件路过条上时误唤，长了不如自己切过去。拖格子分屏有三个数是拍的：上膛 24pt、解除 8pt、中线两侧各 24pt 的换边迟滞——上膛太低会让斜着走的重排误触发，太高则手势变长。落点预览长出与化开的时长（0.3s / 0.18s）同样待实机回调，化开那一段要盖住 AX 写入到窗口重绘之间的空档，短了会露出接缝。菜单里那两排自定义视图的代价是明知的（高亮自绘、方向键选不中），但没有在长期使用中验过，尤其是键盘用户是否会因此够不到落点。溢出区在实际使用中会不会长期非空（若会，说明窗口数已超出「一眼看全」的容量，是搜索层赢得位置的证据，见检索路径的采纳度）。favicon 获取的具体路径（各浏览器 AX 树差异 / 浏览器扩展辅助通道）需专项 spike。跨重启的顺序目前只恢复到 App 级：窗口级需要一个跨重启稳定的窗口身份，「App + 标题指纹」方案对标题多变的窗口（终端）恢复率存疑——这个前提同时卡着持久编组与固定上下文，已单列为 spike（见第 6 节）。缩略图在多屏 + ProMotion 下的功耗预算未测。浅色外观下手绘层的不透明度（悬停底 0.06 / 前台底 0.115 / 指示点 0.65）是按截图目测定的第一版，需实机复核。结果纠正与 macOS 15 起的拼贴分组语义是否冲突（改动被拼贴的窗口后，系统是否解散分组或连带改动邻窗）需实测。自绘标签栏的 App 无法认领其标签页，是否值得走「窗口」菜单这条通用但更重的路径。跳转列表的数据来源与覆盖率未验证。没有 AX 记录的 accessory App 面板仍可能从「无 AX 记录即当作跨 Space 窗口」这条兜底漏进来——关闭按钮判据对它们无从施加（实测 Stats 的另两个面板即属此类）。注意力弹跳（App 调 `requestUserAttention` 时的反复跳）没有做：系统不广播这件事，`NSRunningApplication` 上也读不到。原定的路子是从隐藏的系统程序坞的 AX 树里探——角标数据已经在从那棵树读。已验证：dock item 暴露的属性只有角色、标题、位置、`AXStatusLabel`（角标）、`AXProgressValue`、`AXURL`、`AXIsApplicationRunning` 与弹出的菜单，没有任何与注意力有关的字段；那棵树上的窗口类通知也一律报 `-25207` 不支持，连轮询的落点都没有。因此不做：宁可缺这个功能，也不要用「角标变了 / 冒了新窗口」这类启发式去猜，弹错比不弹伤害大。
 
-**跨 Space 的窗口能不能就地拉过来，是一条待决的路。** 第 2 节「规避 Spaces 写操作」当初立在「必须关 SIP」的前提上，而那个前提变了。本机（macOS 26.5.2）实地探过：`SLSBridgedMoveWindowsToManagedSpaceOperation` 确实存在，带 `initWithWindows:spaceID:`，继承自 `SLSAsynchronousBridgedWindowManagementOperation`；同族的 bridged 操作类共 100 个，整套 Space 操作都搬到了这一层。但社区说法里那个提交函数 `SLSPerformAsynchronousBridgedWindowManagementOperation` **不存在**——SkyLight 的导出表里没有任何 `Perform…WindowManagementOperation` 形状的 C 函数，基类上只有 `performWithWMBridgeDelegate` 与 `invokeFallback`。**提交要经过一个 "WM bridge delegate"**，而那个 delegate 由 WindowManager 那种进程装，普通客户端手里没有。spike 已完成，结论是**这条能力在当前系统上不存在**，证据链记在第 6 节 M6。第 2 节的例外条款与第 5 节的第 1.5 层照旧留着——它们描述的是「真出现了怎么接」，不是「已经能用」。落地维持降级：跨 Space 的窗口不参与分屏手势，且不预埋启用分支。
+**跨 Space 的窗口就地拉过来这条路，spike 已判定可行**（第 6 节 M6，26.5.2 / SIP 开启 / 13–19ms）。走的是 `SLSBridgedMoveWindowsToManagedSpaceOperation` 加基类上的 `performWithWMBridgeDelegate`，不需要社区说的那个 C 提交函数——那个函数在本机的导出表里确实没有，但那不构成障碍，也不构成「能力不存在」的证据（非导出实现本来就不在导出表里）。未决的是**它为什么可以**：同一件事，直连 `SLSMoveWindowsToManagedSpace` 对别人家的窗口无效，走这个对象却成立，中间那层做了什么没有查。不知道原因就估不准它有多容易随系统更新断掉，因此第 5 节把它单列一层，接入时按第 2 节的两条硬约束办：按类与选择子探能力，缺了就整条不可用。**原生全屏 / 拼贴那类特殊 Space 一律不认**，只在桌面 Space 之间迁，这一条未实测，是刻意的保守。
 
 借程序坞取动态菜单还有几处未测。其一，等待上限取 0.4 秒（正常路径 45–50ms），是拿右键的响应延迟换动态项的完整度：慢的 App 会静默地没有动态项，而这个门槛没在真慢的 App 上验过。其二，按下动态项要重新弹一次菜单、按标题路径找回去，菜单内容若在这中间变了就找不到——已有日志，实际发生率未知。其三，窗口服务器的事件号（1327 / 1328）与程序坞菜单的 AX 结构都属于每个大版本要回归一次的东西。其四，**动态项偶发地整段取不到**：菜单在程序坞那儿照常闪了一下，我们却一条都没读到，连着几次右键都是如此，随后又自己好了。查不出原因，因为原先取值路径上的四道关失败时全都静默返回空结果——那本身就是缺陷，现已逐道出声，并把「菜单没弹出来」与「菜单弹了但条目一直是空的」两种外观相同的情况分开措辞。待下次复现时按日志定位。有一条尚未证实的猜测值得记下：第一道超时的收尾是对**程序坞的那一项**发取消，而不是对菜单（那条路上根本没拿到菜单元素）；若那次取消收不掉菜单，程序坞就留着一份开着的菜单，下一次 `AXShowMenu` 撞上已开的菜单多半是把它关掉——失效会因此连着好几次，再被别的操作顺手解掉，形状与症状吻合。
 
