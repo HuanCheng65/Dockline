@@ -746,17 +746,91 @@ final class World: ObservableObject {
     /// 前置本身也是要的：用户刚把它放到这儿，要的就是它；它若压在别人底下，
     /// 不前置的话屏幕上什么都不会发生。
     func snap(_ window: IndexedWindow, to spot: Maximizer.Spot) {
-        recall(window)
-        noteActivated(window.id)
-        maximizer.toggle(window, at: spot)
+        // 菜单没有「指针指着哪块屏」这回事，迁的话就迁到它自己那块屏当前的 Space。
+        reach(window, on: window.display, why: "平铺") { [weak self] element in
+            guard let self, let element else { return }
+            recall(window)
+            noteActivated(window.id)
+            maximizer.toggle(window, at: spot, using: element)
+        }
     }
 
     /// **目标屏由手势给**——指针指着哪块屏，就贴那块屏的那一半；窗口此刻在哪块屏与此无关。
     func tile(_ window: IndexedWindow, at spot: Maximizer.Spot, on display: NSScreen) {
-        recall(window)
-        noteActivated(window.id)
-        maximizer.place(window, at: spot, on: display)
-        splitPreview.dissolve()
+        reach(window, on: displayID(display), why: "分屏") { [weak self] element in
+            guard let self else { return }
+            defer { splitPreview.dissolve() }
+            guard let element else { return }
+            recall(window)
+            noteActivated(window.id)
+            maximizer.place(window, at: spot, on: display, using: element)
+        }
+    }
+
+    /// 把窗口变成「摆得动的」，再把 AX 引用交出去。
+    ///
+    /// 当前 Space 上的窗口本来就有引用，同步交出；别的 Space 上的没有——摆位要写它的
+    /// 几何，写几何要引用，所以先把它迁到 `display` 当前的 Space（计划书 §5 第 1.5 层，
+    /// §2 的写操作例外），迁完再交。迁不了就交 nil，并在这里把原因说清楚：调用点只负责
+    /// 收场，不各自再编一遍话术。
+    private func reach(_ window: IndexedWindow, on display: CGDirectDisplayID?,
+                       why: String, then body: @escaping (AXUIElement?) -> Void) {
+        if let element = window.element {
+            body(element)
+            return
+        }
+        guard SpaceMove.available else {
+            Timeline.log("⚠️ \(why)放弃 wid \(window.id) \(window.appName)：窗口在其他 Space，"
+                         + "而迁移能力不可用（缺 \(SpaceMove.missing.joined(separator: ", "))）")
+            body(nil)
+            return
+        }
+        guard let display, let space = SpaceMove.currentSpace(on: display),
+              SpaceMove.isDesktop(space) else {
+            Timeline.log("⚠️ \(why)放弃 wid \(window.id) \(window.appName)：目标屏当前的 Space"
+                         + "取不到，或者它不是普通桌面")
+            body(nil)
+            return
+        }
+        guard SpaceMove.move(window.id, to: space) else {
+            Timeline.log("⚠️ \(why)放弃 wid \(window.id) \(window.appName)：迁到 Space \(space) 没调成")
+            body(nil)
+            return
+        }
+        // 迁移是异步的、不给错误码：归属与 AX 引用都要等实际信号（实测各十几到几十毫秒）。
+        // 分屏的落点预览这段时间一直挂着，正好把它盖住。
+        awaitMigration(window, to: space) { element in
+            if element == nil {
+                Timeline.log("⚠️ \(why)放弃 wid \(window.id) \(window.appName)：迁过来了，"
+                             + "但等不到它的 AX 引用")
+            }
+            body(element)
+        }
+    }
+
+    /// 等归属变过来、再等 AX 引用出现。都拿不到就交出 nil，由调用点放弃并说明。
+    ///
+    /// 轮询而不是订阅：窗口服务器没有为这件事广播任何东西，而这是用户一次显式动作里的
+    /// 一小段，不是常驻路径（计划书 §2 的预算管的是稳态 tick）。
+    private func awaitMigration(_ window: IndexedWindow, to space: UInt64,
+                                then body: @escaping (AXUIElement?) -> Void) {
+        let deadline = Date().addingTimeInterval(1)
+        let app = AXUIElementCreateApplication(window.pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        func poll() {
+            guard Date() < deadline else {
+                body(nil)
+                return
+            }
+            if SkyLight.spaces(for: window.id)?.contains(space) == true,
+               let element = (axCopy(app, kAXWindowsAttribute) as? [AXUIElement] ?? [])
+                .first(where: { windowID(of: $0).id == window.id }) {
+                body(element)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { poll() }
+        }
+        poll()
     }
 
     /// 这个窗口此刻贴在哪个落点上。菜单里那一排图形据此显示选中态。

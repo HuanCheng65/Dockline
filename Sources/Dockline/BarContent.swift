@@ -514,11 +514,12 @@ struct BarContent: View {
             Timeline.log("⚠️ 分屏取不到 wid \(id) 那一格在屏幕上的位置，本次拖拽不能分屏")
             return false
         }
-        // 摆位要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有引用
-        // （见 `Maximizer.place`）。此时干脆不上膛：宁可提上去没有反应，也不要把用户
-        // 甩到另一个桌面去、还什么都没摆成。
-        guard window.element != nil else {
-            Timeline.log("分屏不可用 wid \(id) \(window.appName)：窗口在其他 Space，取不到 AX 引用")
+        // 摆位要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有引用。
+        // 这时要么先把它迁过来（计划书 §5 第 1.5 层），要么干脆不上膛——宁可提上去
+        // 没有反应，也不要把用户甩到另一个桌面去、还什么都没摆成。
+        guard window.element != nil || SpaceMove.available else {
+            Timeline.log("分屏不可用 wid \(id) \(window.appName)：窗口在其他 Space，"
+                         + "而迁移能力不可用（缺 \(SpaceMove.missing.joined(separator: ", "))）")
             return false
         }
         return true

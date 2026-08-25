@@ -61,8 +61,9 @@ final class Maximizer {
     /// **目标屏由调用点给，不在这里按窗口的几何去推。** 拖格子分屏问的是「指针指着
     /// 哪块屏的哪一半」，而窗口此刻可能还在另一块屏上；两边各推一次，预览飞到了 B 屏、
     /// 窗口却贴在 A 屏——实机撞到过。
-    func place(_ window: IndexedWindow, at spot: Spot, on display: NSScreen) {
-        guard let element = window.element else {
+    func place(_ window: IndexedWindow, at spot: Spot, on display: NSScreen,
+               using override: AXUIElement? = nil) {
+        guard let element = override ?? window.element else {
             Timeline.log("⚠️ 平铺跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
             return
         }
@@ -74,8 +75,8 @@ final class Maximizer {
     ///
     /// 这条不给屏：菜单作用在窗口自己身上，没有「指针指着哪块屏」这回事，
     /// 目标就是它现在所在的那块屏。
-    func toggle(_ window: IndexedWindow, at spot: Spot) {
-        guard let element = window.element else {
+    func toggle(_ window: IndexedWindow, at spot: Spot, using override: AXUIElement? = nil) {
+        guard let element = override ?? window.element else {
             Timeline.log("⚠️ 平铺跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
             return
         }
