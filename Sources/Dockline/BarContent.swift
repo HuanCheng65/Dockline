@@ -673,6 +673,8 @@ struct BarContent: View {
     private static let floatGap: CGFloat = 9
     /// 浮层收场前的宽限。只需要盖住事件之间那一两帧，不是让它赖着不走。
     private static let lingerGrace: TimeInterval = 0.1
+    /// 换档时内容交接的时长。比尺寸那条曲线短，让尺寸去带动感。
+    private static let stageFade: TimeInterval = 0.12
 
     private struct FloatStage: Equatable {
         enum Kind: Equatable {
@@ -728,9 +730,20 @@ struct BarContent: View {
                                   unavailable: thumbnails.unavailable.contains(target.window.id))
     }
 
-    @ViewBuilder
     private func floatContent(_ stage: FloatStage, in layout: BarLayout,
                               available: CGFloat) -> some View {
+        // 分支一律留在这个容器**里面**。让分支出现在最外层，`.frame` 就挂在了一个
+        // 换档即换 identity 的视图上——没有起点可以插值，尺寸于是根本不变，
+        // 整块只剩淡入淡出。实测如此：名字与预览并进同一分支之后就连贯了，
+        // 而一排窗口那一档当时还是外层分支，仍旧在闪。
+        ZStack(alignment: .bottom) {
+            floatBody(stage, in: layout, available: available)
+        }
+    }
+
+    @ViewBuilder
+    private func floatBody(_ stage: FloatStage, in layout: BarLayout,
+                           available: CGFloat) -> some View {
         if case .list(let kind) = stage.kind {
             if let content = panelContent(kind, in: layout) {
                 WindowPanel(windows: content.windows,
@@ -753,11 +766,15 @@ struct BarContent: View {
                             onMenuZone: { model.setMenuZone("panel.w\($0)", $1) },
                             metrics: layout.metrics,
                             drag: panelDrag)
+                    // 换档时两份内容会同时在场。让它们各自快进快出，把这段重叠压短，
+                    // 动感就交给尺寸那条更长的曲线去带——两者同速的话，中间那一段
+                    // 看到的是两层内容互相透出来。
+                    .transition(.opacity.animation(.easeOut(duration: Self.stageFade)))
             }
         } else {
             // 名字与预览必须落在同一个分支里。分成两个分支，SwiftUI 就当它们是两棵树，
-            // 换档时只剩互相淡入淡出可做——那正是「闪一下」。同一棵树，标题才是同一个
-            // Text、待在同一个位置，缩略图从它上方长出来。
+            // 换档时只剩互相淡入淡出可做。同一棵树，标题才是同一个 Text、待在同一个位置，
+            // 缩略图从它上方长出来。
             // `.task` 也必须无条件挂：只挂在其中一档上，修饰符链一变，identity 照样断。
             PreviewCard(title: cardTitle(stage), detail: cardDetail(stage))
                 .task(id: cardDetail(stage)?.window.id) {
@@ -768,6 +785,7 @@ struct BarContent: View {
                         thumbnails.capture(id)
                     }
                 }
+                .transition(.opacity.animation(.easeOut(duration: Self.stageFade)))
         }
     }
 
