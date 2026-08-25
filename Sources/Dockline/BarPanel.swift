@@ -20,6 +20,9 @@ final class BarPanel: NSPanel {
     /// 浮层要用的空间已经长出来了没有。见 `compactHeight`。
     private var expanded = false
 
+    /// 有拖拽正在本条上进行。期间面板的几何冻住，见 `beginDrag`。
+    private var dragging = false
+
     /// 常态高度：只装得下玻璃条本身。
     ///
     /// 面板原先一直是全高的，其中只有底部那一条是玻璃、其余全透明。截屏工具按窗口边界
@@ -63,8 +66,15 @@ final class BarPanel: NSPanel {
         catcher.drop = { [weak model] id, urls in model?.acceptDrop(id, urls) ?? false }
         catcher.zoneReport = { [weak model] in model?.dropZoneReport ?? "（模型已释放）" }
         catcher.moved = { [weak model] point in model?.dragMoved(to: point) }
-        catcher.left = { [weak model] in model?.dragLeft() }
-        catcher.ended = { [weak model] in model?.dragEnded() }
+        catcher.entered = { [weak self] in self?.beginDrag() }
+        catcher.left = { [weak self, weak model] in
+            model?.dragLeft()
+            self?.endDrag()
+        }
+        catcher.ended = { [weak self, weak model] in
+            model?.dragEnded()
+            self?.endDrag()
+        }
         let host = NSHostingView(rootView: BarContent(model: model))
         host.frame = catcher.bounds
         host.autoresizingMask = [.width, .height]
@@ -126,9 +136,36 @@ final class BarPanel: NSPanel {
         apply()
     }
 
+    /// 拖拽期间把面板的几何冻住，并冻在展开态。
+    ///
+    /// 实测（日志在手）：拖拽进行中改窗口大小，AppKit 随后交给我们的
+    /// `draggingLocation` 会以新高度为轴整个翻过去——原本离底边 71.9 的落点报成 383.1，
+    /// 而 455 − 383.1 正好是 71.9。这个失准约二十毫秒后自愈：同一批日志里，改高之后
+    /// 67ms 与 100ms 松手的两次都落对了，16–20ms 松手的三次全部落空。文件因此偶尔弹回去，
+    /// 而且手越快越容易撞上。
+    ///
+    /// 冻在展开态而不是当前高度，是因为浮层要在拖拽期间报出停在哪个窗口上（停留唤前）。
+    /// 唯一那次改高发生在拖拽刚进入本条的时刻，那时用户不可能已经在松手。
+    func beginDrag() {
+        guard !dragging else { return }
+        dragging = true
+        apply()
+    }
+
+    func endDrag() {
+        guard dragging else { return }
+        dragging = false
+        apply()
+    }
+
     /// 面板几何与窗口数无关，只跟屏和浮层的需要走。
     private func apply() {
-        let height = expanded ? Self.panelHeight : Self.compactHeight
+        let height = (expanded || dragging) ? Self.panelHeight : Self.compactHeight
+        // 拖拽期间不该出现这一行。出现了就说明几何又在拖拽中变了，落点会跟着失准。
+        if self.frame.height != height {
+            Timeline.log(String(format: "面板改高  %.0f → %.0f%@",
+                                self.frame.height, height, dragging ? "  ⚠️ 拖拽进行中" : ""))
+        }
         // 必须先于 setFrame：视图侧随后上报的矩形要按这个高度换算成离底边的距离
         model.setPanelHeight(height)
         let frame = homeScreen.frame
