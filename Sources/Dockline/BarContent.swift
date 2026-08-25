@@ -1066,7 +1066,13 @@ struct BarContent: View {
         guard let cell = slot.cell else {
             // 正在启动的 App 再点没有意义：它还没到达，也就谈不上「已在眼前」
             guard let app = slot.app, !slot.bouncing else { return }
-            model.world.launch(app, on: model.display)
+            // 空心圈说的是「有窗口，但不在这块屏」，点它就该把它拿过来——记号先说了，
+            // 点击才照做（计划书 §3.1 的三档指示点）。
+            if case .elsewhere = slot.mark, let display = model.display {
+                model.world.bringHere(app, to: display)
+            } else {
+                model.world.launch(app, on: model.display)
+            }
             return
         }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
@@ -1127,7 +1133,7 @@ struct Slot {
     let icon: NSImage?
     let label: String?
     let labelWidth: CGFloat
-    let showsDot: Bool
+    let mark: WindowMark
     let tabs: Int
     let badge: String?
     let activity: Activity?
@@ -1147,7 +1153,7 @@ struct Slot {
             self.icon = model.world.icon(for: cell)
             self.label = cell.label
             self.labelWidth = cell.labelWidth
-            self.showsDot = cell.showsDot
+            self.mark = cell.showsDot ? .here : .none
             self.tabs = cell.tabs.count
             // App 级的东西只挂在该 App 的第一格上，不逐格重复
             self.badge = cell.leadsApp ? model.world.badges[cell.bundleID ?? ""] : nil
@@ -1165,7 +1171,8 @@ struct Slot {
             self.icon = model.world.icon(app: app.url, bundleID: app.bundleID)
             self.label = nil
             self.labelWidth = 0
-            self.showsDot = false
+            // 窗口全在别的屏时给一个弱记号，而不是和「压根没开」共用一张脸。
+            self.mark = model.world.hasWindows(app) ? .elsewhere : .none
             self.tabs = 0
             self.badge = model.world.badges[app.bundleID]
             self.activity = nil
@@ -1181,7 +1188,7 @@ struct Slot {
             self.icon = nil
             self.label = nil
             self.labelWidth = 0
-            self.showsDot = false
+            self.mark = .none
             self.tabs = 0
             self.badge = nil
             self.activity = nil
@@ -1228,7 +1235,11 @@ private struct DockCell: View {
         AppIcon(image: slot.icon, size: metrics.icon, minimized: slot.minimized)
             .badge(slot.badge, size: metrics.icon)
             .overlay(alignment: .bottom) {
-                if slot.showsDot { RunDot(drop: metrics.dotDrop) }
+                switch slot.mark {
+                case .here: RunDot(drop: metrics.dotDrop)
+                case .elsewhere: RunDot(drop: metrics.dotDrop, hollow: true)
+                case .none: EmptyView()
+                }
             }
             // 收着几个标签就标几。落在左上角：右上角是未读角标的位置
             .overlay(alignment: .topLeading) {
@@ -1482,12 +1493,26 @@ private struct RunDot: View {
     /// 从图标下沿往下落多少。挂在图标上而不是整格上：带标签的格子横跨图标与标签，
     /// 挂在格子上点会飘到标签底下。
     let drop: CGFloat
+    /// 窗口在别的屏上——画成空心圈。
+    ///
+    /// **弱记号取形状差异，不取不透明度或尺寸。** 后两者是量的差异，只有在同屏能看到
+    /// 一个实心点作参照时才读得出来；而副屏上常常只固定了两三个 App，弱记号很可能是
+    /// 条上唯一的那个点。空心圈单独一个也读得出来。
+    var hollow = false
+
+    /// 空心圈要比实心点稍大一点才不糊。那条带有 10pt，放得下。
+    private var size: CGFloat { hollow ? BarMetrics.dotSize + 1 : BarMetrics.dotSize }
 
     var body: some View {
-        Circle()
-            .fill(.primary.opacity(0.65))
-            .frame(width: BarMetrics.dotSize, height: BarMetrics.dotSize)
-            .offset(y: drop)
+        Group {
+            if hollow {
+                Circle().strokeBorder(.primary.opacity(0.65), lineWidth: 1)
+            } else {
+                Circle().fill(.primary.opacity(0.65))
+            }
+        }
+        .frame(width: size, height: size)
+        .offset(y: drop)
     }
 }
 

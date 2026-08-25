@@ -163,8 +163,9 @@ final class World: ObservableObject {
     ///
     /// 尺寸照旧，位置按它在原屏可见区域里的相对位置落下去，装不下就夹进目标的可见区域。
     /// 写位置用的是接管最大化那套 AX 双写——不擅自动 Space，也不碰窗口层级。
-    func move(_ window: IndexedWindow, to display: CGDirectDisplayID) {
-        guard let element = window.element else {
+    func move(_ window: IndexedWindow, to display: CGDirectDisplayID,
+              using override: AXUIElement? = nil) {
+        guard let element = override ?? window.element else {
             Timeline.log("⚠️ 移到显示器跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
             return
         }
@@ -1086,6 +1087,37 @@ final class World: ObservableObject {
     /// activate 只是把 App 提到前台、不发 reopen 事件，而这个槽位上的 App 恰恰是
     /// 一个窗口都没有的——像系统设置那样关掉窗口后进程还在的，activate 一下什么也不会发生。
     /// openApplication 对运行中的 App 同样发 reopen，这正是 Dock 点击的语义。
+    /// 这个 App 此刻有没有窗口。槽位能出现在条上就说明**本屏**没有它的窗口，
+    /// 所以这里为真即「有，但都在别的屏」——指示点画成空心圈的判据。
+    func hasWindows(_ app: DormantApp) -> Bool { !windowsOf(app).isEmpty }
+
+    private func windowsOf(_ app: DormantApp) -> [IndexedWindow] {
+        // 有 pid 就按 pid：同一个 App 可能开了多个实例，bundle ID 分不开它们。
+        if let pid = app.pid { return windows.filter { $0.pid == pid } }
+        return windows.filter { $0.bundleID == app.bundleID }
+    }
+
+    /// 把这个 App 已有的窗口拿到这块屏来（计划书 §6 M5）。
+    ///
+    /// 槽位下面那个空心圈已经预告了这件事——它说的是「有窗口，但不在这块屏」，
+    /// 而点一格的意思一向是「我要用它」。多扇时拿最近用过的那一扇：它最可能是
+    /// 用户心里想的那个。想开一扇**新的**是另一件事，走右键的「在此显示器打开」。
+    func bringHere(_ app: DormantApp, to display: CGDirectDisplayID) {
+        guard let window = windowsOf(app)
+            .max(by: { (lastActive[$0.id] ?? 0) < (lastActive[$1.id] ?? 0) }) else {
+            Timeline.log("⚠️ 拿到本屏跳过 \(app.name)：它此刻一个窗口都没有")
+            return
+        }
+        // 别的 Space 上的窗口先迁过来——挪位置和摆位一样要写它的几何，同样要 AX 引用。
+        reach(window, on: display, why: "拿到本屏") { [weak self] element in
+            guard let self, let element else { return }
+            // 先召回：最小化的窗口挪不动，它得先从最小化里出来。
+            recall(window)
+            noteActivated(window.id)
+            move(window, to: display, using: element)
+        }
+    }
+
     /// - Parameter display: 从哪块屏的条上点的。它开出来的窗口要落在这块屏上——
     ///   用户在哪儿点就在哪儿出现（计划书 §6 M5「对象全局，交互就地」）。
     ///
