@@ -62,6 +62,9 @@ final class BarPanel: NSPanel {
         catcher.hover = { [weak model] id in model?.setFileDropTarget(id) }
         catcher.drop = { [weak model] id, urls in model?.acceptDrop(id, urls) ?? false }
         catcher.zoneReport = { [weak model] in model?.dropZoneReport ?? "（模型已释放）" }
+        catcher.moved = { [weak model] point in model?.dragMoved(to: point) }
+        catcher.left = { [weak model] in model?.dragLeft() }
+        catcher.ended = { [weak model] in model?.dragEnded() }
         let host = NSHostingView(rootView: BarContent(model: model))
         host.frame = catcher.bounds
         host.autoresizingMask = [.width, .height]

@@ -486,6 +486,71 @@ final class BarModel: ObservableObject {
         fileDropTarget = id
     }
 
+    // MARK: 拖放停留唤前（计划书 §6 M6）
+    //
+    // 拖着文件停在某个窗口格上，那个窗口被带到前台，拖拽会话不断，用户直接丢进去。
+    // 系统对程序坞图标本来就是这么做的（弹簧文件夹是同一套手势语言），区别只在粒度：
+    // 系统给的是「哪个 App」，这里给的是「哪一个窗口」。
+
+    /// 停多久算「停住了」。访达的弹簧文件夹约半秒，与之对齐。§9 的待调参项。
+    private static let springDwell: TimeInterval = 0.5
+
+    /// 拖拽此刻停在哪个窗口格上。浮层据此报出那个窗口的名字——不然用户不知道
+    /// 再停一下会把谁叫到前面来。
+    @Published private(set) var dragOverWindow: CGWindowID?
+    private var springWork: DispatchWorkItem?
+    /// 唤前之前谁在前台。文件没丢进去就还回去。
+    private var springOrigin: CGWindowID?
+
+    /// 拖拽经过。同一格上继续动不重新计时——那样的话手抖一下就永远等不到唤前。
+    func dragMoved(to point: CGPoint) {
+        let window = windowCell(at: point)
+        guard window?.id != dragOverWindow else { return }
+        dragOverWindow = window?.id
+        springWork?.cancel()
+        springWork = nil
+        // 已经在前台的窗口没什么可唤的
+        guard let window, window.id != world.frontWindow else { return }
+        let work = DispatchWorkItem { [weak self] in self?.spring(window) }
+        springWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.springDwell, execute: work)
+    }
+
+    /// 指针离开了本条。多半是往那个窗口里去了——唤前就此作数，不再还原。
+    func dragLeft() {
+        springWork?.cancel()
+        springWork = nil
+        dragOverWindow = nil
+        springOrigin = nil
+    }
+
+    /// 拖拽在条上结束：文件没进那个窗口，把前台还回去。
+    func dragEnded() {
+        springWork?.cancel()
+        springWork = nil
+        dragOverWindow = nil
+        guard let origin = springOrigin else { return }
+        springOrigin = nil
+        guard let window = world.windows.first(where: { $0.id == origin }) else { return }
+        world.recall(window)
+    }
+
+    private func spring(_ window: IndexedWindow) {
+        springWork = nil
+        // 一次拖拽里可能连着唤起好几个窗口，要还原的始终是最初那个
+        if springOrigin == nil { springOrigin = world.frontWindow }
+        Timeline.log("拖放停留唤前  wid \(window.id) \(window.appName) — \(window.title)")
+        world.recall(window)
+    }
+
+    /// 落在哪一格上。读右键那份命中区——它每一格都登记，而拖放接收区只有能接文件的
+    /// 那几项（固定文件夹、废纸篓）才有。
+    private func windowCell(at point: CGPoint) -> IndexedWindow? {
+        guard let id = menuZone(at: point) else { return nil }
+        for case .window(let cell) in barItems where cell.identity == id { return cell.window }
+        return nil
+    }
+
     /// 松手。目标是项 id：垃圾桶或某个固定文件夹。
     @discardableResult
     func acceptDrop(_ id: String, _ urls: [URL]) -> Bool {

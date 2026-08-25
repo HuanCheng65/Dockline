@@ -17,6 +17,13 @@ final class DropCatcher: NSView {
     var drop: ((String, [URL]) -> Bool)?
     /// 登记在册的接收区。只在落空时读一次，用来分辨「落点不对」和「接收区不对」。
     var zoneReport: (() -> String)?
+    /// 拖拽经过的落点。停留唤前要靠它计时，所以每一次移动都要交出去，
+    /// 不只是落在接收区上的那些。
+    var moved: ((CGPoint) -> Void)?
+    /// 指针离开了本条
+    var left: (() -> Void)?
+    /// 拖拽结束
+    var ended: (() -> Void)?
 
     /// 上一次命中的目标。只在变化时记一笔——拖拽移动是连续事件，逐条记会把日志淹掉。
     private var lastTarget: String??
@@ -46,6 +53,7 @@ final class DropCatcher: NSView {
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         let location = point(sender)
+        moved?(location)
         let target = zone?(location)
         if lastTarget != target {
             lastTarget = target
@@ -59,11 +67,13 @@ final class DropCatcher: NSView {
     override func draggingExited(_ sender: NSDraggingInfo?) {
         lastTarget = nil
         hover?(nil)
+        left?()
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         lastTarget = nil
         hover?(nil)
+        ended?()
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {

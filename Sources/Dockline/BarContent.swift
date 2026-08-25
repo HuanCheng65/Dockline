@@ -807,7 +807,16 @@ struct BarContent: View {
     /// 名牌此刻该报谁的名字。nil = 不出名牌。
     private func pillTarget(_ layout: BarLayout) -> (text: String, anchorX: CGFloat)? {
         // 让不让位给信息更多的那两档，由 `floatStage` 统一定，这里只管报名字。
-        // 键盘会话优先。指针可能停在某处一动不动，那不是用户此刻的注意力所在。
+        // 拖拽最优先：手上正拎着文件，停在哪一格上就是此刻唯一要紧的事。
+        if let id = model.dragOverWindow {
+            guard let item = layout.items.first(where: { item in
+                      if case .window(let cell) = item { return cell.id == id } else { return false }
+                  }),
+                  let anchorX = cellAnchors[item.id], let text = name(of: item)
+            else { return nil }
+            return (text, anchorX)
+        }
+        // 键盘会话次之。指针可能停在某处一动不动，那不是用户此刻的注意力所在。
         if model.keyVisible {
             guard let item = layout.items.first(where: { keySelected($0) }),
                   let anchorX = cellAnchors[item.id], let text = name(of: item)
