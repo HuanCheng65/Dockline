@@ -72,9 +72,46 @@ final class BarModel: ObservableObject {
         }
     }
 
+    /// 这条 bar 钉在哪块屏上。
+    var screen: NSScreen? { NSScreen.screens.first { displayID($0) == display } }
+
     /// 这条 bar 所在屏幕的左边界，用来把多块屏从左到右接起来。
-    var screenOriginX: CGFloat? {
-        NSScreen.screens.first { displayID($0) == display }?.frame.minX
+    var screenOriginX: CGFloat? { screen?.frame.minX }
+
+    // MARK: 大预览（计划书 §6 M6）
+
+    /// 此刻预览卡上是哪个窗口。nil = 没有卡，也就没得放大。
+    /// 由视图报上来，`KeyboardSwitch` 据此决定那一下空格该不该吞。
+    private(set) var peekTarget: CGWindowID?
+    /// 大预览正开着。视图据此把卡片长到大档，面板据此把地方腾出来。
+    @Published private(set) var peeking = false
+    /// 大预览要的地方比浮层那一档大得多，单独一条通道。见 `BarPanel`。
+    var onPeekRoom: ((Bool) -> Void)?
+
+    private var peekRelease: DispatchWorkItem?
+    /// 收回等一下：卡片缩回小档是一段约 0.28s 的弹簧，面板先落回来会把它拦腰裁掉。
+    private static let peekReleaseDelay: TimeInterval = 0.36
+
+    func setPeekTarget(_ id: CGWindowID?) {
+        peekTarget = id
+    }
+
+    func setPeeking(_ value: Bool) {
+        guard peeking != value else { return }
+        peeking = value
+        peekRelease?.cancel()
+        peekRelease = nil
+        guard !value else {
+            onPeekRoom?(true)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            peekRelease = nil
+            onPeekRoom?(false)
+        }
+        peekRelease = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.peekReleaseDelay, execute: work)
     }
 
     func setKeySelection(_ id: CGWindowID?) {
@@ -248,6 +285,9 @@ final class BarModel: ObservableObject {
     }
 
     func fullscreenPredictionTimedOut() {
+        // 预判现在只落在目标那一块屏上（见 `World` 的接线），撤销也只该落在同一条。
+        // 少了这道守卫，别的屏上正被触底唤出的条会被这句按回去。
+        guard fullscreenPredictionPending else { return }
         fullscreenPredictionPending = false
         hidden = shouldHide
     }

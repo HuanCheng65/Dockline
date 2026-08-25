@@ -106,6 +106,8 @@ struct BarContent: View {
     @State private var hoveredCell: CGWindowID?
     /// 计划书 §3：悬停约 260ms 后浮出
     private static let previewDwell: TimeInterval = 0.26
+    /// 大预览开着时换格子的停留。见 `schedulePreview`。
+    private static let peekDwell: TimeInterval = 0.08
 
     struct PreviewTarget: Equatable {
         let window: IndexedWindow
@@ -164,6 +166,10 @@ struct BarContent: View {
                         // 动效挂在浮层自己身上，不挂在整棵树上：挂在外面的话，
                         // 悬停与键盘在同一次事务里都变了时，两条 .animation 会互相打架。
                         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: stage)
+                        // 长成大预览是另一段曲线：东西大得多，同一条曲线读起来会显轻飘。
+                        // 与上一条各管各的值，不会在同一次事务里打架。
+                        .animation(.spring(response: 0.36, dampingFraction: 0.88),
+                                   value: model.peeking)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -208,6 +214,10 @@ struct BarContent: View {
             }
             .onChange(of: model.keySelection) { _, _ in syncKeyPreview(layout) }
             .onChange(of: model.keyVisible) { _, _ in syncKeyPreview(layout) }
+            // 有卡可放大没有，只有视图知道。空格该不该吞由此而定（见 `KeyboardSwitch`）。
+            // 认的是**此刻真正显示着**的那一档：预览卡让位给一排窗口那一档时，
+            // `preview` 还留着值，照它报会吞下一个什么都不会发生的空格。
+            .onChange(of: peekable(live)) { _, id in model.setPeekTarget(id) }
             // 名牌与选中底色换一格都是滑过去，不是这边灭那边亮——
             // 一块东西在移动读起来是连续的，十块各自明灭读起来是抽搐
             .animation(.spring(response: 0.26, dampingFraction: 0.88), value: model.keySelection)
@@ -349,7 +359,10 @@ struct BarContent: View {
             thumbnails.capture(target.window.id)
         }
         previewDwell = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.previewDwell, execute: work)
+        // 大预览开着时几乎不等：那 260ms 是用来挡「一路划过去」的，而按着空格的人
+        // 正是在一格格看，每换一格都对着一块空白等上四分之一秒会拖沓得刺眼。
+        let delay = model.peeking ? Self.peekDwell : Self.previewDwell
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     @ViewBuilder
@@ -939,9 +952,33 @@ struct BarContent: View {
         return nil
     }
 
+    /// 大预览那一档的上界。**按这条 bar 所在的屏算，不从容器量**——容器的高度正是随这张卡
+    /// 长出来的（见 `BarPanel`），从它量就成了循环。
+    ///
+    /// 四周留出桌面：它是「看一眼」而不是一次全屏转场，铺到整屏就变成了调度中心
+    /// 正输在的那种东西（§7）。
+    private static let peekInset: CGFloat = 40
+    private static let peekHeightRatio: CGFloat = 0.62
+
+    /// 此刻显示着的那张预览卡是谁的。一排窗口那一档里的卡不参与——那是另一棵视图树，
+    /// 放大它得让整块面板改变形态，是另一件事。
+    private func peekable(_ stage: FloatStage?) -> CGWindowID? {
+        guard let stage, case .preview(let target) = stage.kind else { return nil }
+        return target.window.id
+    }
+
+    private var peekBox: CGSize? {
+        guard model.peeking, let frame = model.screen?.frame else { return nil }
+        let room = frame.height - BarMetrics.bottomGap - BarMetrics.barHeight
+            - Self.floatGap - Self.peekInset
+        return CGSize(width: frame.width - Self.peekInset * 2,
+                      height: min(room, frame.height * Self.peekHeightRatio))
+    }
+
     private func floatSize(_ stage: FloatStage, in size: CGSize, layout: BarLayout) -> CGSize {
         guard case .list(let kind) = stage.kind else {
-            return PreviewCard.size(title: cardTitle(stage), detail: cardDetail(stage))
+            return PreviewCard.size(title: cardTitle(stage), detail: cardDetail(stage),
+                                    peek: peekBox)
         }
         guard let content = panelContent(kind, in: layout) else { return .zero }
         return CGSize(width: WindowPanel.width(content.windows.count, available: size.width),
@@ -961,7 +998,10 @@ struct BarContent: View {
         guard case .preview(let target) = stage.kind else { return nil }
         return PreviewCard.Detail(window: target.window,
                                   appName: target.appName,
-                                  image: thumbnails.images[target.window.id],
+                                  // 大预览那一张还没到之前先把小图顶上去。放大了是糊的，
+                                  // 但那几十毫秒里有东西看，比空一块强——快速查看也是这个观感。
+                                  image: (model.peeking ? thumbnails.large : nil)
+                                      ?? thumbnails.images[target.window.id],
                                   unavailable: thumbnails.unavailable.contains(target.window.id))
     }
 
@@ -1011,14 +1051,34 @@ struct BarContent: View {
             // 换档时只剩互相淡入淡出可做。同一棵树，标题才是同一个 Text、待在同一个位置，
             // 缩略图从它上方长出来。
             // `.task` 也必须无条件挂：只挂在其中一档上，修饰符链一变，identity 照样断。
-            PreviewCard(title: cardTitle(stage), detail: cardDetail(stage))
+            PreviewCard(title: cardTitle(stage), detail: cardDetail(stage), peek: peekBox)
                 .task(id: cardDetail(stage)?.window.id) {
                     guard let id = cardDetail(stage)?.window.id else { return }
                     while !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(1.2))
                         guard !Task.isCancelled else { return }
+                        // 大预览开着时不来抢采集：那一档自己在一轮接一轮地抓，
+                        // 而小图这一张此刻根本没人在看
+                        guard !model.peeking else { continue }
                         thumbnails.capture(id)
                     }
+                }
+                // 大预览是实时的：一轮接一轮地抓，抓图本身约 35ms，它自己就是节拍。
+                // 按住空格的那几秒才跑，松开即停——`.task` 的取消就是出口。
+                .task(id: model.peeking ? cardDetail(stage)?.window.id : nil) {
+                    guard model.peeking, let id = cardDetail(stage)?.window.id,
+                          let box = peekBox else { return }
+                    let width = box.width * (model.screen?.backingScaleFactor ?? 2)
+                    thumbnails.beginLarge(id)
+                    while !Task.isCancelled {
+                        // 抓不到时立刻重来会变成一个空转的死循环。最小化的窗口、
+                        // 别的 Space 上的窗口都抓不到，而卡片这时正显示着占位说明。
+                        guard await thumbnails.captureLarge(id, width: width) else {
+                            try? await Task.sleep(for: .milliseconds(200))
+                            continue
+                        }
+                    }
+                    thumbnails.endLarge()
                 }
                 .transition(.opacity.animation(.easeOut(duration: Self.stageFade)))
         }

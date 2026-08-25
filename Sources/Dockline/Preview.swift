@@ -47,18 +47,48 @@ final class Thumbnails: ObservableObject {
         unavailable.remove(id)
     }
 
-    private func grab(_ id: CGWindowID) async -> NSImage? {
+    // MARK: 大预览那一张（计划书 §6 M6）
+    //
+    // 单独放，不进 `images`：它按屏幕尺寸抓，一张十几 MB，而 `images` 是按窗口累积的。
+    // 松手即丢，任何时刻只留一张。
+
+    @Published private(set) var large: NSImage?
+    private var largeID: CGWindowID?
+
+    func beginLarge(_ id: CGWindowID) {
+        guard largeID != id else { return }
+        largeID = id
+        large = nil
+    }
+
+    func endLarge() {
+        largeID = nil
+        large = nil
+    }
+
+    /// 抓一张大的。调用方自己一轮接一轮地调，不另设节拍——抓图本身约 35ms，
+    /// 它自己就是限速器；排一个比抓图还密的节拍只会让请求堆起来。
+    @discardableResult
+    func captureLarge(_ id: CGWindowID, width: CGFloat) async -> Bool {
+        guard let image = await grab(id, width: width) else { return false }
+        // 松手之后才回来的那一张要丢掉，否则下一次大预览开场会闪一帧上一个窗口
+        guard largeID == id else { return true }
+        large = image
+        return true
+    }
+
+    private func grab(_ id: CGWindowID, width: CGFloat = Thumbnails.thumbWidth) async -> NSImage? {
         let cached = handles[id]
         if cached == nil { await list() }
         guard let handle = handles[id] else { return nil }
-        if let image = await Self.shoot(handle, id: id) { return image }
+        if let image = await Self.shoot(handle, id: id, width: width) { return image }
         // 句柄是上一次枚举时拿的，窗口关掉又新建就作废了。整个类只有这一处重来：
         // 重新枚举、拿新句柄再抓一张，还失败才是真的抓不到。刚枚举出来的句柄不重来
         // ——那只会把同一次失败原样再跑一遍。
         guard cached != nil else { return nil }
         await list()
         guard let fresh = handles[id] else { return nil }
-        return await Self.shoot(fresh, id: id)
+        return await Self.shoot(fresh, id: id, width: width)
     }
 
     private func list() async {
@@ -75,7 +105,12 @@ final class Thumbnails: ObservableObject {
         listing = nil
     }
 
-    private static func shoot(_ window: SCWindow, id: CGWindowID) async -> NSImage? {
+    /// 缩略图最宽 720px（@2x 的 360pt），够看清版式，也不必为它搬运整屏像素。
+    /// 大预览那一档由调用方按屏幕给出自己的宽度。
+    private nonisolated static let thumbWidth: CGFloat = 720
+
+    private static func shoot(_ window: SCWindow, id: CGWindowID,
+                              width: CGFloat) async -> NSImage? {
         // 输出尺寸必须按窗口此刻的几何算，不能用句柄里那份快照：句柄缓存着不动，窗口
         // 却会改尺寸，比例一对不上，抓回来的图就缩在缓冲区一角、其余是空白。
         // 单窗口的这次查询是微秒级的，与枚举整份可共享内容不是一回事。
@@ -86,8 +121,7 @@ final class Thumbnails: ObservableObject {
               bounds.width > 1, bounds.height > 1 else { return nil }
 
         let configuration = SCStreamConfiguration()
-        // 缩略图最宽 720px（@2x 的 360pt），够看清版式，也不必为它搬运整屏像素
-        let scale = min(1, 720 / bounds.width)
+        let scale = min(1, width / bounds.width)
         configuration.width = Int(bounds.width * scale)
         configuration.height = Int(bounds.height * scale)
         configuration.showsCursor = false
@@ -116,6 +150,11 @@ struct PreviewCard: View {
     let title: String
     /// nil = 只报名字那一档
     let detail: Detail?
+    /// 大预览那一档能占的最大范围。nil = 还是小卡。
+    ///
+    /// 由调用方按这条 bar 所在的屏算，不在这里从容器量：容器的高度正是随这张卡长的，
+    /// 从它量就成了循环。见 `BarContent.peekBox`。
+    let peek: CGSize?
 
     /// 长出来的那一层。窗口相关的东西全在这里，非窗口的项（固定文件夹、废纸篓、
     /// 启动台）因此天然只有名字那一档。
@@ -156,27 +195,35 @@ struct PreviewCard: View {
     /// 各取各的值会看出两个不相干的圆。
     private static var innerRadius: CGFloat { BarMetrics.barRadius - pad }
 
+    /// 画面能占的最大范围。两档只差这一个框——尺寸算法与视图树都是同一套。
+    private static func imageBox(_ peek: CGSize?, showsAppName: Bool) -> CGSize {
+        guard let peek else {
+            return CGSize(width: maxWidth - pad * 2, height: imageHeight)
+        }
+        return CGSize(width: peek.width - pad * 2,
+                      height: peek.height - pad * 2 - textHeight(showsAppName: showsAppName))
+    }
+
     /// 缩略图按原比例装进上界里
-    static func imageSize(_ image: NSImage?) -> CGSize {
-        let limit = maxWidth - pad * 2
+    static func imageSize(_ image: NSImage?, box: CGSize) -> CGSize {
         guard let image, image.size.width > 0, image.size.height > 0 else {
             return CGSize(width: minWidth - pad * 2, height: 60)
         }
         let ratio = image.size.width / image.size.height
-        let height = min(imageHeight, limit / ratio)
+        let height = min(box.height, box.width / ratio)
         return CGSize(width: (height * ratio).rounded(), height: height.rounded())
     }
 
     /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
-    static func size(title: String, detail: Detail?) -> CGSize {
+    static func size(title: String, detail: Detail?, peek: CGSize?) -> CGSize {
         guard let detail else {
             let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
             return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
         }
-        let image = imageSize(detail.image)
-        return CGSize(width: min(maxWidth, max(minWidth, image.width + pad * 2)),
-                      height: image.height + pad * 2
-                          + textHeight(showsAppName: showsAppName(title, detail)))
+        let shows = showsAppName(title, detail)
+        let image = imageSize(detail.image, box: imageBox(peek, showsAppName: shows))
+        return CGSize(width: min(peek?.width ?? maxWidth, max(minWidth, image.width + pad * 2)),
+                      height: image.height + pad * 2 + textHeight(showsAppName: shows))
     }
 
     var body: some View {
@@ -204,7 +251,9 @@ struct PreviewCard: View {
     }
 
     private func thumbnail(_ detail: Detail) -> some View {
-        let size = Self.imageSize(detail.image)
+        let size = Self.imageSize(
+            detail.image,
+            box: Self.imageBox(peek, showsAppName: Self.showsAppName(title, detail)))
         return ZStack {
             if let image = detail.image {
                 Image(nsImage: image)

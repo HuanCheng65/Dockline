@@ -16,6 +16,7 @@ final class KeyboardSwitch {
     private static let leftKey = Int64(kVK_LeftArrow)
     private static let rightKey = Int64(kVK_RightArrow)
     private static let escapeKey = Int64(kVK_Escape)
+    private static let spaceKey = Int64(kVK_Space)
 
     /// 会话开始到显形之间的沉默期。飞快按一下 ⌥Tab 换到上一个窗口是最高频的用法，
     /// 那一下全程不该有任何东西闪，系统的 ⌘Tab 同样如此。§9 的待调参项。
@@ -86,6 +87,7 @@ final class KeyboardSwitch {
             let code = event.getIntegerValueField(.keyboardEventKeycode)
             guard swallowed.contains(code) else { return pass }
             swallowed.remove(code)
+            if code == Self.spaceKey { endPeek() }
             return nil
 
         case .flagsChanged:
@@ -100,6 +102,9 @@ final class KeyboardSwitch {
             // 下一次正常按它时抬起被吞——前台 App 收到一条没有配对抬起的按下，
             // 正是这份名单要防的事情反过来发生一遍。
             swallowed.removeAll()
+            // 空格的抬起同样可能丢在里面，而大预览是按着才成立的：收不到抬起就散掉，
+            // 不能让它一直开着。
+            endPeek()
             // 停用期间的事件是彻底收不到的，⌥ 的松开边沿可能就丢在里面。
             // 修饰键状态因此不能只靠边沿维护，重新启用后直接读一次当前状态。
             if session != nil,
@@ -123,10 +128,23 @@ final class KeyboardSwitch {
             && !flags.contains(.maskControl)
 
         guard session != nil else {
-            // 快路径。会话之外只有一件事会发生：干净的 ⌥Tab 起一次会话。
-            // 绝大多数击键在这一行就走人——这段代码挂在每一次击键上。
-            guard plainOption, event.getIntegerValueField(.keyboardEventKeycode) == Self.tabKey
-            else { return false }
+            // 快路径。会话之外只有两件事会发生：干净的 ⌥Tab 起一次会话，
+            // 以及预览卡开着时干净的空格放大它。绝大多数击键在这几行就走人
+            // ——这段代码挂在每一次击键上，所以先比键码再看别的。
+            let code = event.getIntegerValueField(.keyboardEventKeycode)
+            if code == Self.spaceKey {
+                // 组合键里的空格是别人的（⌃空格切输入法、⌘空格聚焦），一律不碰
+                guard flags.isDisjoint(with: [.maskAlternate, .maskCommand,
+                                              .maskControl, .maskShift]) else { return false }
+                // 长按会自动重复，照吞不误——放行的话前台 App 会收到一串空格
+                guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
+                    return swallowed.contains(Self.spaceKey)
+                }
+                guard beginPeek() else { return false }
+                swallowed.insert(Self.spaceKey)
+                return true
+            }
+            guard plainOption, code == Self.tabKey else { return false }
             guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
                 return swallowed.contains(Self.tabKey)
             }
@@ -147,6 +165,19 @@ final class KeyboardSwitch {
         guard plainOption else {
             cancel()
             return false
+        }
+        // 空格在会话里也是放大，不是「不属于这个模式的键」。不认它的话，会话中想看清
+        // 选中的到底是哪个窗口，按下去会既散掉会话、又给前台 App 打进一个空格。
+        if code == Self.spaceKey {
+            guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else {
+                return swallowed.contains(code)
+            }
+            guard beginPeek() else {
+                cancel()
+                return false
+            }
+            swallowed.insert(code)
+            return true
         }
         switch code {
         case Self.tabKey, Self.leftKey, Self.rightKey:
@@ -222,6 +253,28 @@ final class KeyboardSwitch {
         session.selected = list[next].id
         self.session = session
         publish()
+    }
+
+    // MARK: 大预览（计划书 §6 M6）
+    //
+    // 预览卡已经长出来时按住空格把它放大，松开收回——快速查看那一套。悬停与键盘会话
+    // 是同一个动作：⌥Tab 会话里 ⌥ 已经被占着，再让修饰键兼职就冲突了，空格两边通用。
+    //
+    // **只在有卡可放大时吞这个键。** 没有卡的空格就是普通的空格，原样交回去；
+    // 指针恰好停在条上、人却在打字，是完全正常的事。
+
+    /// 返回 true 表示这一下由我们吞掉。
+    private func beginPeek() -> Bool {
+        guard let world, let bar = world.bars.first(where: { $0.peekTarget != nil })
+        else { return false }
+        // 长高面板、重排浮层要出这个回调再做：回调里做慢活，系统会因超时把整个 tap 停用
+        DispatchQueue.main.async { bar.setPeeking(true) }
+        return true
+    }
+
+    private func endPeek() {
+        guard let world else { return }
+        DispatchQueue.main.async { for bar in world.bars { bar.setPeeking(false) } }
     }
 
     // MARK: 会话期间的鼠标

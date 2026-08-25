@@ -27,6 +27,9 @@ final class BarPanel: NSPanel {
     /// 有拖拽正在本条上进行。期间面板的几何冻住，见 `beginDrag`。
     private var dragging = false
 
+    /// 大预览开着。它要的地方比浮层那一档大得多，见 `apply`。
+    private var peeking = false
+
     /// 常态高度：只装得下玻璃条本身。
     ///
     /// 面板原先一直是全高的，其中只有底部那一条是玻璃、其余全透明。截屏工具按窗口边界
@@ -86,6 +89,7 @@ final class BarPanel: NSPanel {
         contentView = catcher
 
         model.onFloatRoom = { [weak self] needed in self?.setExpanded(needed) }
+        model.onPeekRoom = { [weak self] needed in self?.setPeeking(needed) }
         checkActiveAppearanceOverride()
         apply()
     }
@@ -168,9 +172,19 @@ final class BarPanel: NSPanel {
         apply()
     }
 
+    /// 大预览期间整屏高。上面那条「面板不再一直全高」的理由是常态下的：截屏工具按窗口
+    /// 边界出候选，屏幕下半永远压着我们一个巨大候选框。大预览是按住键的那几秒，
+    /// 按着键的人不会同时在框选截图，那条理由在这几秒里不成立。
+    private func setPeeking(_ value: Bool) {
+        guard peeking != value else { return }
+        peeking = value
+        apply()
+    }
+
     /// 面板几何与窗口数无关，只跟屏和浮层的需要走。
     private func apply() {
-        let height = (expanded || dragging) ? Self.panelHeight : Self.compactHeight
+        let height = peeking ? homeScreen.frame.height
+            : ((expanded || dragging) ? Self.panelHeight : Self.compactHeight)
         // 拖拽期间不该出现这一行。出现了就说明几何又在拖拽中变了，落点会跟着失准。
         if self.frame.height != height {
             Timeline.log(String(format: "面板改高  %.0f → %.0f%@",
