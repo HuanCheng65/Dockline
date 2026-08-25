@@ -64,6 +64,8 @@ final class World: ObservableObject {
 
     let maximizer = Maximizer()
     let corrector = TilingCorrector()
+    /// 拖格子分屏时画在桌面上的那块落点
+    let splitPreview = SplitPreview()
     /// nil = 快捷键没注册上（组合被别的程序占用）。设置页据此说明情况。
     private(set) var fillHotKey: HotKey?
 
@@ -737,6 +739,22 @@ final class World: ObservableObject {
     /// 铺满 / 还原。计划书 §3「接管最大化」的自有入口之一，从窗口格的右键菜单进入。
     func fill(_ window: IndexedWindow) {
         maximizer.toggle(window)
+    }
+
+    /// 贴到落点（计划书 §3「接管最大化」）。拖格子分屏的落定走这条。
+    ///
+    /// 先召回再摆位。反过来的话，最小化的窗口是摆不动的——它得先从最小化里出来，
+    /// 而那一步正是召回做的。代价是普通窗口会在旧位置上露一两帧，比摆不动轻。
+    /// 前置本身也是要的：用户刚把它放到这儿，要的就是它；它若压在别人底下，
+    /// 不前置的话屏幕上什么都不会发生。
+    ///
+    /// 落定的动画由预览承担：它此刻正停在窗口要去的那个矩形上，所以先把几何写下去、
+    /// 再让它化开。我们改不动别人窗口的动画，AX 写下去就是一跳。
+    func tile(_ window: IndexedWindow, at spot: Maximizer.Spot) {
+        recall(window)
+        noteActivated(window.id)
+        maximizer.place(window, at: spot)
+        splitPreview.dissolve()
     }
 
     var correctsTiling: Bool { pins.correctsTiling }

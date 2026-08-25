@@ -477,6 +477,18 @@ final class BarModel: ObservableObject {
         menuZones.first { $0.value.contains(point) }?.key
     }
 
+    /// 条上某一项在屏幕坐标（AppKit，左下原点）里的位置。
+    ///
+    /// 命中区存的就是「离面板底边多远」，而面板贴着本屏底边、占满整宽，所以这里只差
+    /// 一个屏幕原点的平移。分屏的落点预览要从这一格长出来，需要它。
+    func screenRect(of id: String) -> CGRect? {
+        guard let rect = menuZones[id],
+              let screen = NSScreen.screens.first(where: { displayID($0) == display })
+        else { return nil }
+        return CGRect(x: screen.frame.minX + rect.minX, y: screen.frame.minY + rect.minY,
+                      width: rect.width, height: rect.height)
+    }
+
     func barContains(_ point: CGPoint) -> Bool {
         barHitFrame.contains(point)
     }

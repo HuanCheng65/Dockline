@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import DocklineCore
 import SwiftUI
 
@@ -51,6 +52,22 @@ struct BarContent: View {
     @State private var clusterAnchors: [Int: CGFloat] = [:]
     /// 拖拽中压住的那一个——松手即与它吸合成簇
     @State private var mergeTarget: DragUnit?
+    /// 分屏（计划书 §3「接管最大化」）。把格子提出条的上沿就上膛，此后指针在屏幕的
+    /// 哪一半，落点就是哪一半；落点由屏幕上那块玻璃报，条上只留一个压暗的占位。
+    @State private var splitSpot: Maximizer.Spot?
+    /// 落点是从这一格长出来的，取消时也缩回这里。屏幕坐标。
+    @State private var splitOrigin: CGRect?
+    /// 本次拖拽能不能分屏。起拖那一刻定一次，拖拽期间不会变。
+    @State private var splitable = false
+    /// 本次拖拽已被 Esc 取消。手势没法从外面掐断，只能记下来、松手时什么都不做。
+    @State private var splitCancelled = false
+    @State private var escapeWatch: Any?
+    /// 指针高出条的上沿多少算上膛。重排是横向的手势，横着晃到不了这个高度。
+    private static let splitArm: CGFloat = 24
+    /// 掉回多低算解除。与上膛留出迟滞，免得在临界线上抖。
+    private static let splitDisarm: CGFloat = 8
+    /// 换边的迟滞。指针在中线附近微动时，落点不该来回翻。
+    private static let splitEdge: CGFloat = 24
     /// 悬停浮出面板的那个簇，与它在根坐标系里的中心横坐标
     @State private var panel: (kind: FloatPanel, anchorX: CGFloat)?
     @State private var panelShow: DispatchWorkItem?
@@ -406,11 +423,18 @@ struct BarContent: View {
                 if dragging == nil { unitFrames[unit] = rect }
             },
             offset: { unit in
-                CGSize(width: dragging == unit ? dragOffset : displacement(of: unit), height: 0)
+                // 分屏态下这一格回到原位：它已经交给屏幕上那块落点了，再跟着指针走
+                // 就成了两个东西在表示同一件事。
+                if unit == dragging {
+                    return splitSpot == nil ? CGSize(width: dragOffset, height: 0) : .zero
+                }
+                return CGSize(width: displacement(of: unit), height: 0)
             },
-            lifted: { $0 == dragging },
+            lifted: { $0 == dragging && splitSpot == nil },
             merging: { $0 == mergeTarget },
+            placing: { $0 == dragging && splitSpot != nil },
             changed: { unit, translation in
+                guard !splitCancelled else { return }
                 // 手势的最小距离是 0，为的是拿到「按下」；没走出 dragThreshold
                 // 就还不是拖拽。不能再挂第二个手势去拿按下态——两个手势会互相抢，
                 // 内层那个会把负责重排的这条整个吃掉。
@@ -420,8 +444,22 @@ struct BarContent: View {
                     return
                 }
                 pressedItem = nil
-                dragging = unit
+                if dragging != unit {
+                    dragging = unit
+                    // 这一格在屏幕上的位置只量这一次：拖拽期间它不会挪，而分屏一旦上膛
+                    // 就要从这儿长出来。能不能分屏也在这里定一次——判据每一帧都一样，
+                    // 而它不成立时要说的话只该说一遍。
+                    splitOrigin = cellRect(of: unit)
+                    splitable = canSplit(unit)
+                }
                 dragOffset = translation.width
+                // 提出条的上沿即转入分屏。此时既不重排也不捏合——落点在屏幕上，
+                // 条上的次序一个字都没改。
+                guard !aimSplit(unit) else {
+                    mergeTarget = nil
+                    dropBefore = nil
+                    return
+                }
                 // 压在另一个正中 = 捏合；压在缝里 = 重排。
                 // 判定按被拖那个的视觉中心，不按指针——抓在格子的哪一端，指针就偏多少。
                 let center = (unitFrames[unit]?.midX ?? 0) + translation.width
@@ -430,10 +468,21 @@ struct BarContent: View {
             },
             ended: { unit in
                 pressedItem = nil
+                let spot = splitSpot
+                let cancelled = splitCancelled
+                splitSpot = nil
+                splitOrigin = nil
+                splitable = false
+                splitCancelled = false
+                watchEscape(false)
                 // 只是按了一下、没拖动：什么都不做。落点是 nil 意味着「拖到末尾」，
                 // 在这里执行就成了「点一下就把它挪到最后」。
                 guard dragging != nil else { return }
-                if let mergeTarget {
+                if cancelled {
+                    // Esc 已经把状态收干净了，这里只负责别再做事
+                } else if let spot {
+                    tile(unit, at: spot)
+                } else if let mergeTarget {
                     model.world.formCluster(unit, into: mergeTarget)
                 } else {
                     model.world.move(unit, before: dropBefore)
@@ -443,6 +492,104 @@ struct BarContent: View {
                 dropBefore = nil
                 mergeTarget = nil
             })
+    }
+
+    // MARK: 分屏
+    //
+    // 计划书 §3「接管最大化」：拖的是格子而非窗口本体，与系统拼贴的手势不冲突。
+    // 它做得到系统做不到的事——压在别人底下、已经最小化的窗口，一个手势就贴过去，
+    // 不必先把它翻出来。
+
+    /// 这一次拖拽能不能分屏。
+    private func canSplit(_ unit: DragUnit) -> Bool {
+        // 簇与没有窗口的槽位不参与：一个簇往哪半边贴是歧义的。
+        guard case .window(let id) = unit,
+              let window = world.windows.first(where: { $0.id == id }) else { return false }
+        guard splitOrigin != nil else {
+            // 正在被拖的格子一定在条上，量不到它只可能是几何上报断了。
+            Timeline.log("⚠️ 分屏取不到 wid \(id) 那一格在屏幕上的位置，本次拖拽不能分屏")
+            return false
+        }
+        // 摆位要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有引用
+        // （见 `Maximizer.place`）。此时干脆不上膛：宁可提上去没有反应，也不要把用户
+        // 甩到另一个桌面去、还什么都没摆成。
+        guard window.element != nil else {
+            Timeline.log("分屏不可用 wid \(id) \(window.appName)：窗口在其他 Space，取不到 AX 引用")
+            return false
+        }
+        return true
+    }
+
+    /// 更新落点，返回是否处于分屏态。
+    private func aimSplit(_ unit: DragUnit) -> Bool {
+        guard splitable, case .window(let id) = unit,
+              let window = world.windows.first(where: { $0.id == id }),
+              let origin = splitOrigin else { return false }
+        let pointer = NSEvent.mouseLocation
+        // 目标屏是指针所在的那一块，不是格子来自的那一块——手已经过去了。
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) })
+                ?? NSScreen.main else { return false }
+        // 判据是指针离条的上沿多高，不是手势拖了多远：抓在格子的哪个位置、条有多高
+        // 都不该影响「提出去了没有」这件事。
+        let lift = pointer.y - (screen.frame.minY + BarMetrics.reservedBottom)
+        if splitSpot == nil {
+            guard lift >= Self.splitArm else { return false }
+            watchEscape(true)
+        } else if lift < Self.splitDisarm {
+            splitSpot = nil
+            watchEscape(false)
+            world.splitPreview.cancel()
+            return false
+        }
+        let middle = screen.frame.midX
+        let spot: Maximizer.Spot
+        switch splitSpot {
+        case .left where pointer.x < middle + Self.splitEdge: spot = .left
+        case .right where pointer.x > middle - Self.splitEdge: spot = .right
+        default: spot = pointer.x < middle ? .left : .right
+        }
+        splitSpot = spot
+        world.splitPreview.aim(at: world.maximizer.rect(spot, on: screen), on: screen,
+                               from: origin,
+                               icon: world.icon(pid: window.pid),
+                               title: window.title.isEmpty ? window.appName : window.title)
+        return true
+    }
+
+    private func tile(_ unit: DragUnit, at spot: Maximizer.Spot) {
+        guard case .window(let id) = unit,
+              let window = world.windows.first(where: { $0.id == id }) else { return }
+        world.tile(window, at: spot)
+    }
+
+    private func cellRect(of unit: DragUnit) -> CGRect? {
+        guard let item = model.barItems.first(where: { $0.dragUnit == unit }) else { return nil }
+        return model.screenRect(of: item.id)
+    }
+
+    /// 拖拽中按 Esc 放弃。原生的拖放也是这个键，没有理由另立一个。
+    ///
+    /// 只挂全局监听：本体是 nonactivating 面板，永远不会成为 key window，按键根本不到
+    /// 我们这儿来。手势掐不断，所以取消是「把状态收干净、剩下的照走，松手时不做事」。
+    private func watchEscape(_ on: Bool) {
+        guard on != (escapeWatch != nil) else { return }
+        guard on else {
+            escapeWatch.map(NSEvent.removeMonitor)
+            escapeWatch = nil
+            return
+        }
+        escapeWatch = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+            guard Int(event.keyCode) == kVK_Escape else { return }
+            splitCancelled = true
+            splitSpot = nil
+            splitOrigin = nil
+            dragging = nil
+            dragOffset = 0
+            dropBefore = nil
+            mergeTarget = nil
+            watchEscape(false)
+            world.splitPreview.cancel()
+        }
     }
 
     /// 面板里的拖拽。往外拖就是出组，落点不重要——窗口会回到簇的紧后面，
@@ -459,6 +606,7 @@ struct BarContent: View {
                 return panelDragging == id
             },
             merging: { _ in false },
+            placing: { _ in false },
             changed: { unit, translation in
                 guard case .window(let id) = unit else { return }
                 guard max(abs(translation.width), abs(translation.height))
@@ -495,7 +643,8 @@ struct BarContent: View {
     /// 落点处则空出一格——不给这个反馈的话，用户松手前不知道会掉在哪。
     private func displacement(of unit: DragUnit) -> CGFloat {
         // 判定为捏合时谁都不让位：让位是「要插到这儿」的反馈，与捏合无关。
-        guard mergeTarget == nil else { return 0 }
+        // 分屏同理，而且更要紧：那一格根本没离开条上的位置。
+        guard mergeTarget == nil, splitSpot == nil else { return 0 }
         guard let moving = dragging, moving != unit,
               let width = unitFrames[moving]?.width else { return 0 }
         let units = dragUnits
@@ -1400,6 +1549,8 @@ struct DragBinding {
     let offset: (DragUnit) -> CGSize
     let lifted: (DragUnit) -> Bool
     let merging: (DragUnit) -> Bool
+    /// 这一格已经交给屏幕上那块落点了（分屏），条上只留一个压暗的占位。
+    let placing: (DragUnit) -> Bool
     let changed: (DragUnit, CGSize) -> Void
     let ended: (DragUnit) -> Void
 }
@@ -1415,8 +1566,9 @@ extension View {
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("moor.bar")) }
                 action: { drag.record(unit, $0) }
             .offset(x: offset.width, y: offset.height)
-            .scaleEffect(drag.lifted(unit) ? 1.08 : (drag.merging(unit) ? 1.05 : 1))
-            .opacity(drag.lifted(unit) ? 0.9 : 1)
+            .scaleEffect(drag.placing(unit) ? 1
+                         : (drag.lifted(unit) ? 1.08 : (drag.merging(unit) ? 1.05 : 1)))
+            .opacity(drag.placing(unit) ? 0.35 : (drag.lifted(unit) ? 0.9 : 1))
             .zIndex(drag.lifted(unit) ? 1 : 0)
             // 让位要弹一下，被拖的那一格不能弹——给它加动画，它就追不上指针，
             // 视觉会落在落点判定后面，看起来就是「反馈和实际位置对不上」。
