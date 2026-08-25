@@ -65,8 +65,16 @@ final class BarModel: ObservableObject {
     /// 共用一份的话每条 bar 都会把别人的量测结果剪掉。
     private let labelWidths = LabelWidths()
 
+    /// 这一轮刚从别的屏迁过来的格子 → 它原来在哪块屏。视图据此定飞进来的方向。
+    /// 新开的窗口不算——它没有来处，照旧原地生长。
+    private(set) var justArrived: [CGWindowID: CGDirectDisplayID] = [:]
+    /// 上一轮归本屏的窗口，用来认出这一轮新到的那些。
+    private var wasMine: Set<CGWindowID> = []
+
     func rebuildItems() {
         let mine = Set(world.windows.filter { world.home(of: $0) == display }.map(\.id))
+        justArrived = world.justMigrated.filter { !wasMine.contains($0.key) && mine.contains($0.key) }
+        wasMine = mine
         barItems = makeBarItems(
             windows: world.windows, onThisDisplay: mine,
             // 固定 App 每块屏都有槽位；其余的只出现在它最后拥有窗口的那块屏上。

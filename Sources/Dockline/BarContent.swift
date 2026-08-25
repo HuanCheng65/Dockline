@@ -498,14 +498,35 @@ struct BarContent: View {
     /// 方向仍是「离开条」，读起来不算错。飞回来这一侧是精确的：模型知道谁刚从溢出区出来。
     private func flight(_ item: BarItem, overflowing: Bool) -> AnyTransition {
         let plain = AnyTransition.scale(scale: 0.55, anchor: .bottom).combined(with: .opacity)
-        guard overflowing, let mine = cellAnchors[item.id] else { return plain }
-        let fly = AnyTransition.modifier(
-            active: Flight(dx: overflowAnchor - mine, gone: true),
-            identity: Flight(dx: 0, gone: false))
-        guard case .window(let cell) = item, model.justReturned.contains(cell.id) else {
-            return .asymmetric(insertion: plain, removal: fly)
+        var insertion = plain
+        var removal = plain
+        if overflowing, let mine = cellAnchors[item.id] {
+            let fly = AnyTransition.modifier(
+                active: Flight(dx: overflowAnchor - mine, gone: true),
+                identity: Flight(dx: 0, gone: false))
+            removal = fly
+            if case .window(let cell) = item, model.justReturned.contains(cell.id) { insertion = fly }
         }
-        return fly
+        // 从别的屏迁过来的格子，从那块屏的方向飞进来。走的这一侧同样是近似，而且比溢出
+        // 那一侧更彻底：格子被移除时用的是它最后一次渲染时带上的过渡，那时它还在本屏，
+        // 无从知道自己要去哪块屏。到达这一侧是精确的，方向也由它承担。
+        if case .window(let cell) = item, let source = model.justArrived[cell.id] {
+            insertion = .modifier(active: Flight(dx: arrivalOffset(from: source), gone: true),
+                                  identity: Flight(dx: 0, gone: false))
+        }
+        return .asymmetric(insertion: insertion, removal: removal)
+    }
+
+    /// 跨屏到达时格子飞过的距离。只要读得出「从那一侧来的」，不必按真实屏距换算。
+    private static let arrivalTravel: CGFloat = 220
+
+    /// 源屏在左就从左边进，在右就从右边进。上下叠放的两块屏中心横坐标相同，
+    /// 统一从左侧进——那种排布下左右本来就没有意义，有个一致的来向即可。
+    private func arrivalOffset(from source: CGDirectDisplayID) -> CGFloat {
+        guard let from = NSScreen.screens.first(where: { displayID($0) == source }),
+              let here = NSScreen.screens.first(where: { displayID($0) == model.display })
+        else { return -Self.arrivalTravel }
+        return from.frame.midX <= here.frame.midX ? -Self.arrivalTravel : Self.arrivalTravel
     }
 
     @ViewBuilder

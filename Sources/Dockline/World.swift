@@ -447,7 +447,7 @@ final class World: ObservableObject {
     }
 
     private func publish() {
-        logDisplayChanges(to: store.windows)
+        noteDisplayChanges(to: store.windows)
         resolvePendingOpens(fresh: store.windows, known: Set(windows.map(\.id)))
         windows = store.windows
         // 窗口全关之后占位槽要留在原处，所以归属得趁窗口还在的时候记下来
@@ -459,13 +459,16 @@ final class World: ObservableObject {
         sampleBackdrop()
     }
 
-    /// 显示器归属的变化（计划书 §6 M5）。归属字段现在只记录、还不分流，
-    /// 先让它在真实使用里跑一段，看跨屏迁移判得准不准、判不出归属的窗口到底存不存在——
-    /// 每屏一条 bar 一旦上线，一个判不出归属的窗口就无处可去了。
-    private func logDisplayChanges(to fresh: [IndexedWindow]) {
+    /// 这一轮刚换了显示器的窗口 → 它原来在哪块屏。收到它的那条 bar 据此让格子
+    /// 从那个方向飞进来——「我那一格去哪了」在多屏下同样必须看得见。
+    private(set) var justMigrated: [CGWindowID: CGDirectDisplayID] = [:]
+
+    /// 显示器归属的变化（计划书 §6 M5）。
+    private func noteDisplayChanges(to fresh: [IndexedWindow]) {
         // 值本身是可选的，所以查表得到的是双层可选：外层 nil 表示上一轮没有这个窗口。
         var before: [CGWindowID: CGDirectDisplayID?] = [:]
         for window in windows { before[window.id] = window.display }
+        var migrated: [CGWindowID: CGDirectDisplayID] = [:]
         for window in fresh {
             guard let previous = before[window.id] else {
                 if window.display == nil {
@@ -476,7 +479,10 @@ final class World: ObservableObject {
             guard previous != window.display else { continue }
             Timeline.log("跨屏  wid \(window.id) \(window.appName)"
                 + "  \(Self.displayName(previous)) → \(Self.displayName(window.display))")
+            // 判不出归属的窗口落在主屏上（见 home(of:)），来向也就是主屏
+            migrated[window.id] = previous ?? mainDisplay
         }
+        justMigrated = migrated
     }
 
     private static func displayName(_ display: CGDirectDisplayID?) -> String {
