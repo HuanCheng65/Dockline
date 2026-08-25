@@ -92,32 +92,51 @@ private struct MenuCell<Content: View>: View {
     }
 }
 
-/// 一排落点。字形取自系统（见 `Maximizer.Spot.symbol`）——那是 Apple 为
-/// 「窗口占屏幕的哪一块」画的一整套，五个天生一致；自己画一套，粗细、圆角、
-/// 内缩三样都得逐个对，还对不齐。
+/// 落点的地图。**它不是一排图标，是一张屏幕的地图**：每一格在网格里的位置，正好就是
+/// 它代表的那块区域，位置与图形互相印证，找左上角不必去解读字形。
+///
+/// 字形取自系统（见 `Maximizer.Spot.symbol`）——那是 Apple 为「窗口占屏幕的哪一块」
+/// 画的一整套，九个天生一致；自己画一套，粗细、圆角、内缩三样都得逐个对，还对不齐。
+///
+/// 排布直接读 `Spot.allCases` 的次序，按 `Spot.columns` 切行，不在这里另写一份。
 private struct SpotRow: View {
     let current: Maximizer.Spot?
     let pick: (Maximizer.Spot) -> Void
 
     private static let glyph: CGFloat = 18
 
+    private var rows: [[Maximizer.Spot]] {
+        stride(from: 0, to: Maximizer.Spot.allCases.count, by: Maximizer.Spot.columns).map {
+            Array(Maximizer.Spot.allCases[$0..<min($0 + Maximizer.Spot.columns,
+                                                   Maximizer.Spot.allCases.count)])
+        }
+    }
+
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(Array(Maximizer.Spot.allCases.enumerated()), id: \.offset) { _, spot in
-                MenuCell(help: current == spot ? "\(spot.label)（再按一次还原）" : spot.label,
-                         action: { pick(spot) }) { hovering in
-                    Image(systemName: spot.symbol)
-                        .font(.system(size: Self.glyph))
-                        // 分层渲染：轮廓与填块各自一档，深浅由系统定，我们只给一个色。
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(hovering || current == spot
-                                         ? AnyShapeStyle(Color.accentColor)
-                                         : AnyShapeStyle(HierarchicalShapeStyle.primary))
+        VStack(spacing: 2) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 2) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, spot in
+                        cell(spot)
+                    }
                 }
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
+    }
+
+    private func cell(_ spot: Maximizer.Spot) -> some View {
+        MenuCell(help: current == spot ? "\(spot.label)（再按一次还原）" : spot.label,
+                 action: { pick(spot) }) { hovering in
+            Image(systemName: spot.symbol)
+                .font(.system(size: Self.glyph))
+                // 分层渲染：轮廓与填块各自一档，深浅由系统定，我们只给一个色。
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(hovering || current == spot
+                                 ? AnyShapeStyle(Color.accentColor)
+                                 : AnyShapeStyle(HierarchicalShapeStyle.primary))
+        }
     }
 }
 

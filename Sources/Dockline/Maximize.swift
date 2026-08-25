@@ -8,13 +8,24 @@ import DocklineCore
 /// 开放屏幕空间预留，这类窗口一律铺到屏幕底边、压在 bar 之下。自有入口在这里：
 /// 「铺满」= 可见区域再扣掉 bar 占的那一条。
 final class Maximizer {
-    /// 落点。可用区域整块，或把它对半切开的四种。
+    /// 落点：可用区域整块，或把它对半、对角切开的八种。
     ///
-    /// 次序就是右键菜单里那一排图形的次序，别处不再各排一遍。
+    /// **次序就是菜单里那张 3×3 地图的读法**（从左到右、从上到下），菜单那边按三个一行
+    /// 切开即可，不另存一份排布——两处各排一遍，迟早会有一处忘了跟上。
+    ///
+    /// 之所以是地图而不是一排：每一格在网格里的位置，正好就是它代表的那块区域。
+    /// 位置与图形说了同一件事两遍，找左上角不必去解读字形。中心格给了铺满——按位置它
+    /// 该是「中间那块」，但铺满是「整块」，让整块待在这张地图的正中读得通，而中心位
+    /// 最好点，给最高频的那一个不亏。
     enum Spot: CaseIterable {
-        case fill, left, right, top, bottom
+        case topLeft, top, topRight
+        case left, fill, right
+        case bottomLeft, bottom, bottomRight
 
-        /// 只用于日志。用户看到的是图形，没有文案。
+        /// 菜单里的地图一行放几格。
+        static let columns = 3
+
+        /// 只用于日志与悬停提示。地图上没有文案。
         var label: String {
             switch self {
             case .fill: return "铺满"
@@ -22,11 +33,15 @@ final class Maximizer {
             case .right: return "右半"
             case .top: return "上半"
             case .bottom: return "下半"
+            case .topLeft: return "左上"
+            case .topRight: return "右上"
+            case .bottomLeft: return "左下"
+            case .bottomRight: return "右下"
             }
         }
 
-        /// 菜单里那一排图形。这一套字形是系统自己为「窗口占屏幕的哪一块」画的，
-        /// 五个的轮廓粗细与度量天生一致，自己画一套只会更差。
+        /// 地图上的字形。这一套是系统自己为「窗口占屏幕的哪一块」画的，
+        /// 九个的轮廓粗细与度量天生一致，自己画一套只会更差。
         var symbol: String {
             switch self {
             case .fill: return "rectangle.inset.filled"
@@ -34,6 +49,10 @@ final class Maximizer {
             case .right: return "rectangle.righthalf.inset.filled"
             case .top: return "rectangle.tophalf.inset.filled"
             case .bottom: return "rectangle.bottomhalf.inset.filled"
+            case .topLeft: return "rectangle.inset.topleft.filled"
+            case .topRight: return "rectangle.inset.topright.filled"
+            case .bottomLeft: return "rectangle.inset.bottomleft.filled"
+            case .bottomRight: return "rectangle.inset.bottomright.filled"
             }
         }
 
@@ -45,6 +64,10 @@ final class Maximizer {
             case .right: return CGRect(x: 0.5, y: 0, width: 0.5, height: 1)
             case .top: return CGRect(x: 0, y: 0, width: 1, height: 0.5)
             case .bottom: return CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
+            case .topLeft: return CGRect(x: 0, y: 0, width: 0.5, height: 0.5)
+            case .topRight: return CGRect(x: 0.5, y: 0, width: 0.5, height: 0.5)
+            case .bottomLeft: return CGRect(x: 0, y: 0.5, width: 0.5, height: 0.5)
+            case .bottomRight: return CGRect(x: 0.5, y: 0.5, width: 0.5, height: 0.5)
             }
         }
     }
