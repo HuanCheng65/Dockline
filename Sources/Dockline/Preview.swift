@@ -85,11 +85,11 @@ final class Thumbnails: ObservableObject {
     }
 
     private func grab(_ id: CGWindowID, width: CGFloat = Thumbnails.thumbWidth) async -> NSImage? {
-        if legacyOnly.contains(id) { return Self.legacyShot(id, width: width) }
+        if legacyOnly.contains(id) { return await Self.legacyShot(id, width: width) }
         if let image = await sck(id, width: width) { return image }
         // SCK 合成的是「当前正在显示的一帧」，Space 不在前台的全屏窗口它给不出来。
         // 那类窗口正是最该看一眼的一批，所以换一条路再问一次，见 `WindowShot`。
-        guard let image = Self.legacyShot(id, width: width) else { return nil }
+        guard let image = await Self.legacyShot(id, width: width) else { return nil }
         legacyOnly.insert(id)
         return image
     }
@@ -108,8 +108,20 @@ final class Thumbnails: ObservableObject {
         return await Self.shoot(fresh, id: id, width: width)
     }
 
-    private nonisolated static func legacyShot(_ id: CGWindowID, width: CGFloat) -> NSImage? {
-        guard let image = WindowShot.grab(id, width: width) else { return nil }
+    /// 老路那一张。**必须挪出主线程。**
+    ///
+    /// 它整段是同步的，而且贵——取整幅原始像素回来，再自己缩一次。留在主线程上跑，
+    /// 大预览一秒二十几帧就把主线程占满，整条 bar 当场没反应（实测 `sample`：主线程
+    /// 1939 个样本里 1937 个在 `CGContextDrawImage` 里）。`nonisolated` 只是说它不需要
+    /// 这个 actor，不代表它会换个线程跑——从主 actor 直接调，它就在主线程上跑。
+    ///
+    /// 挪出去顺带解决第二件事：这个 `await` 从此**真的会挂起一次**。采集循环靠它把
+    /// 主线程让出来，一个不挂起的 await 是让不出去的。
+    private static func legacyShot(_ id: CGWindowID, width: CGFloat) async -> NSImage? {
+        let shot = Task.detached(priority: .userInitiated) { () -> CGImage? in
+            WindowShot.grab(id, width: width)
+        }
+        guard let image = await shot.value else { return nil }
         return NSImage(cgImage: image, size: NSSize(width: image.width / 2,
                                                     height: image.height / 2))
     }

@@ -1089,6 +1089,10 @@ struct BarContent: View {
                             try? await Task.sleep(for: .milliseconds(200))
                             continue
                         }
+                        // 每轮主动让一次。抓图那个 await 不保证真的挂起，而一个不挂起的
+                        // await 让不出主线程——这个循环就会把它整个占住，大预览一开
+                        // 整条 bar 当场没反应（老路那次实测就是这么冻住的）。
+                        await Task.yield()
                     }
                     thumbnails.endLarge()
                 }

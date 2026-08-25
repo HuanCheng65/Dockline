@@ -51,11 +51,19 @@ public enum WindowShot {
     private static func resize(_ image: CGImage, to scale: CGFloat) -> CGImage? {
         let width = max(1, Int((CGFloat(image.width) * scale).rounded()))
         let height = max(1, Int((CGFloat(image.height) * scale).rounded()))
-        // 窗口截图的色彩空间偶尔是 CGContext 建不出上下文的那几种（灰度、索引色）。
-        // 缩略图不追求色彩保真，统一画进 sRGB 即可。
+        // **画进原图自己的色彩空间。** 硬指定 sRGB 会让每一帧多做一遍全图的色彩管理转换
+        // （屏幕多半是 Display P3），实测 `sample` 里 `CGContextDrawImage` 的时间绝大部分
+        // 花在 `CGColorTransformConvertUsingCMSConverter` 上。预览不追求色彩保真，
+        // 但也没有理由为它做一次转换。
+        //
+        // 只认 RGB：窗口截图偶尔是灰度或索引色，那几种 `CGContext` 建不出上下文，
+        // 退回 sRGB——这一类里转换代价本来也不大。
+        let space = image.colorSpace?.model == .rgb
+            ? image.colorSpace!
+            : (CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB())
         guard let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            space: space,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                 | CGBitmapInfo.byteOrder32Little.rawValue)
         else { return nil }
