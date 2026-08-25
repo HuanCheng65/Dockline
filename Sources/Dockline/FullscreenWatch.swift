@@ -14,8 +14,8 @@ final class FullscreenWatch {
     /// 预判后等 Space 切换的时限。等不到就说明判错了，例如点的是缩放而不是全屏。
     private static let timeout: TimeInterval = 1.0
 
-    /// 预判到全屏动作
-    var onPredict: (() -> Void)?
+    /// 预判到全屏动作。带上目标显示器；nil = 判不出是哪块屏，调用点只能全藏。
+    var onPredict: ((CGDirectDisplayID?) -> Void)?
     /// 预判落空，撤销预先的隐藏
     var onTimeout: (() -> Void)?
 
@@ -69,7 +69,9 @@ final class FullscreenWatch {
                   event.flags.contains(.maskControl), event.flags.contains(.maskCommand),
                   !event.flags.contains(.maskAlternate)
             else { return }
-            predict()
+            // 快捷键没有落点，冲着哪块屏去判不出来（目标是当前聚焦窗口所在的那块，
+            // 而这里读不到它）。只能每条 bar 都先藏，随后各自校正回来。
+            predict(on: nil)
         case .leftMouseDown:
             // AX 命中测试是跨进程调用，不能在事件回调里做——回调一慢，系统会停用整个 tap。
             let location = event.location
@@ -88,11 +90,22 @@ final class FullscreenWatch {
               let element,
               axCopy(element, kAXSubroleAttribute) as? String == "AXFullScreenButton"
         else { return }
-        predict()
+        // 点落在那个窗口的绿灯上，所以目标是哪块屏是确定的——只藏那一条，
+        // 别的屏上的 bar 不该跟着闪一下再回来。
+        predict(on: Self.display(containing: location))
     }
 
-    private func predict() {
-        onPredict?()
+    /// 这个点在哪块显示器上。事件坐标是 CG 全局系，直接问 CG，避开与 AppKit
+    /// 坐标系之间的翻转。点落在显示器之外（拔屏的瞬间）时返回 nil。
+    private static func display(containing point: CGPoint) -> CGDirectDisplayID? {
+        var id: CGDirectDisplayID = 0
+        var count: UInt32 = 0
+        guard CGGetDisplaysWithPoint(point, 1, &id, &count) == .success, count > 0 else { return nil }
+        return id
+    }
+
+    private func predict(on display: CGDirectDisplayID?) {
+        onPredict?(display)
         pending?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.pending = nil

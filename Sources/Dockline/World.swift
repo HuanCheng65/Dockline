@@ -343,12 +343,14 @@ final class World: ObservableObject {
             for bar in bars { bar.activeSpaceChanged() }
             claimVisibleWindows()
         }
-        // 预判全屏动作，抢在系统的转场快照之前隐藏。这个 tap 看到的是手势本身，
-        // 说不出它冲着哪块屏去——因此预判一来，每条 bar 都先藏，随后各自按本屏的
-        // Space 类型校正回来（见 `BarModel.activeSpaceChanged`）。
-        fullscreenWatch.onPredict = { [weak self] in
+        // 预判全屏动作，抢在系统的转场快照之前隐藏。点绿灯时落点就在目标窗口上，
+        // 冲着哪块屏去是确定的，只藏那一条；⌃⌘F 没有落点，判不出来，只能每条都先藏，
+        // 随后各自按本屏的 Space 类型校正回来（见 `BarModel.activeSpaceChanged`）。
+        fullscreenWatch.onPredict = { [weak self] display in
             guard let self else { return }
-            for bar in bars { bar.predictFullscreen() }
+            for bar in bars where display == nil || bar.display == display {
+                bar.predictFullscreen()
+            }
         }
         fullscreenWatch.onTimeout = { [weak self] in
             guard let self else { return }
