@@ -615,6 +615,10 @@ case "events":
     commandEvents(from: first, to: last, seconds: seconds)
 case "mc":
     commandMissionControl(seconds: arguments.dropFirst().first.flatMap(Double.init) ?? 30)
+case "keytap":
+    let rest = Array(arguments.dropFirst())
+    commandKeyTap(seconds: rest.first.flatMap(Double.init) ?? 60,
+                  stalls: rest.contains("--stall"))
 case "activate":
     guard let p = arguments.dropFirst().first.flatMap(Int32.init) else {
         FileHandle.standardError.write("用法: docklinespike activate <pid>\n".data(using: .utf8)!)
@@ -640,6 +644,6 @@ case "raise", "fill":
     }
     arguments[0] == "raise" ? commandRaise(wid) : commandFill(wid)
 default:
-    print("用法: docklinespike [list | index | bench | events [起 止 秒]"
+    print("用法: docklinespike [list | index | bench | events [起 止 秒] | keytap [秒] [--stall]"
           + " | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
 }
