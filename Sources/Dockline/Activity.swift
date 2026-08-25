@@ -21,16 +21,7 @@ struct Activity: Equatable {
     enum Waiting: String, Equatable {
         case question, permission, plan, input
 
-        /// 胶囊上那一个词。四档取同一个「待」字起头：它们是并列的等待，
-        /// 差别只在等什么，句式一致才读得快。
-        var text: String {
-            switch self {
-            case .question: return "待回答"
-            case .permission: return "待授权"
-            case .plan: return "待审阅"
-            case .input: return "待输入"
-            }
-        }
+        var text: String { localized("activity.waiting.\(rawValue)") }
     }
 
     /// 停了。一次性事件，走「未读」语义：**停留到被看见为止，不自动消失**——
@@ -47,13 +38,7 @@ struct Activity: Equatable {
         }
 
         /// 上报方没给摘要时用它。只留一个记号的话，看得见结果却读不出是什么结果。
-        var text: String {
-            switch self {
-            case .done: return "已完成"
-            case .failed: return "已失败"
-            case .quota: return "已限额"
-            }
-        }
+        var text: String { localized("activity.outcome.\(rawValue)") }
     }
 
     enum Salience: Equatable {
@@ -63,9 +48,30 @@ struct Activity: Equatable {
         case waiting(Waiting)
         /// 它停了。
         case finished(Outcome)
+
+        /// 一格上撞了好几条上报时谁露面，以及同屏那一个胶囊归谁。数越小越优先。
+        /// 等待排在最前——它是唯一允许高显著度的状态。
+        var rank: Int {
+            switch self {
+            case .waiting: return 0
+            case .finished: return 1
+            case .working: return 2
+            }
+        }
     }
 
     var salience: Salience
+    /// 这条会话在干**哪件事**，取自用户自己那句提示词。
+    ///
+    /// 它是格子上第一行的字，也是这条会话的名字。不用 cwd 目录名：目录名回答的是
+    /// 「哪个项目」，而同一个项目里同时会有好几件事在跑，你要找的是事。
+    var task: String?
+    /// 此刻在调用哪个工具，以及作用在什么上。
+    ///
+    /// **上报端不渲染文字**，只送这两样：界面文案统一走本地化资源，而 `dockctl` 不带
+    /// 资源包，让它拼好一句中文送过来，等于把界面文字散到条外面去。
+    var tool: String?
+    var object: String?
     /// 与三档正交：在跑的同时可以有确定进度。nil = 边缘只呼吸，不画环。
     var progress: Double?
     /// 文本层的字，**只给常驻型状态**（歌名一类）。等待态与终态的文字走胶囊，不进格子：
@@ -74,8 +80,11 @@ struct Activity: Equatable {
     var label: String?
     /// 只在 hover 里出现的细节：耗时、ETA、任务 n/m。**永远不进格子**（进度口径见设计文档 §3）。
     var detail: String?
-    /// 这一条是什么时候来的。同屏只弹一个胶囊，多个等待按先来后到排队，靠它定次序。
+    /// 这一档是什么时候开始的。**跨同档的上报保持不变**（见 `ActivityCenter`），
+    /// 因此「等了多久」是它真正的含义。多个等待按它先来后到排队。
     var since = Date()
+    /// 最后一次收到上报的时刻。
+    var updated = Date()
 
     /// 要不要浮出胶囊。working 不浮：它唯一需要传达的是任务仍在运行，
     /// 而文字诱导阅读，阅读即打断。
@@ -83,6 +92,29 @@ struct Activity: Equatable {
         switch salience {
         case .working: return false
         case .waiting, .finished: return true
+        }
+    }
+
+    /// 此刻在做什么，渲染成一句话。nil = 上报没说，由 `stateLine` 退回「生成中」。
+    ///
+    /// 认不出的工具直接显示它的原名。给一个泛化的说法（「处理中」一类）等于把
+    /// 「这一步在干什么」这个唯一要答的问题答成废话，而工具原名至少是真的。
+    var action: String? {
+        guard let tool else { return nil }
+        let verb = localized("activity.tool.\(tool)", fallback: tool)
+        guard let object, !object.isEmpty else { return verb }
+        return localized("activity.action.format", verb, object)
+    }
+
+    /// 格子上第二行的字：此刻是什么状况。第一行是 `task`。
+    var stateLine: String {
+        switch salience {
+        case .working:
+            return action ?? localized("activity.thinking")
+        case .waiting(let waiting):
+            return waiting.text
+        case .finished(let outcome):
+            return "\(outcome.mark) \(label ?? outcome.text)"
         }
     }
 
@@ -104,19 +136,17 @@ struct Activity: Equatable {
         return false
     }
 
-    /// 一格上撞了好几条上报时谁露面，以及同屏那一个胶囊归谁。数越小越优先。
-    /// 等待排在最前——它是唯一允许高显著度的状态。
-    var rank: Int {
-        switch salience {
-        case .waiting: return 0
-        case .finished: return 1
-        case .working: return 2
-        }
-    }
+    var rank: Int { salience.rank }
 
-    /// 同一格上，这一条是不是该盖过那一条。同档按先来后到。
+    /// 同一格上，这一条是不是该盖过那一条。
+    ///
+    /// 同档的比法要分开：**等待按先来后到**——等得最久的那条最该先被理会；
+    /// **在跑与终态按最近更新**——同档一律先来后到的话，一条陈旧的会话会把同一格上
+    /// 一条正在活动的会话永久遮住，而它自己再也不会更新（实测撞到过）。
     func outranks(_ other: Activity) -> Bool {
-        rank == other.rank ? since < other.since : rank < other.rank
+        guard rank == other.rank else { return rank < other.rank }
+        if case .waiting = salience { return since < other.since }
+        return updated > other.updated
     }
 
     /// 悬停提示。没有任何文字时不显示提示，而不是显示一句空话。
@@ -210,10 +240,20 @@ final class ActivityCenter {
         case "push":
             guard let salience = Self.salience(userInfo) else { return }
             let cwd = userInfo["cwd"] as? String
+            let previous = reports[key]?.activity
+            // 任务名是**粘的**：不是每个事件都带得出它，而那些事件同样要显示在这条
+            // 会话名下。动作相反，每次都换——它说的是「此刻」。
+            // `since` 同样粘住，但只在这一档没变的时候：它的含义是「这一档开始于何时」，
+            // 等待队列按它排序，重置一次就等于插了一次队。
             let activity = Activity(salience: salience,
+                                    task: userInfo["task"] as? String ?? previous?.task,
+                                    tool: userInfo["tool"] as? String,
+                                    object: userInfo["object"] as? String,
                                     progress: userInfo["progress"] as? Double,
                                     label: userInfo["label"] as? String,
-                                    detail: userInfo["detail"] as? String)
+                                    detail: userInfo["detail"] as? String,
+                                    since: previous?.salience.rank == salience.rank
+                                        ? previous?.since ?? Date() : Date())
             let target = seat(key, host: host, cwd: cwd,
                               named: (userInfo["window"] as? Int).map(CGWindowID.init))
             reports[key] = Report(activity: activity, host: host, cwd: cwd, target: target)

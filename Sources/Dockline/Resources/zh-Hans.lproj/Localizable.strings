@@ -1,8 +1,41 @@
 /*
  Dockline 当前以简体中文为默认界面语言。
 
- 现有 Swift 源码中的中文文案会逐步迁移到 String(localized:)；先提供正式的本地化
- 资源与语言声明，避免系统把这个中文应用误判为只支持英文。
+ 凡是会显示给用户的文字都放在这里，由 Localized.swift 的 localized(_:) 取用。
+ 现有 Swift 源码中遗留的中文硬编码会逐步迁过来；新功能一律从这里取。
 */
 
 "Dockline" = "Dockline";
+
+/* MARK: - 活动状态（实时状态设计 §3） */
+
+/* 等待：格子第二行的一个词，说明在等什么。四档取同一句式起头 */
+"activity.waiting.question" = "待回答";
+"activity.waiting.permission" = "待授权";
+"activity.waiting.plan" = "待审阅";
+"activity.waiting.input" = "待输入";
+
+/* 终态：上报方未给摘要时的缺省说法 */
+"activity.outcome.done" = "已完成";
+"activity.outcome.failed" = "已失败";
+"activity.outcome.quota" = "已限额";
+
+/* 工具与工具之间模型正在生成下一步。这不是占位词，是当下真实的状态 */
+"activity.thinking" = "生成中";
+
+/* 当前动作：动作名 + 作用对象。%1$@ 是动作名，%2$@ 是对象 */
+"activity.action.format" = "%1$@ %2$@";
+
+/* 动作名按工具名取。缺哪个工具就直接显示工具原名，不猜 */
+"activity.tool.Read" = "读取";
+"activity.tool.Edit" = "编辑";
+"activity.tool.NotebookEdit" = "编辑";
+"activity.tool.Write" = "写入";
+"activity.tool.Bash" = "执行";
+"activity.tool.Grep" = "搜索";
+"activity.tool.Glob" = "搜索";
+"activity.tool.WebFetch" = "访问网页";
+"activity.tool.WebSearch" = "网络搜索";
+"activity.tool.Task" = "子任务";
+"activity.tool.Agent" = "子任务";
+"activity.tool.TodoWrite" = "更新待办";

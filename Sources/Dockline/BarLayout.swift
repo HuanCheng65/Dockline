@@ -302,23 +302,33 @@ func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
     // 一个 App 在条上的「第一格」：未读角标与活动状态挂在它上面，它也沿用 App 的身份。
     // 只在条上直接露面的窗口里选——簇里的窗口平时看不见，挂上去等于没挂。
     var leaders = Set<AppKey>()
-    /// 文本层的优先级栈（实时状态设计 §2）：**常驻状态文字 > 歧义标题 > 空。**
+    /// 格子上的文字。有会话时是两行：第一行是这条会话在干**哪件事**，第二行是**此刻**
+    /// 的状况；没有会话时保持原样，也就是歧义驱动的窗口标题。
     ///
-    /// 等待态与终态的文字不在这里，它们走胶囊：那两档本来就浮着一个高显著度的东西，
-    /// 在格子里重复一遍既冗余，又要为容纳文字改变格子宽度，而格子一变宽就推挤邻格。
-    /// 留在文本层的只有常驻型（歌名一类），它更换频率低，`LabelWidths` 那 6pt 的迟滞
-    /// 足以挡住抖动。
-    func text(of window: IndexedWindow, leads: Bool) -> String? {
-        if let own = activity(.window(window.id))?.label { return own }
+    /// **有会话的格子，文本区固定取上限宽度。** 两头都试过不行：让第二行参与定宽，
+    /// 格子会跟着模型的每一步呼吸，右边整排跟着晃；只按第一行定宽，任务名一短
+    /// （窗口标题退化成一个词时尤其如此），第二行就被挤到只剩一个词加省略号。
+    /// 取上限则宽度只在会话上格子与会话结束时各变一次，第二行也拿到最大的余地。
+    /// 降级阶梯照旧压得住它——上限本来就是阶梯要压的那个值。
+    ///
+    /// 两行都要**先截断再交给视图**。`Text` 只会折行，第一行折下去就把第二行挤没了。
+    func text(of window: IndexedWindow, leads: Bool) -> (label: String?, width: CGFloat) {
+        let key = "w\(window.id)"
+        let title = hasSiblings.contains(window.id) ? window.title : nil
         // App 级的东西只挂在该 App 的第一格上，与未读角标同一条规则
-        if leads, let shared = activity(.app(window.pid))?.label { return shared }
-        return hasSiblings.contains(window.id) ? window.title : nil
+        guard let activity = activity(.window(window.id))
+                ?? (leads ? activity(.app(window.pid)) : nil) else {
+            return (title, title.map { labels.width(of: key, $0) } ?? 0)
+        }
+        let width = BarMetrics.labelMaxWidth
+        let lines = [activity.task ?? title, activity.stateLine].compactMap { $0 }
+            .map { LabelWidths.fit($0, to: width) }
+        return (lines.joined(separator: "\n"), width)
     }
 
     func cell(_ window: IndexedWindow, leads: Bool) -> BarWindow {
-        let label = text(of: window, leads: leads)
-        return BarWindow(window: window, label: label,
-                         labelWidth: label.map { labels.width(of: "w\(window.id)", $0) } ?? 0,
+        let (label, width) = text(of: window, leads: leads)
+        return BarWindow(window: window, label: label, labelWidth: width,
                          key: window.appKey,
                          appName: window.appName, pid: window.pid, bundleID: window.bundleID,
                          leadsApp: leads)
@@ -456,6 +466,20 @@ final class LabelWidths {
         resolved = resolved.filter { present.contains($0.key) }
     }
 
+    /// 把一行字截到给定宽度以内。
+    ///
+    /// 两行的格子必须**先截再交给视图**：`Text` 只会折行，第一行折下去就把第二行挤没了。
+    static func fit(_ text: String, to width: CGFloat) -> String {
+        guard rawWidth(text) > width else { return text }
+        var result = text
+        while !result.isEmpty, rawWidth(result + "…") > width { result.removeLast() }
+        return result + "…"
+    }
+
+    private static func rawWidth(_ text: String) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: labelFont]).width)
+    }
+
     /// 排成一行要多宽，夹在 min/max 之间。
     ///
     /// 不去找「能装下两行的最窄宽度」：那个宽度会把「zoom1.png」这样的长词从中间劈开
@@ -463,8 +487,7 @@ final class LabelWidths {
     /// NSFont 量出的宽比 SwiftUI 实际排版需要的窄几个点，恰好一行的标题可能折成两行——
     /// 两行本来就是允许的形态，无害。
     private static func measure(_ text: String) -> CGFloat {
-        let single = ceil((text as NSString).size(withAttributes: [.font: labelFont]).width)
-        return min(max(single, BarMetrics.labelMinWidth), BarMetrics.labelMaxWidth)
+        min(max(rawWidth(text), BarMetrics.labelMinWidth), BarMetrics.labelMaxWidth)
     }
 }
 

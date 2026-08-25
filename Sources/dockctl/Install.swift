@@ -15,7 +15,9 @@ enum HookInstaller {
     private static let events: [(event: String, matcher: String?)] = [
         ("UserPromptSubmit", nil),
         ("PostToolUse", nil),
-        ("PreToolUse", "ExitPlanMode|AskUserQuestion"),
+        // 全部工具都收：格子第二行要说清此刻在做什么，而那正是每次工具调用带来的。
+        // 只收 ExitPlanMode / AskUserQuestion 的话，在跑的那一档就只剩「生成中」。
+        ("PreToolUse", nil),
         ("Notification", nil),
         ("Stop", nil),
         ("StopFailure", nil),

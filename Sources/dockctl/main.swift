@@ -85,6 +85,11 @@ func runHook() -> Never {
     payload["pid"] = Int(hostApp())
     // cwd 以事件里那份为准：hook 进程的工作目录未必是会话的。
     if let cwd = json["cwd"] as? String { payload["cwd"] = cwd }
+    // 每个事件都重算一次会话名，不只在提交提示词那一次：会话标题会随对话变，
+    // 而它就是格子第一行的字。
+    if payload["command"] as? String == "push", let task = HookAdapter.task(json) {
+        payload["task"] = task
+    }
     post(payload)
     exit(0)
 }
