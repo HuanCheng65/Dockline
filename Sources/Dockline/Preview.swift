@@ -260,6 +260,8 @@ struct PreviewCard: View {
     private static let verbWidth: CGFloat = 46
     /// 图标那一栏。定宽，几行的动作名才从同一个横坐标起头。
     private static let symbolWidth: CGFloat = 14
+    /// 步数那一行
+    private static let countHeight: CGFloat = 16
 
     /// 卡片里能排字的宽度
     private static var innerWidth: CGFloat { sessionWidth - textPad * 2 }
@@ -277,6 +279,7 @@ struct PreviewCard: View {
             // 停了就贴结论，不再列经过（经过还在终端里）
             height += wrapped(styled(response), lines: responseLines)
         } else {
+            if session.turnSteps > session.history.count { height += countHeight }
             height += CGFloat(session.history.count + 1) * rowHeight
         }
         return height
@@ -378,7 +381,11 @@ struct PreviewCard: View {
                         .truncationMode(.tail)
                     if let session {
                         Spacer(minLength: 8)
-                        LiveElapsed(start: session.started, agent: session.agent)
+                        // 停了就把表停在收尾那一刻：任务已经结束，那个数字再往上走
+                        // 说的就不是它跑了多久了。
+                        LiveElapsed(start: session.turnStarted,
+                                    end: session.isUnread ? session.updated : nil,
+                                    agent: session.agent)
                     }
                 }
                 .frame(height: Self.headHeight(detail: detail, session: session),
@@ -420,6 +427,13 @@ struct PreviewCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             } else {
+                // 只列得下末尾几条，所以要报出总数——否则读到的是「它一共就走了这几步」
+                if session.turnSteps > session.history.count {
+                    Text(localized("activity.steps.count", session.turnSteps))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .frame(height: Self.countHeight, alignment: .leading)
+                }
                 // 旧的在上、当前在下：读起来是一条往下走的时间线，最新的那一行贴着
                 // 卡片底边，也就是离条最近的地方。
                 ForEach(session.history) { step in
@@ -522,11 +536,13 @@ struct PreviewCard: View {
 /// 那是身份层唯一允许的偏离。数字走等宽：不然每跳一秒，右边那一栏就横着挪一下。
 private struct LiveElapsed: View {
     let start: Date
+    /// 停在这一刻。nil = 还在跑，跟着走。
+    let end: Date?
     let agent: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            Text([agent, Self.text(start, context.date)].compactMap { $0 }
+            Text([agent, Self.text(start, end ?? context.date)].compactMap { $0 }
                 .joined(separator: " · "))
                 .font(.system(size: 10.5))
                 .monospacedDigit()

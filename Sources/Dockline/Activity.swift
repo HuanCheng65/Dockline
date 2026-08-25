@@ -196,8 +196,15 @@ struct Activity: Equatable {
     /// 近期走过的几步，旧的在前。只留末尾几条：面板要的是「刚才发生了什么」，
     /// 不是一份完整日志——完整的在终端里。
     var steps: [Step] = []
-    /// 这条会话第一次上报的时刻。面板上「跑了多久」由它算。
+    /// 这一轮总共走了几步。`steps` 只留末尾几条，面板要报出总数才知道省略了多少。
+    var turnSteps = 0
+    /// 这条会话第一次上报的时刻。
     var started = Date()
+    /// **这一轮**是什么时候开始的：用户提交提示词那一刻。
+    ///
+    /// 面板报的是本轮用时，不是会话总时长。会话可以开着一整天，那个数字不回答任何问题；
+    /// 而「这一轮跑了多久」正是你盯着它时想知道的。
+    var turnStarted = Date()
     /// 这一档是什么时候开始的。**跨同档的上报保持不变**（见 `ActivityCenter`），
     /// 因此「等了多久」是它真正的含义。多个等待按它先来后到排队。
     var since = Date()
@@ -349,6 +356,10 @@ final class ActivityCenter {
                               detail: userInfo["detail"] as? String,
                               metric: userInfo["metric"] as? String)
             }
+            // 用户提交提示词就是**新的一轮**。上一轮走过的步子、上一轮的结论都要退场：
+            // 新提示词底下挂着上一轮的工具调用，读起来就像它正在做那件事（实测撞到过）。
+            let turn = userInfo["turn"] as? Bool == true
+            let carried = turn ? nil : previous
             let activity = Activity(salience: salience,
                                     task: userInfo["task"] as? String ?? previous?.task,
                                     tool: tool,
@@ -359,8 +370,10 @@ final class ActivityCenter {
                                     prompt: userInfo["prompt"] as? String ?? previous?.prompt,
                                     response: userInfo["response"] as? String,
                                     agent: userInfo["agent"] as? String ?? previous?.agent,
-                                    steps: Self.appending(step, to: previous?.steps ?? []),
+                                    steps: Self.appending(step, to: carried?.steps ?? []),
+                                    turnSteps: (carried?.turnSteps ?? 0) + (step == nil ? 0 : 1),
                                     started: previous?.started ?? Date(),
+                                    turnStarted: carried?.turnStarted ?? Date(),
                                     since: previous?.salience.rank == salience.rank
                                         ? previous?.since ?? Date() : Date())
             let target = seat(key, host: host, cwd: cwd,

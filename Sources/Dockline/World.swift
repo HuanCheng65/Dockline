@@ -579,6 +579,10 @@ final class World: ObservableObject {
         }
         let changed = frontWindow != id
         frontWindow = id
+        // 窗口到了前台，挂在它上面的终态就算被看见了。这是未读语义的第二个出口——
+        // 你切过去看结果，本来就不该再要求你回头点一下那一格。它顺带解掉一处观感冲突：
+        // 终态的彩色边框与前台格子的亮底不会再同时出现。
+        if changed, let id { markStatusSeen(.window(id)) }
         // 前台窗口一换，条底下多半就是另一块颜色了
         if changed { sampleBackdrop() }
     }

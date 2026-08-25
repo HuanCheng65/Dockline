@@ -28,8 +28,10 @@ enum HookAdapter {
 
         // 提示词就是这条会话的名字。它只在这里出现一次，之后每个事件都不再带，
         // 由接收端粘住。
+        // 新的一轮由此开始。接收端据此清掉上一轮的步子与结论——新提示词底下挂着
+        // 上一轮的工具调用，读起来就像它正在做那件事。
         case "UserPromptSubmit":
-            return ["command": "push", "state": "working"]
+            return ["command": "push", "state": "working", "turn": true]
 
         // 工具跑完了，模型在生成下一步。不带 tool，接收端显示「生成中」。
         // 它同时负责把等待态撤下：授权批下来、问题答完之后，紧接着就是一次工具调用。
