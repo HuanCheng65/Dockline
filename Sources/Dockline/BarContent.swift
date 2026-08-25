@@ -138,6 +138,16 @@ struct BarContent: View {
                                       - WindowPanel.height(content.windows.count,
                                                            available: geometry.size.width) / 2)
                 }
+                if let pill = pillTarget(layout), !model.hidden {
+                    NamePill(text: pill.text, scheme: model.floatScheme)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                        .position(x: floatingX(pill.anchorX, in: geometry.size.width,
+                                               half: NamePill.width(pill.text) / 2),
+                                  y: geometry.size.height - BarMetrics.bottomGap
+                                      - BarMetrics.barHeight - NamePill.gap
+                                      - NamePill.height / 2)
+                }
                 if let preview, !model.hidden {
                     PreviewCard(window: preview.window,
                                 appName: preview.appName,
@@ -189,6 +199,8 @@ struct BarContent: View {
                 panelFromKeyboard = true
                 panel = (kind: kind, anchorX: anchorX)
             }
+            // 名牌换一格是滑过去，不是这边灭那边亮——一块东西在移动读起来是连续的
+            .animation(.spring(response: 0.26, dampingFraction: 0.88), value: hoveredItem)
             .animation(.easeOut(duration: 0.16), value: preview)
             .animation(.spring(response: 0.30, dampingFraction: 0.78), value: panel?.kind)
         }
@@ -662,6 +674,31 @@ struct BarContent: View {
     }
 
     /// 底色的取值。按下 > 悬停 > 联动，前台那一格自己是亮底，不被悬停顶掉。
+    /// 名牌此刻该报谁的名字。nil = 不出名牌。
+    private func pillTarget(_ layout: BarLayout) -> (text: String, anchorX: CGFloat)? {
+        // 浮层与预览卡自己就带着标题，名牌该退场——同一处位置不摆两层信息。
+        // 悬停停稳后卡片长出来，名牌交班给它。
+        guard panel == nil, preview == nil else { return nil }
+        guard let hoveredItem, let anchorX = cellAnchors[hoveredItem],
+              let item = layout.items.first(where: { $0.id == hoveredItem }),
+              let text = name(of: item)
+        else { return nil }
+        return (text, anchorX)
+    }
+
+    /// 一格叫什么。窗口给完整标题——条上那一份是剥掉共同首尾段又压过宽度的片段。
+    private func name(of item: BarItem) -> String? {
+        switch item {
+        case .window(let cell): return cell.window.title
+        case .dormant(let app): return app.name
+        case .cluster(let cluster): return cluster.heading
+        case .launcher(let url), .folder(let url): return model.world.displayName(of: url)
+        case .trash: return model.world.trashFull ? "废纸篓（非空）" : "废纸篓"
+        case .overflow(let windows): return "更多窗口（\(windows.count) 个）"
+        case .separator, .notice: return nil
+        }
+    }
+
     /// 这一格是不是键盘切换此刻选中的那个窗口所在之处。
     /// 选中的窗口若收在簇、标签组或溢出区里，高亮的是收着它的那一格，
     /// 具体是其中哪一个由随之打开的浮层给出。

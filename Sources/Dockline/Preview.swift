@@ -62,6 +62,47 @@ final class Thumbnails: ObservableObject {
     }
 }
 
+/// 名牌：条上正被关注的那一格叫什么。
+///
+/// 系统程序坞的悬停名牌做的是同一件事——dock 上的项目自身不带标题，关注哪一项就在它
+/// 上方报一次名字。条上按 §3.1 只有需要与兄弟区分的窗口才显示标题，单窗口的 App
+/// 那一格只有一个图标；即使显示了，那也是剥掉共同首尾段之后的片段，还压过宽度。
+/// 名牌给的是完整的那一个。
+///
+/// 它是预览卡的前身：同一处位置，停稳之后换成带缩略图的那一层。
+struct NamePill: View {
+    let text: String
+    let scheme: ColorScheme
+
+    static let height: CGFloat = 25
+    /// 条与浮层之间留的那道缝
+    static let gap: CGFloat = 8
+
+    private static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+    private static let maxWidth: CGFloat = 260
+    private static let pad: CGFloat = 10
+    private static let radius: CGFloat = 9
+
+    /// 宽度自己算准，理由与格子标题一样（见 `LabelWidths`）：`frame(maxWidth:)` 的
+    /// 理想宽就是上限值，短标题也会撑满一整条。
+    static func width(_ text: String) -> CGFloat {
+        let measured = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        return min(measured + pad * 2, maxWidth)
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, Self.pad)
+            .frame(width: Self.width(text), height: Self.height)
+            .environment(\.colorScheme, scheme)
+            .background { DockGlass(cornerRadius: Self.radius).allowsHitTesting(false) }
+            .clipShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
+    }
+}
+
 /// 悬停预览卡。计划书 §3：标题 + App + 实时缩略图。
 ///
 /// 材质与圆角跟条本体走，见下方 background。
