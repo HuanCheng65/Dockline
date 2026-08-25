@@ -104,6 +104,11 @@ struct BarContent: View {
     /// 当前指针所在的窗口格。相邻格子的「进入」与「离开」事件顺序并不保证，
     /// 靠它判断一条「离开」是否真的属于当前这一格。
     @State private var hoveredCell: CGWindowID?
+    /// 卡上有待授权时，指针从格子挪到卡片上的宽限。两者之间隔着一道缝，
+    /// 照常立刻收，那两个按钮就永远点不到。与浮层那一档同一个数。
+    private static let askReach: TimeInterval = 0.18
+    /// 宽限期间那一次收场。指针落到卡上就取消它。
+    @State private var previewHold: DispatchWorkItem?
     /// 计划书 §3：悬停约 260ms 后浮出
     private static let previewDwell: TimeInterval = 0.26
     /// 大预览开着时换格子的停留。见 `schedulePreview`。
@@ -153,14 +158,23 @@ struct BarContent: View {
                                                     style: .continuous))
                         .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
                                                        style: .continuous))
-                        // 只有一排窗口那一档是可操作的，另外两档纯是说明
-                        .allowsHitTesting(stage.isList)
+                        // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有
+                        // 一次等着批的授权，那一档要点得着（见 `askable`）
+                        .allowsHitTesting(stage.isList || askable(stage))
                         // 量尺寸与悬停判定都必须挂在 .position 之前。`.position` 交回来的是
                         // 一个铺满可用空间的容器，挂在它后面，量到的是整块根视图、
                         // 悬停判定也变成整块根视图（面板因此收不回去，采样也采到半屏）。
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
                             action: { model.setFloatFrame($0) }
-                        .onHover { $0 ? keepPanel() : dismissPanel() }
+                        .onHover { inside in
+                            if inside {
+                                keepPanel()
+                                keepPreview()
+                            } else {
+                                dismissPanel()
+                                dismissPreview()
+                            }
+                        }
                         .onDisappear { model.setFloatFrame(nil) }
                         // 从那一格的位置长出来，收回时缩回同一个点
                         .transition(.scale(scale: 0.28,
@@ -353,13 +367,29 @@ struct BarContent: View {
     private func schedulePreview(_ target: PreviewTarget?, from id: CGWindowID) {
         guard let target else {
             guard hoveredCell == id else { return }
-            hoveredCell = nil
             previewDwell?.cancel()
             previewDwell = nil
-            preview = nil
+            // 卡上有等着批的授权时，指针要经过条与卡片之间那道缝才够得着按钮；
+            // 照常立刻收，那两个按钮就永远点不到。宽限期间指针落到卡上即作数
+            // （见浮层那一层的 `.onHover`）。其余情况照旧——预览是「看一眼」，
+            // 不该赖着不走。
+            guard askableCard else {
+                hoveredCell = nil
+                preview = nil
+                return
+            }
+            previewHold?.cancel()
+            let work = DispatchWorkItem {
+                hoveredCell = nil
+                preview = nil
+            }
+            previewHold = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.askReach, execute: work)
             return
         }
         hoveredCell = id
+        previewHold?.cancel()
+        previewHold = nil
         previewDwell?.cancel()
         let work = DispatchWorkItem {
             preview = target
@@ -370,6 +400,39 @@ struct BarContent: View {
         // 正是在一格格看，每换一格都对着一块空白等上四分之一秒会拖沓得刺眼。
         let delay = model.peeking ? Self.peekDwell : Self.previewDwell
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// 此刻这张预览卡上有没有等着批的授权。与 `askable(_:)` 同一个判断，
+    /// 只是这里用在还没算出档位的地方。
+    private var askableCard: Bool {
+        guard let preview else { return false }
+        let target = preview.window
+        let activity = model.world.activities[.window(target.id)]
+            ?? model.world.activities[.app(target.pid)]
+        return activity?.ask != nil
+    }
+
+    private func keepPreview() {
+        previewHold?.cancel()
+        previewHold = nil
+    }
+
+    /// 指针离开了卡片。批完之后卡上没东西可按了，那时照旧立刻收。
+    private func dismissPreview() {
+        guard askableCard else {
+            previewHold?.cancel()
+            previewHold = nil
+            hoveredCell = nil
+            preview = nil
+            return
+        }
+        previewHold?.cancel()
+        let work = DispatchWorkItem {
+            hoveredCell = nil
+            preview = nil
+        }
+        previewHold = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.askReach, execute: work)
     }
 
     @ViewBuilder
@@ -947,6 +1010,15 @@ struct BarContent: View {
         var isList: Bool { if case .list = kind { return true } else { return false } }
     }
 
+    /// 这一档浮层里有没有等着按的东西。
+    ///
+    /// 预览卡向来只是「看一眼」，指针一离开那一格就收——所以它整档不收事件。
+    /// 待授权把它变成了要**动手**的东西：按钮得点得着，指针也得够得过去
+    /// （见 `schedulePreview` 的宽限）。只有这一档破例，其余照旧。
+    private func askable(_ stage: FloatStage) -> Bool {
+        cardSession(stage)?.ask != nil
+    }
+
     /// 此刻该显示哪一档。三档互斥，按信息量从多到少挑。
     private func floatStage(_ layout: BarLayout) -> FloatStage? {
         guard !model.hidden else { return nil }
@@ -1076,7 +1148,8 @@ struct BarContent: View {
             // 缩略图从它上方长出来。
             // `.task` 也必须无条件挂：只挂在其中一档上，修饰符链一变，identity 照样断。
             PreviewCard(title: cardTitle(stage), detail: cardDetail(stage), peek: peekBox,
-                        session: cardSession(stage))
+                        session: cardSession(stage),
+                        onAnswer: { id, allow in model.world.answerAsk(id, allow: allow) })
                 .task(id: cardDetail(stage)?.window.id) {
                     guard let id = cardDetail(stage)?.window.id else { return }
                     while !Task.isCancelled {

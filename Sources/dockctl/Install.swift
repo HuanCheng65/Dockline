@@ -19,6 +19,11 @@ enum HookInstaller {
         // 只收 ExitPlanMode / AskUserQuestion 的话，在跑的那一档就只剩「生成中」。
         ("PreToolUse", nil),
         ("Notification", nil),
+        // 就地授权。**这一条是阻塞的**：它停在那里等条上的回答，期间 Claude Code
+        // 停在这一步不动。不给它设更短的超时——那等于替用户定「多久算不管了」，
+        // 而 Claude Code 自己那道超时（command 型 hook 默认 600 秒）到点之后
+        // 丢掉本条的输出、照常弹它自己的对话框，什么都不会丢。
+        ("PermissionRequest", nil),
         ("Stop", nil),
         ("StopFailure", nil),
         ("SessionEnd", nil),

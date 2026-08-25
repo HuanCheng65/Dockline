@@ -200,6 +200,9 @@ struct PreviewCard: View {
     /// 尺寸就没有起点可以插值，整块只剩淡入淡出（§3.1 那条教训）。
     let session: Activity?
 
+    /// 用户在这张卡上批了或驳了一次授权。
+    let onAnswer: (UUID, Bool) -> Void
+
     /// 长出来的那一层。窗口相关的东西全在这里，非窗口的项（固定文件夹、废纸篓、
     /// 启动台）因此天然只有名字那一档。
     struct Detail: Equatable {
@@ -270,10 +273,33 @@ struct PreviewCard: View {
     private static let promptLines = 3
     private static let responseLines = 7
 
+    /// 授权那一段里，要判断的内容每行占多高。
+    ///
+    /// 这些行**不折行**，一行就是一行——一条折了行的 diff 读起来比截断还糟。
+    /// 每行都钉死高度，这一段因此是算出来的而不是量出来的：卡片尺寸由浮层驱动、
+    /// 必须提前算准，而定高的行不需要经过量文字那条容易出错的路。
+    private static let askLineHeight: CGFloat = 15
+    private static let askBoxPad: CGFloat = 5
+    private static let buttonHeight: CGFloat = 24
+
+    private static func askHeight(_ ask: Activity.Ask) -> CGFloat {
+        var height = rowHeight
+        if !ask.lines.isEmpty {
+            height += rowGap / 2 + askBoxPad * 2 + CGFloat(ask.lines.count) * askLineHeight
+        }
+        if ask.more > 0 { height += countHeight }
+        return height + rowGap + buttonHeight
+    }
+
     private static func sessionHeight(_ session: Activity) -> CGFloat {
         var height = textInset
         if let prompt = session.prompt {
             height += wrapped(AttributedString(prompt), lines: promptLines) + rowGap
+        }
+        // 有东西等着你批时，卡片只说这一件事。近期动作那几行此刻是背景资料，
+        // 而这张卡在这一刻的用途是让你按下去。
+        if let ask = session.ask {
+            return height + askHeight(ask)
         }
         if let response = session.response, session.isUnread {
             // 停了就贴结论，不再列经过（经过还在终端里）
@@ -416,9 +442,11 @@ struct PreviewCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.bottom, Self.rowGap)
             }
-            // 停了就贴结论，不再列经过。那一刻要的是「结果是什么」，
-            // 而经过想看的时候还在终端里。
-            if let response = session.response, session.isUnread {
+            if let ask = session.ask {
+                askBlock(ask)
+            } else if let response = session.response, session.isUnread {
+                // 停了就贴结论，不再列经过。那一刻要的是「结果是什么」，
+                // 而经过想看的时候还在终端里。
                 Text(Self.styled(response))
                     .font(.system(size: 11))
                     .foregroundStyle(.primary)
@@ -449,6 +477,85 @@ struct PreviewCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Self.textPad)
         .padding(.bottom, Self.textInset)
+    }
+
+    /// 等着你批的那一段（实时状态设计 §4.7）。
+    ///
+    /// 它答的是一个是非题，所以版面只有三样：**要做什么**、**做在什么上**、**批不批**。
+    /// 近期动作那几行让位给它——这一刻卡片的用途不是让你读进度，是让你按下去。
+    @ViewBuilder
+    private func askBlock(_ ask: Activity.Ask) -> some View {
+        row(symbol: ask.symbol, verb: ask.verb, object: ask.object, metric: nil,
+            tint: Color.accentColor, current: true)
+        if !ask.lines.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(ask.lines) { line in
+                    HStack(spacing: 5) {
+                        Text(line.sign.rawValue)
+                            .foregroundStyle(Self.askTint(line.sign))
+                            .frame(width: 7, alignment: .leading)
+                        // 命令与代码不折行：折了行的 diff 比截断更难读，
+                        // 而这一段是拿来扫一眼下判断的，不是拿来通读的
+                        Text(line.text)
+                            .foregroundStyle(line.sign == .same
+                                ? AnyShapeStyle(.secondary) : AnyShapeStyle(Self.askTint(line.sign)))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .frame(height: Self.askLineHeight)
+                    .background(Self.askTint(line.sign).opacity(line.sign == .same ? 0 : 0.09))
+                }
+            }
+            .padding(.vertical, Self.askBoxPad)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 5))
+            .padding(.top, Self.rowGap / 2)
+        }
+        // 截短了就得说。一份被悄悄截短的 diff 会让人以为改动就这么点。
+        if ask.more > 0 {
+            Text(localized("activity.ask.more", ask.more))
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(height: Self.countHeight, alignment: .leading)
+        }
+        HStack(spacing: 6) {
+            Spacer(minLength: 0)
+            askButton(localized("activity.ask.deny"), prominent: false) {
+                onAnswer(ask.id, false)
+            }
+            askButton(localized("activity.ask.allow"), prominent: true) {
+                onAnswer(ask.id, true)
+            }
+        }
+        .frame(height: Self.buttonHeight)
+        .padding(.top, Self.rowGap)
+    }
+
+    /// 增删两色。同一个色也用在那一行的底色上，浅一档。
+    private static func askTint(_ sign: Activity.Ask.Line.Sign) -> Color {
+        switch sign {
+        case .added: return .green
+        case .removed: return .red
+        case .same: return .secondary
+        }
+    }
+
+    private func askButton(_ title: String, prominent: Bool,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .padding(.horizontal, 12)
+                .frame(height: Self.buttonHeight)
+                .background(prominent
+                    ? AnyShapeStyle(Color.accentColor)
+                    : AnyShapeStyle(.quaternary.opacity(0.7)),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     /// 时间线上的一行：图标、动作名、对象、量化结果。

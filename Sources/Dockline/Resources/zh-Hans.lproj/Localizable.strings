@@ -26,6 +26,17 @@
 /* 面板只列末尾几步，这一行报出本轮的总数。%d 是步数 */
 "activity.steps.count" = "本轮共 %d 步";
 
+/* MARK: - 就地授权（实时状态设计 §4.7） */
+
+"activity.ask.allow" = "允许";
+"activity.ask.deny" = "拒绝";
+
+/* 拒绝的理由，会原样进入模型的上下文，让它知道这一步为什么没走成 */
+"activity.ask.denied" = "用户在 Dockline 中拒绝了这次操作。";
+
+/* 面板只列得下前几行，这一行报出截掉了多少。%d 是行数 */
+"activity.ask.more" = "另有 %d 行未显示";
+
 /* 当前动作：动作名 + 作用对象。%1$@ 是动作名，%2$@ 是对象 */
 "activity.action.format" = "%1$@ %2$@";
 
