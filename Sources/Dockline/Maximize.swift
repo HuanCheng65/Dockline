@@ -81,11 +81,6 @@ final class Maximizer {
     }
 }
 
-/// NSScreen 对象在屏幕参数变化时会被重建，比对身份要用显示器编号。
-func displayID(_ screen: NSScreen) -> CGDirectDisplayID? {
-    (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-}
-
 // MARK: - 结果纠正
 
 /// 计划书 §3「结果纠正，默认关闭」。

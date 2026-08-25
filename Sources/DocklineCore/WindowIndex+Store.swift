@@ -67,11 +67,13 @@ public struct IndexedWindow: Identifiable, Equatable {
     public let minimized: Bool
     public let fullscreen: Bool
     public let spaces: [UInt64]
+    /// 窗口所在的显示器（计划书 §6 M5）。nil = 判不出来，见 `DisplayLayout.owner`。
+    public let display: CGDirectDisplayID?
     public let source: Source
 
     public static func == (a: IndexedWindow, b: IndexedWindow) -> Bool {
         a.id == b.id && a.title == b.title && a.minimized == b.minimized
-            && a.fullscreen == b.fullscreen && a.source == b.source
+            && a.fullscreen == b.fullscreen && a.display == b.display && a.source == b.source
     }
 }
 
@@ -100,7 +102,7 @@ public func isTabOfHost(_ candidate: CGWindowRecord, host: CGWindowID) -> Bool {
         .contains { axCopy($0, kAXTitleAttribute) as? String == title }
 }
 
-func tabWindow(candidate: CGWindowRecord, host: CGWindowID,
+func tabWindow(candidate: CGWindowRecord, host: CGWindowID, layout: DisplayLayout,
                previous: IndexedWindow? = nil) -> IndexedWindow {
     IndexedWindow(
         id: candidate.windowID,
@@ -112,6 +114,7 @@ func tabWindow(candidate: CGWindowRecord, host: CGWindowID,
         minimized: false,
         fullscreen: false,
         spaces: SkyLight.spaces(for: candidate.windowID) ?? previous?.spaces ?? [],
+        display: layout.owner(of: candidate.bounds, previous: previous?.display),
         source: .tab(host: host))
 }
 
@@ -179,6 +182,7 @@ public func buildWindowIndex(minimumSize: CGFloat = 120, timing: inout IndexTimi
     let orderedStart = Date()
 
     let live = candidates.filter { SkyLight.isOrderedIn($0.windowID) == true }
+    let layout = DisplayLayout.current()
 
     var result: [IndexedWindow] = []
     for cg in candidates {
@@ -193,7 +197,7 @@ public func buildWindowIndex(minimumSize: CGFloat = 120, timing: inout IndexTimi
         }
         guard orderedIn == true || minimized else {
             if let host = tabHost(of: cg, among: live), isTabOfHost(cg, host: host) {
-                result.append(tabWindow(candidate: cg, host: host))
+                result.append(tabWindow(candidate: cg, host: host, layout: layout))
             } else {
                 reject(orderedIn == nil ? "ordered-in 探测失败" : "ordered-out 且非最小化")
             }
@@ -226,6 +230,7 @@ public func buildWindowIndex(minimumSize: CGFloat = 120, timing: inout IndexTimi
             minimized: minimized,
             fullscreen: ax?.fullscreen == true,
             spaces: ax?.spaces ?? SkyLight.spaces(for: cg.windowID) ?? [],
+            display: layout.owner(of: cg.bounds, previous: nil),
             source: ax == nil ? .cgOnly : .ax))
     }
     timing.orderedIn = Date().timeIntervalSince(orderedStart) * 1000
@@ -333,6 +338,7 @@ public final class WindowIndexStore {
         rejected.formIntersection(alive)
 
         let liveWindows = candidates.filter { orderedIn[$0.windowID] == true }
+        let layout = DisplayLayout.current()
 
         var fresh: [CGWindowID: IndexedWindow] = [:]
         for candidate in candidates {
@@ -353,7 +359,7 @@ public final class WindowIndexStore {
                     continue
                 }
                 fresh[candidate.windowID] = tabWindow(candidate: candidate, host: host,
-                                                      previous: previous)
+                                                      layout: layout, previous: previous)
                 continue
             }
             // 证据分三档，判决只在有新证据时改变：
@@ -374,8 +380,8 @@ public final class WindowIndexStore {
                 continue
             }
 
-            fresh[candidate.windowID] = merge(candidate: candidate, ax: ax,
-                                              previous: previous, minimized: minimized)
+            fresh[candidate.windowID] = merge(candidate: candidate, ax: ax, previous: previous,
+                                              minimized: minimized, layout: layout)
         }
 
         return commit(fresh: fresh, coldStart: !established)
@@ -391,6 +397,7 @@ public final class WindowIndexStore {
         guard established else { return reconcile() }
         var changed = false
         lastSkipped = []
+        let layout = DisplayLayout.current()
 
         for record in enumerateAXWindows(pids: [pid]).windows {
             guard let id = record.windowID else {
@@ -432,6 +439,7 @@ public final class WindowIndexStore {
                 minimized: record.minimized == true,
                 fullscreen: record.fullscreen == true,
                 spaces: record.spaces ?? byID[id]?.spaces ?? [],
+                display: layout.owner(of: frame, previous: byID[id]?.display),
                 source: .ax)
             // 正面证据覆盖此前的判决——CG surface 早于 AX 注册一步出现时，靠这里救回来
             rejected.remove(id)
@@ -473,8 +481,8 @@ public final class WindowIndexStore {
 
     // MARK: 内部
 
-    private func merge(candidate: CGWindowRecord, ax: WindowRecord?,
-                       previous: IndexedWindow?, minimized: Bool) -> IndexedWindow {
+    private func merge(candidate: CGWindowRecord, ax: WindowRecord?, previous: IndexedWindow?,
+                       minimized: Bool, layout: DisplayLayout) -> IndexedWindow {
         let axTitle = ax?.title.flatMap { $0.isEmpty ? nil : $0 }
         let cgTitle = candidate.cgTitle.flatMap { $0.isEmpty ? nil : $0 }
         // AX 引用一旦拿到就长期有效（M0 验证跨 Space 仍可用），沿用旧的不要丢
@@ -489,6 +497,7 @@ public final class WindowIndexStore {
             minimized: minimized,
             fullscreen: ax?.fullscreen ?? previous?.fullscreen ?? false,
             spaces: ax?.spaces ?? SkyLight.spaces(for: candidate.windowID) ?? previous?.spaces ?? [],
+            display: layout.owner(of: candidate.bounds, previous: previous?.display),
             source: element == nil ? .cgOnly : .ax)
     }
 

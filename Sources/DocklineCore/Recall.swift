@@ -10,6 +10,11 @@ public func flipY(_ rect: CGRect) -> CGRect {
     CGRect(x: rect.origin.x, y: primaryTop() - rect.maxY, width: rect.width, height: rect.height)
 }
 
+/// NSScreen 对象在屏幕参数变化时会被重建，比对身份要用显示器编号。
+public func displayID(_ screen: NSScreen) -> CGDirectDisplayID? {
+    (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+}
+
 // MARK: - 召回
 // M0 验收：常规路径（AXRaise + activate）在跨 Space、原生全屏、非宿主 App 下均成立，
 // 且能带动 Space 自动切换。最小化者先写 AXMinimized=false。

@@ -333,9 +333,34 @@ final class BarModel: ObservableObject {
     }
 
     private func publish() {
+        logDisplayChanges(to: store.windows)
         windows = store.windows
         rebuildItems()
         sampleBackdrop()
+    }
+
+    /// 显示器归属的变化（计划书 §6 M5）。归属字段现在只记录、还不分流，
+    /// 先让它在真实使用里跑一段，看跨屏迁移判得准不准、判不出归属的窗口到底存不存在——
+    /// 每屏一条 bar 一旦上线，一个判不出归属的窗口就无处可去了。
+    private func logDisplayChanges(to fresh: [IndexedWindow]) {
+        // 值本身是可选的，所以查表得到的是双层可选：外层 nil 表示上一轮没有这个窗口。
+        var before: [CGWindowID: CGDirectDisplayID?] = [:]
+        for window in windows { before[window.id] = window.display }
+        for window in fresh {
+            guard let previous = before[window.id] else {
+                if window.display == nil {
+                    Timeline.log("⚠️ 新窗口判不出显示器  wid \(window.id) \(window.appName)")
+                }
+                continue
+            }
+            guard previous != window.display else { continue }
+            Timeline.log("跨屏  wid \(window.id) \(window.appName)"
+                + "  \(Self.displayName(previous)) → \(Self.displayName(window.display))")
+        }
+    }
+
+    private static func displayName(_ display: CGDirectDisplayID?) -> String {
+        display.map { "屏 \($0)" } ?? "未知"
     }
 
     // MARK: 前台窗口

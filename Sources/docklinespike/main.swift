@@ -180,16 +180,22 @@ func commandIndex() {
                  timing.total, timing.cgList, timing.axProbe, timing.orderedIn))
     print(String(format: "  稳态: 总 %.1fms（CG 列表 %.1f · AX 探测 %.1f · ordered-in %.1f）\n",
                  warm.total, warm.cgList, warm.axProbe, warm.orderedIn))
-    print("  \(pad("wid", 8))\(pad("App", 18))\(pad("来源", 8))\(pad("状态", 8))\(pad("Space", 8))标题")
-    print("  " + String(repeating: "─", count: 84))
+    let layout = DisplayLayout.current()
+    print("显示器: " + layout.displays.map {
+        "\($0.id) \(Int($0.frame.width))×\(Int($0.frame.height))@(\(Int($0.frame.minX)),\(Int($0.frame.minY)))"
+    }.joined(separator: " · "))
+    print("  \(pad("wid", 8))\(pad("App", 18))\(pad("来源", 8))\(pad("状态", 8))\(pad("Space", 8))\(pad("屏", 12))标题")
+    print("  " + String(repeating: "─", count: 96))
     for w in windows {
         var flags: [String] = []
         if w.minimized { flags.append("min") }
         if w.fullscreen { flags.append("full") }
         let source = w.source == .ax ? "AX" : "CG-only"
         let space = w.spaces.isEmpty ? "—" : w.spaces.map(String.init).joined(separator: "/")
+        let display = w.display.map(String.init) ?? "判不出"
         let cols = [pad("\(w.id)", 8), pad(w.appName, 18), pad(source, 8),
-                    pad(flags.isEmpty ? "-" : flags.joined(separator: ","), 8), pad(space, 8), w.title]
+                    pad(flags.isEmpty ? "-" : flags.joined(separator: ","), 8), pad(space, 8),
+                    pad(display, 12), w.title]
         print("  " + cols.joined())
     }
     if !rejections.isEmpty {
