@@ -693,8 +693,23 @@ final class World: ObservableObject {
     }
 
     /// 时间序：最近用过的排在前面，第一个就是当前前台窗口。键盘切换的 Tab 走这条。
-    var recencyOrder: [IndexedWindow] {
-        windows.sorted { (lastActive[$0.id] ?? 0) > (lastActive[$1.id] ?? 0) }
+    ///
+    /// `clock` 是外部冻结的一份活跃序号，键盘切换用它在一次会话里固定名次。冻的是名次，
+    /// 不是名单：名单必须跟着索引走。新窗口进索引要等 AX 通知，用户往往在那之前就按下了
+    /// ⌥Tab，名单一冻，那个窗口整场会话都够不着。它不在 `clock` 里，于是用实时序号——
+    /// 刚建出来的窗口正被聚焦，序号最大，排在最前，本来就该如此。
+    ///
+    /// 从未聚焦过的窗口序号都是 0。并列时按条上的排布定序：`sorted` 不保证稳定，
+    /// 不给第二关键字的话这批窗口每次算出来的次序都可能不同，⌥Tab 会走得像随机的。
+    func recencyOrder(clock: [CGWindowID: Int] = [:]) -> [IndexedWindow] {
+        var place: [CGWindowID: Int] = [:]
+        for (index, window) in spatialOrder.enumerated() { place[window.id] = index }
+        func rank(_ window: IndexedWindow) -> Int { clock[window.id] ?? lastActive[window.id] ?? 0 }
+        return windows.sorted {
+            let left = rank($0), right = rank($1)
+            guard left == right else { return left > right }
+            return (place[$0.id] ?? .max) < (place[$1.id] ?? .max)
+        }
     }
 
     /// 空间序：各条 bar 按屏幕从左到右接起来，条内按格子的排布顺序。方向键走这条。

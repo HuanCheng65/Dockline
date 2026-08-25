@@ -32,12 +32,15 @@ final class KeyboardSwitch {
 
     private var session: Session?
 
-    /// 一次会话。两套顺序在会话开始时定死：期间若让它们跟着前台变化重排，
-    /// 同一个方向连按两次会走到不同的地方。
+    /// 一次会话。
+    ///
+    /// 冻住的只有时间序的**名次**——期间若让它跟着前台变化重排，同一个方向连按两次
+    /// 会走到不同的地方。名单不冻：会话开始后才进索引的窗口（新建的窗口尤其，它进索引
+    /// 要等 AX 通知）必须能被走到，否则用户刚开的那个窗口整场都够不着。
+    /// 空间序是条上的排布，本来就不随前台变化，每次现算即可。
     private struct Session {
         var selected: CGWindowID
-        let recency: [IndexedWindow]
-        let spatial: [IndexedWindow]
+        let clock: [CGWindowID: Int]
     }
 
     init(world: World) {
@@ -172,9 +175,9 @@ final class KeyboardSwitch {
     /// 交回系统比吞掉它更诚实。
     private func begin(reverse: Bool) -> Bool {
         guard let world else { return false }
-        let recency = world.recencyOrder
+        let clock = world.lastActive
+        let recency = world.recencyOrder(clock: clock)
         guard recency.count >= 2 else { return false }
-        let spatial = world.spatialOrder
         watchMouse()
         for bar in world.bars { bar.setKeySession(true) }
         let work = DispatchWorkItem { [weak self] in
@@ -186,20 +189,27 @@ final class KeyboardSwitch {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.revealDelay, execute: work)
 
         if let front = world.frontWindow, recency.contains(where: { $0.id == front }) {
-            session = Session(selected: front, recency: recency, spatial: spatial)
+            session = Session(selected: front, clock: clock)
             // 首次触发直接落在上一个实际聚焦过的窗口上
             step(byRecency: true, forward: !reverse)
         } else {
-            // 前台窗口不在索引里（例如系统面板占着前台），第一次就落在最近用过的那个
-            session = Session(selected: recency[0].id, recency: recency, spatial: spatial)
+            // 前台窗口还不在索引里——刚新建的窗口正是这一类，它进索引要等 AX 通知。
+            // 此时第一次就落在最近用过的那个；那个新窗口随后进索引，本次会话照样走得到。
+            session = Session(selected: recency[0].id, clock: clock)
             publish()
         }
         return true
     }
 
+    /// 两条序列都现算。名次由会话开始时冻结的那份活跃序号定，成员跟着索引走。
+    private func order(byRecency: Bool) -> [IndexedWindow] {
+        guard let world, let session else { return [] }
+        return byRecency ? world.recencyOrder(clock: session.clock) : world.spatialOrder
+    }
+
     private func step(byRecency: Bool, forward: Bool) {
         guard var session else { return }
-        let list = byRecency ? session.recency : session.spatial
+        let list = order(byRecency: byRecency)
         guard !list.isEmpty else { return }
         let next: Int
         if let current = list.firstIndex(where: { $0.id == session.selected }) {
