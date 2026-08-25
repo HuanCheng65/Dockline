@@ -193,6 +193,13 @@ struct PreviewCard: View {
     /// 从它量就成了循环。见 `BarContent.peekBox`。
     let peek: CGSize?
 
+    /// 这一格上有 agent 会话时，卡片要说的东西。nil = 没有会话，卡片还是原来那张。
+    ///
+    /// 有会话时缩略图**让位**：那扇窗口长什么样此刻不重要，重要的是它里面那件事进行到
+    /// 哪一步了。让位而不是拿掉，是为了不分成两张卡——分支一旦出现在带 `.frame` 的那一层，
+    /// 尺寸就没有起点可以插值，整块只剩淡入淡出（§3.1 那条教训）。
+    let session: Session?
+
     /// 长出来的那一层。窗口相关的东西全在这里，非窗口的项（固定文件夹、废纸篓、
     /// 启动台）因此天然只有名字那一档。
     struct Detail: Equatable {
@@ -200,6 +207,16 @@ struct PreviewCard: View {
         let appName: String
         let image: NSImage?
         let unavailable: Bool
+    }
+
+    struct Session: Equatable {
+        let agent: String?
+        let elapsed: String
+        /// 用户这一轮说的话
+        let prompt: String?
+        /// 此刻的状况，与格子第二行同一句
+        let state: String
+        let steps: [Activity.Step]
     }
 
     /// 卡片宽度随缩略图的比例变——固定比例的框只会让宽窗口两边留白、窄窗口上下留白。
@@ -232,13 +249,35 @@ struct PreviewCard: View {
     /// 各取各的值会看出两个不相干的圆。
     private static var innerRadius: CGFloat { BarMetrics.barRadius - pad }
 
-    /// 画面能占的最大范围。两档只差这一个框——尺寸算法与视图树都是同一套。
+    /// 有会话时的版面。卡片宽度**固定**：近期动作那几行长短不一，跟着它们变宽的话，
+    /// 面板会在 agent 每走一步时抖一下。
+    static let sessionWidth: CGFloat = 300
+    private static let rowHeight: CGFloat = 17
+    private static let rowGap: CGFloat = 6
+
+    private static func sessionHeight(_ session: Session) -> CGFloat {
+        let prompt = session.prompt == nil ? 0 : rowHeight + 2
+        // 近期动作，外加当前状况那一行
+        let rows = CGFloat(session.steps.count + 1) * rowHeight
+        return prompt + rowGap + rows + textInset
+    }
+
+    /// 画面能占的最大范围。各档只差这一个框——尺寸算法与视图树都是同一套。
     private static func imageBox(_ peek: CGSize?, showsAppName: Bool) -> CGSize {
         guard let peek else {
             return CGSize(width: maxWidth - pad * 2, height: imageHeight)
         }
         return CGSize(width: peek.width - pad * 2,
                       height: peek.height - pad * 2 - textHeight(showsAppName: showsAppName))
+    }
+
+    /// 有会话时画不画缩略图。
+    ///
+    /// **平时不画。** 那扇窗口长什么样，此刻不是问题；而一张小图浮在卡片中央、两边留着
+    /// 大片空白，比不画难看得多。按住空格要大预览时才画——那时用户是明确要看窗口的，
+    /// 而且那一档照旧铺满，会话区跟在下面。
+    private static func showsImage(_ session: Session?, _ peek: CGSize?) -> Bool {
+        session == nil || peek != nil
     }
 
     /// 缩略图按原比例装进上界里
@@ -252,29 +291,49 @@ struct PreviewCard: View {
     }
 
     /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
-    static func size(title: String, detail: Detail?, peek: CGSize?) -> CGSize {
+    static func size(title: String, detail: Detail?, peek: CGSize?,
+                     session: Session?) -> CGSize {
         guard let detail else {
             let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
             return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
         }
-        let shows = showsAppName(title, detail)
-        let image = imageSize(detail.image, box: imageBox(peek, showsAppName: shows))
-        return CGSize(width: min(peek?.width ?? maxWidth, max(minWidth, image.width + pad * 2)),
-                      height: image.height + pad * 2 + textHeight(showsAppName: shows))
+        // App 名那一行在会话卡上是噪声：卡片说的是那件事，不是那个程序
+        let shows = session == nil && showsAppName(title, detail)
+        let draws = showsImage(session, peek)
+        let image = draws ? imageSize(detail.image, box: imageBox(peek, showsAppName: shows))
+                          : .zero
+        let height = (draws ? image.height + pad * 2 : 0) + textHeight(showsAppName: shows)
+            + (session.map(sessionHeight) ?? 0)
+        // 大预览那一档的宽度照旧由画面定——按住空格是要看窗口，会话卡的固定宽度
+        // 不该把它压回去。
+        guard session != nil, peek == nil else {
+            return CGSize(width: min(peek?.width ?? maxWidth, max(minWidth, image.width + pad * 2)),
+                          height: height)
+        }
+        return CGSize(width: sessionWidth, height: height)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let detail { thumbnail(detail) }
+            if let detail, Self.showsImage(session, peek) { thumbnail(detail) }
             VStack(alignment: .leading, spacing: 2) {
-                // 两档共用这一个 Text。换成两个，它们之间就只剩淡入淡出可做了。
-                Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .lineLimit(detail == nil ? 1 : 2)
-                    .truncationMode(.tail)
-                    .frame(height: detail == nil ? Self.nameHeight : Self.titleHeight,
-                           alignment: detail == nil ? .center : .topLeading)
-                if let detail, Self.showsAppName(title, detail) {
+                HStack(alignment: .top, spacing: 6) {
+                    // 各档共用这一个 Text。换成两个，它们之间就只剩淡入淡出可做了。
+                    Text(title)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(detail == nil ? 1 : 2)
+                        .truncationMode(.tail)
+                    // 无条件挂着，没有会话时是空串：加条件就是加分支，分支一换 identity 就断
+                    Text(session.map { [$0.agent, $0.elapsed].compactMap { $0 }
+                            .joined(separator: " · ") } ?? "")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                .frame(height: detail == nil ? Self.nameHeight : Self.titleHeight,
+                       alignment: detail == nil ? .center : .topLeading)
+                if let detail, session == nil, Self.showsAppName(title, detail) {
                     Text(detail.appName)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -284,13 +343,48 @@ struct PreviewCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.textPad)
             .padding(.vertical, detail == nil ? 0 : Self.textInset)
+            if let session { sessionBlock(session) }
         }
+    }
+
+    private func sessionBlock(_ session: Session) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let prompt = session.prompt {
+                Text(prompt)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(height: Self.rowHeight, alignment: .topLeading)
+                    .padding(.bottom, 2)
+            }
+            Divider().padding(.vertical, (Self.rowGap - 1) / 2)
+            // 旧的在上、当前在下：读起来是一条往下走的时间线，最新的那一行贴着卡片底边，
+            // 也就是离条最近的地方。
+            ForEach(session.steps) { step in
+                Text(step.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(height: Self.rowHeight, alignment: .topLeading)
+            }
+            Text(session.state)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(height: Self.rowHeight, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.textPad)
+        .padding(.bottom, Self.textInset)
     }
 
     private func thumbnail(_ detail: Detail) -> some View {
         let size = Self.imageSize(
             detail.image,
-            box: Self.imageBox(peek, showsAppName: Self.showsAppName(title, detail)))
+            box: Self.imageBox(peek,
+                               showsAppName: session == nil && Self.showsAppName(title, detail)))
         return ZStack {
             if let image = detail.image {
                 Image(nsImage: image)

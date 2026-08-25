@@ -87,8 +87,14 @@ func runHook() -> Never {
     if let cwd = json["cwd"] as? String { payload["cwd"] = cwd }
     // 每个事件都重算一次会话名，不只在提交提示词那一次：会话标题会随对话变，
     // 而它就是格子第一行的字。
-    if payload["command"] as? String == "push", let task = HookAdapter.task(json) {
-        payload["task"] = task
+    if payload["command"] as? String == "push" {
+        if let task = HookAdapter.task(json) { payload["task"] = task }
+        // 用户这一轮的原话。面板里单占一行，与任务名分工：一个是这件事叫什么，
+        // 一个是这件事怎么被交代的。
+        if let prompt = json["prompt"] as? String, !prompt.isEmpty {
+            payload["prompt"] = prompt
+        }
+        payload["agent"] = "Claude Code"
     }
     post(payload)
     exit(0)

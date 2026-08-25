@@ -131,8 +131,10 @@ enum HookAdapter {
         }
         let raw: String? = switch json["tool_name"] as? String {
         case "Read", "Edit", "NotebookEdit", "Write": path("file_path")
-        // 命令往往很长，取第一个词——那是在执行哪个程序
-        case "Bash": (input["command"] as? String)?.split(separator: " ").first.map(String.init)
+        // 命令往往很长，取第一个词的末段——那是在执行哪个程序。带路径调用时整条路径
+        // 会把这一行占满，而路径里唯一有信息的就是最后那一节。
+        case "Bash": (input["command"] as? String)?.split(separator: " ").first
+            .map { ($0 as NSString).lastPathComponent }
         case "Grep", "Glob": input["pattern"] as? String
         case "WebFetch", "WebSearch": input["url"] as? String ?? input["query"] as? String
         case "Task", "Agent": input["description"] as? String

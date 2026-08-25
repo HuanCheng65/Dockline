@@ -60,6 +60,20 @@ struct Activity: Equatable {
         }
     }
 
+    /// 走过的一步。面板上那份近期动作，就是这些。
+    struct Step: Equatable, Identifiable {
+        let id: Int
+        let tool: String
+        let object: String?
+
+        /// 与格子第二行同一套说法，同一份本地化资源。
+        var text: String {
+            let verb = localized("activity.tool.\(tool)", fallback: tool)
+            guard let object, !object.isEmpty else { return verb }
+            return localized("activity.action.format", verb, object)
+        }
+    }
+
     var salience: Salience
     /// 这条会话在干**哪件事**，取自用户自己那句提示词。
     ///
@@ -80,20 +94,20 @@ struct Activity: Equatable {
     var label: String?
     /// 只在 hover 里出现的细节：耗时、ETA、任务 n/m。**永远不进格子**（进度口径见设计文档 §3）。
     var detail: String?
+    /// 用户这一轮说的话。面板里给一行——任务名是这件事叫什么，它是这件事怎么被交代的。
+    var prompt: String?
+    /// 哪个 agent。多个 agent 同时在跑时，光看格子分不出是谁。
+    var agent: String?
+    /// 近期走过的几步，旧的在前。只留末尾几条：面板要的是「刚才发生了什么」，
+    /// 不是一份完整日志——完整的在终端里。
+    var steps: [Step] = []
+    /// 这条会话第一次上报的时刻。面板上「跑了多久」由它算。
+    var started = Date()
     /// 这一档是什么时候开始的。**跨同档的上报保持不变**（见 `ActivityCenter`），
     /// 因此「等了多久」是它真正的含义。多个等待按它先来后到排队。
     var since = Date()
     /// 最后一次收到上报的时刻。
     var updated = Date()
-
-    /// 要不要浮出胶囊。working 不浮：它唯一需要传达的是任务仍在运行，
-    /// 而文字诱导阅读，阅读即打断。
-    var showsCapsule: Bool {
-        switch salience {
-        case .working: return false
-        case .waiting, .finished: return true
-        }
-    }
 
     /// 此刻在做什么，渲染成一句话。nil = 上报没说，由 `stateLine` 退回「生成中」。
     ///
@@ -113,18 +127,6 @@ struct Activity: Equatable {
             return action ?? localized("activity.thinking")
         case .waiting(let waiting):
             return waiting.text
-        case .finished(let outcome):
-            return "\(outcome.mark) \(label ?? outcome.text)"
-        }
-    }
-
-    /// 胶囊里的那一行。终态带一句摘要，等待态一个词说明等什么。
-    var capsuleText: String? {
-        switch salience {
-        case .working:
-            return nil
-        case .waiting(let waiting):
-            return label.map { "\(waiting.text) · \($0)" } ?? waiting.text
         case .finished(let outcome):
             return "\(outcome.mark) \(label ?? outcome.text)"
         }
@@ -152,7 +154,7 @@ struct Activity: Equatable {
     /// 悬停提示。没有任何文字时不显示提示，而不是显示一句空话。
     var summary: String? {
         let percent = progress.map { "\(Int(($0 * 100).rounded()))%" }
-        let all = [capsuleText ?? label, detail, percent].compactMap { $0 }
+        let all = [stateLine, detail, percent].compactMap { $0 }
         return all.isEmpty ? nil : all.joined(separator: " · ")
     }
 }
@@ -245,13 +247,19 @@ final class ActivityCenter {
             // 会话名下。动作相反，每次都换——它说的是「此刻」。
             // `since` 同样粘住，但只在这一档没变的时候：它的含义是「这一档开始于何时」，
             // 等待队列按它排序，重置一次就等于插了一次队。
+            let tool = userInfo["tool"] as? String
+            let object = userInfo["object"] as? String
             let activity = Activity(salience: salience,
                                     task: userInfo["task"] as? String ?? previous?.task,
-                                    tool: userInfo["tool"] as? String,
-                                    object: userInfo["object"] as? String,
+                                    tool: tool,
+                                    object: object,
                                     progress: userInfo["progress"] as? Double,
                                     label: userInfo["label"] as? String,
                                     detail: userInfo["detail"] as? String,
+                                    prompt: userInfo["prompt"] as? String ?? previous?.prompt,
+                                    agent: userInfo["agent"] as? String ?? previous?.agent,
+                                    steps: Self.appending(tool, object, to: previous?.steps ?? []),
+                                    started: previous?.started ?? Date(),
                                     since: previous?.salience.rank == salience.rank
                                         ? previous?.since ?? Date() : Date())
             let target = seat(key, host: host, cwd: cwd,
@@ -274,6 +282,20 @@ final class ActivityCenter {
         let outcome = bind(host, cwd, keeping)
         if let why = outcome.why { Timeline.log("活动绑定  \(key) → \(outcome.target)：\(why)") }
         return outcome.target
+    }
+
+    /// 面板上留几步。留多了那份列表自己就成了要读的东西，而面板要答的是
+    /// 「刚才发生了什么」；完整的经过在终端里。
+    private static let stepLimit = 4
+
+    /// 记下走过的这一步。没带工具的上报（提交提示词、工具跑完、等待、终态）不是一步，
+    /// 原样带过——否则列表里会塞满没有内容的空行。
+    private static func appending(_ tool: String?, _ object: String?,
+                                  to steps: [Activity.Step]) -> [Activity.Step] {
+        guard let tool else { return steps }
+        var result = steps
+        result.append(Activity.Step(id: (steps.last?.id ?? 0) + 1, tool: tool, object: object))
+        return result.suffix(stepLimit)
     }
 
     /// 上报方的身份。会话标识最准，其次是指名的窗口，都没有就整个 App 一条——
