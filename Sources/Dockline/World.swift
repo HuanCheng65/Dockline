@@ -62,8 +62,11 @@ final class World: ObservableObject {
     private var iconCache: [pid_t: NSImage] = [:]
     private var fileIconCache: [URL: NSImage] = [:]
 
-    let maximizer = Maximizer()
-    let corrector = TilingCorrector()
+    /// 写别人家窗口几何的唯一出口。三处摆位（铺满 / 分屏、搬到另一块屏、结果纠正）
+    /// 全部从它走，报备因此不会漏。见 `WindowPlacer`。
+    private let placer = WindowPlacer()
+    lazy var maximizer = Maximizer(placer: placer)
+    lazy var corrector = TilingCorrector(placer: placer)
     /// 拖格子分屏时画在桌面上的那块落点
     let splitPreview = SplitPreview()
     /// nil = 快捷键没注册上（组合被别的程序占用）。设置页据此说明情况。
@@ -202,9 +205,7 @@ final class World: ObservableObject {
         }
         do {
             guard let goal = try landing(element, on: target) else { throw FillError.noGeometry }
-            // 报在写之前，理由同 `Maximizer.write`
-            corrector.weWrote(window.id)
-            let outcome = try setFrame(element, to: flipY(goal))
+            let outcome = try placer.place(element, to: flipY(goal), wid: window.id)
             if outcome.fits {
                 Timeline.log("移到屏 \(display)  wid \(window.id) \(window.appName)")
             } else {
@@ -372,7 +373,7 @@ final class World: ObservableObject {
             activities = activityCenter.activities
         }
         activityCenter.start()
-        maximizer.onWrite = { [weak self] wid in self?.corrector.weWrote(wid) }
+        placer.onPlaced = { [weak self] wid, kind in self?.corrector.noteWrite(wid, kind) }
         corrector.enabled = pins.correctsTiling
         observers.watchesGeometry = pins.correctsTiling
         observers.onGeometryChanged = { [weak self] element in

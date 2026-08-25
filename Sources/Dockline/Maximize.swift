@@ -75,10 +75,10 @@ final class Maximizer {
     /// 贴过去之前的几何。还原要用，所以必须在贴过去的那一刻记下来。
     private var restore: [CGWindowID: CGRect] = [:]
 
-    /// 我们自己写了某个窗口的几何。结果纠正必须知道这件事，否则会把我们的摆位
-    /// 当成用户的动作去解读——见 `TilingCorrector.weWrote`。挂成回调而不是让调用点
-    /// 各自记得报一声：新增一条写入路径时，漏报是不会有任何症状的，直到它出事。
-    var onWrite: ((CGWindowID) -> Void)?
+    /// 所有摆位都从这里出去。见 `WindowPlacer`。
+    let placer: WindowPlacer
+
+    init(placer: WindowPlacer) { self.placer = placer }
 
     /// 有 bar 的那些屏。只有它们要扣掉 bar 的高度。
     var barDisplays: Set<CGDirectDisplayID> = []
@@ -170,9 +170,7 @@ final class Maximizer {
 
     private func write(_ element: AXUIElement, to destination: CGRect,
                        wid: CGWindowID, name: String, as what: String) throws {
-        // 报在写之前：写入本身会触发移动与尺寸通知，晚一步报就来不及挡住它们
-        onWrite?(wid)
-        let outcome = try setFrame(element, to: destination)
+        let outcome = try placer.place(element, to: destination, wid: wid)
         if outcome.fits {
             Timeline.log("\(what) wid \(wid) \(name) → \(destination)")
         } else {
@@ -216,6 +214,39 @@ final class Maximizer {
     }
 }
 
+// MARK: - 写别人家窗口的几何
+
+/// 写别人家窗口几何的**唯一出口**。
+///
+/// 唯一是有原因的。写完必须让结果纠正知道「这一次不是用户干的」——它靠几何变化去推断
+/// 用户的意图，而我们也在改几何。漏报这一声**没有任何症状**，直到某个组合下窗口自己跳回
+/// 原来那块屏（那次是：铺满的窗口搬到另一块屏，落点恰好命中目标屏的落点矩形，纠正器读成
+/// 「用户又缩放了一次」，于是"还原"到它记着的老位置——在原来那块屏上）。
+///
+/// 出口只有一个，新增摆位路径就无从漏起。这也是把「这扇窗口此刻处在谁设定的什么状态里」
+/// 收拢到一处的第一步。
+final class WindowPlacer {
+    enum Kind {
+        /// 我们替用户摆的：铺满、分屏、搬到另一块屏。窗口此刻的形态由我们决定，
+        /// 之前记着的「用户把它放在哪儿」与「它处在纠正态」都随之作废。
+        case deliberate
+        /// 结果纠正自己的调整。它只需要挡住写入的回声——要记的状态是它自己刚记下的，
+        /// 在这里清掉正好把功能清没了。
+        case correction
+    }
+
+    /// 写完通知谁。结果纠正挂在这里（见 `TilingCorrector.noteWrite`）。
+    var onPlaced: ((CGWindowID, Kind) -> Void)?
+
+    @discardableResult
+    func place(_ element: AXUIElement, to rect: CGRect, wid: CGWindowID,
+               kind: Kind = .deliberate) throws -> FillOutcome {
+        // 报在写之前：写入本身会触发移动与尺寸通知，晚一步就来不及挡住它们
+        onPlaced?(wid, kind)
+        return try setFrame(element, to: rect)
+    }
+}
+
 // MARK: - 结果纠正
 
 /// 计划书 §3「结果纠正，默认关闭」。
@@ -226,6 +257,11 @@ final class Maximizer {
 final class TilingCorrector {
     var enabled = false
     var barDisplays: Set<CGDirectDisplayID> = []
+
+    /// 纠正也是一次摆位，同样从那唯一的出口走。见 `WindowPlacer`。
+    private let placer: WindowPlacer
+
+    init(placer: WindowPlacer) { self.placer = placer }
 
     /// 等几何静止再判。拖拽改尺寸的过程中通知是连续的，逐条判会一路纠正一路打架。
     private static let settle: TimeInterval = 0.12
@@ -254,22 +290,18 @@ final class TilingCorrector {
         placed[wid] = flipY(rect)
     }
 
-    /// 这个窗口的几何是**我们自己**刚写的：铺满、分屏、搬到另一块屏。
+    /// 有人刚写了这个窗口的几何。挂在 `WindowPlacer.onPlaced` 上，所有摆位都会经过。
     ///
-    /// 不报这一声会出实打实的错，而且症状离原因很远。搬屏那条最典型：`World.landing`
-    /// 把窗口夹进目标屏的可用区域，于是它落下去正好等于目标屏的一个落点；纠正器看见
-    /// 「一个纠正过的窗口又落在落点上」，按它的规矩解读成「用户再缩放了一次，也就是要
-    /// 还原」，就把窗口写回 `placed` 记着的老位置——那个位置在**原来那块屏上**。
-    /// 用户看到的是：窗口过来一下，又跳回去，还变回了铺满之前的大小。
-    ///
-    /// 所以这一声要做三件事：这一次通知不算；之前那次「纠正过」的状态作废（我们已经
-    /// 重新摆过它了）；记着的还原点也作废（还原要回到用户自己摆的位置，而不是回到
-    /// 它上一块屏上的老位置）。还原点会在用户下一次自己挪动它时重新记上。
-    func weWrote(_ wid: CGWindowID) {
+    /// 写入本身会再触发一次移动与尺寸通知，那不是用户的动作，一律不算。
+    /// 而**我们替用户摆的**那一类还要多做两件：之前那次「纠正过」的状态作废（我们已经
+    /// 重新摆过它了），记着的还原点也作废——还原要回到用户自己摆的位置，不是回到它
+    /// 上一块屏上的老位置。还原点会在用户下一次自己挪动它时重新记上。
+    func noteWrite(_ wid: CGWindowID, _ kind: WindowPlacer.Kind) {
         guard enabled else { return }
         lastWrite[wid] = Date()
         pending[wid]?.cancel()
         pending[wid] = nil
+        guard kind == .deliberate else { return }
         corrected[wid] = nil
         placed[wid] = nil
     }
@@ -329,9 +361,8 @@ final class TilingCorrector {
     }
 
     private func write(_ goal: CGRect, to element: AXUIElement, wid: CGWindowID, as what: String) {
-        lastWrite[wid] = Date()
         do {
-            let outcome = try setFrame(element, to: flipY(goal))
+            let outcome = try placer.place(element, to: flipY(goal), wid: wid, kind: .correction)
             if outcome.fits {
                 Timeline.log("\(what) wid \(wid) → \(goal)")
             } else {
