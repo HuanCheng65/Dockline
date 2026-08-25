@@ -474,6 +474,107 @@ func commandFill(_ wid: CGWindowID) {
 }
 
 
+// MARK: - events（窗口服务器通知的实测。调度中心让位就是靠这里认出来的事件号）
+
+/// 在一段号码区间上都挂一个观察者，把收到的事件按时间打出来。
+///
+/// 存在的理由：这族通知没有公开清单，事件号只能靠「做一个动作，看谁响了」定出来。
+/// 一次只认一个号码是不够的——要区分「只在调度中心响」和「别的动作也响」，
+/// 必须同时盯住一整段，再用时间戳去对齐动作。
+func commandEvents(from first: UInt32, to last: UInt32, seconds: Double) {
+    let start = Date()
+    let proc: SkyLight.NotifyProc = { type, _, _, _ in
+        let stamp = Date().timeIntervalSince(eventsStart)
+        print(String(format: "%8.3fs  事件 %d", stamp, type))
+        fflush(stdout)
+    }
+    eventsStart = start
+    var registered = 0
+    for type in first...last where SkyLight.onEvent(type, context: nil, proc) { registered += 1 }
+    guard registered > 0 else {
+        FileHandle.standardError.write("SLSRegisterNotifyProc 不可用\n".data(using: .utf8)!)
+        exit(1)
+    }
+    print("盯住事件 \(first)–\(last)（共 \(registered) 个），\(Int(seconds)) 秒后退出。")
+    print("现在去做要测的动作，每做一个隔两三秒，方便按时间戳分段。\n")
+    fflush(stdout)
+    Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { _ in exit(0) }
+    // 必须跑 NSApplication 的事件循环。这族通知经窗口服务器连接的事件队列投递，
+    // 裸 RunLoop 不泵它——实测挂着 401 个观察者 45 秒，一个事件都收不到。
+    let app = NSApplication.shared
+    app.setActivationPolicy(.prohibited)
+    app.run()
+}
+
+/// 回调是 C 函数指针，捕获不了局部变量，起始时刻只能走全局。
+var eventsStart = Date()
+
+// MARK: - mc（调度中心的确认判据）
+//
+// 1327 / 1328 不是「调度中心开 / 关」，实测最小化与取消最小化也发同一对（见计划书 §8）。
+// 于是判据要从「信号说它开了」改成「看见它确实开着」。这个命令量的就是那个「看见」：
+// 收到 1327 之后，程序坞那张铺满屏的 surface 多久出现、长什么样。
+
+func commandMissionControl(seconds: Double) {
+    let proc: SkyLight.NotifyProc = { type, _, _, _ in
+        let stamp = Date().timeIntervalSince(eventsStart)
+        guard type == 1327 else {
+            print(String(format: "%8.3fs  1328（转场结束）", stamp))
+            fflush(stdout)
+            return
+        }
+        print(String(format: "%8.3fs  1327（转场开始），开始逐 20ms 采样 ——", stamp))
+        fflush(stdout)
+        sampleDockSurface(round: 0, since: Date())
+    }
+    eventsStart = Date()
+    guard SkyLight.onEvent(1327, context: nil, proc), SkyLight.onEvent(1328, context: nil, proc) else {
+        FileHandle.standardError.write("SLSRegisterNotifyProc 不可用\n".data(using: .utf8)!)
+        exit(1)
+    }
+    print("盯住 1327 / 1328，\(Int(seconds)) 秒后退出。")
+    fflush(stdout)
+    Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { _ in exit(0) }
+    let app = NSApplication.shared
+    app.setActivationPolicy(.prohibited)
+    app.run()
+}
+
+/// 采样上限：30 轮 × 20ms = 600ms。调度中心的开场动画约 300–400ms，留一倍余量。
+private func sampleDockSurface(round: Int, since: Date) {
+    guard round < 30 else {
+        print("          —— 600ms 内没等到铺满屏的程序坞 surface\n")
+        fflush(stdout)
+        return
+    }
+    let screens = NSScreen.screens.map { flipY($0.frame) }
+    // 按 pid 认程序坞。`ownerName` 是本地化的（中文系统上是「程序坞」），按名字认会随语言失效。
+    let dock = NSRunningApplication
+        .runningApplications(withBundleIdentifier: "com.apple.dock").first?.processIdentifier
+    let hits = enumerateCGWindows().filter { window in
+        // onScreen 必须要：程序坞常年挂着一张同样铺满屏、但 ordered-out 的 surface
+        window.pid == dock && window.onScreen && screens.contains { screen in
+            window.bounds.width >= screen.width - 1 && window.bounds.height >= screen.height - 1
+        }
+    }
+    guard !hits.isEmpty else {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            sampleDockSurface(round: round + 1, since: since)
+        }
+        return
+    }
+    let delay = Date().timeIntervalSince(since) * 1000
+    print(String(format: "          +%.0fms  找到 %d 张：", delay, hits.count))
+    for hit in hits {
+        print("            wid \(hit.windowID)  layer \(hit.layer)  alpha \(hit.alpha)"
+              + "  \(Int(hit.bounds.width))×\(Int(hit.bounds.height))"
+              + "@(\(Int(hit.bounds.minX)),\(Int(hit.bounds.minY)))"
+              + "  onScreen=\(hit.onScreen)  标题=\(hit.cgTitle ?? "—")")
+    }
+    print("")
+    fflush(stdout)
+}
+
 // MARK: - 入口
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -506,6 +607,14 @@ case "probe":
         }
     }
     commandProbe(after: after, minimumSize: minimum)
+case "events":
+    let rest = Array(arguments.dropFirst())
+    let first = rest.first.flatMap(UInt32.init) ?? 1200
+    let last = rest.dropFirst().first.flatMap(UInt32.init) ?? 1600
+    let seconds = rest.dropFirst(2).first.flatMap(Double.init) ?? 60
+    commandEvents(from: first, to: last, seconds: seconds)
+case "mc":
+    commandMissionControl(seconds: arguments.dropFirst().first.flatMap(Double.init) ?? 30)
 case "activate":
     guard let p = arguments.dropFirst().first.flatMap(Int32.init) else {
         FileHandle.standardError.write("用法: docklinespike activate <pid>\n".data(using: .utf8)!)
@@ -531,5 +640,6 @@ case "raise", "fill":
     }
     arguments[0] == "raise" ? commandRaise(wid) : commandFill(wid)
 default:
-    print("用法: docklinespike [list | index | bench | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
+    print("用法: docklinespike [list | index | bench | events [起 止 秒]"
+          + " | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
 }
