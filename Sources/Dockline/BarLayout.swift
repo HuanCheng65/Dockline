@@ -111,6 +111,7 @@ enum Backing {
     case linked   // 指针停在同 App 的另一个窗口上——被拖散的兄弟靠它可见
     case light    // 悬停
     case bright   // 当前前台窗口
+    case focused  // 键盘切换选中——松开修饰键就去那里
 }
 
 // MARK: - 顶层项

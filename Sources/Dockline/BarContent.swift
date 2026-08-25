@@ -57,6 +57,8 @@ struct BarContent: View {
     @State private var panelHide: DispatchWorkItem?
     /// 从面板里往外拖的窗口
     @State private var overflowAnchor: CGFloat = 0
+    /// 键盘选中那块底色在格与格之间滑动所需的命名空间
+    @Namespace private var keyFocus
     /// 当前这个浮层是键盘切换开的，不是悬停开的。收的时候要认这一点：
     /// 不能因为键盘那边没有选中项了，就把用户正悬停着的浮层一并收掉。
     @State private var panelFromKeyboard = false
@@ -110,7 +112,8 @@ struct BarContent: View {
                                 icon: { model.world.icon(for: $0) },
                                 // 键盘选中的那张卡与悬停用同一套高亮：面板里此刻
                                 // 只会有一个焦点，两条来路不必长得不一样
-                                hovered: { hoveredItem == "panel.w\($0)" || model.keySelection == $0 },
+                                hovered: { hoveredItem == "panel.w\($0)"
+                                    || (model.keyVisible && model.keySelection == $0) },
                                 onHover: { id, inside in
                                     let key = "panel.w\(id)"
                                     if inside { hoveredItem = key }
@@ -178,8 +181,9 @@ struct BarContent: View {
             .coordinateSpace(name: Self.rootSpace)
             // 条以上那块空间由面板按需长出来（见 BarPanel）。悬停也算——浮出前的
             // 那两百多毫秒里就得把地方准备好，等浮层出现再长就晚了。
+            // 键盘会话也要算进来：名牌与预览卡浮在条上方，面板不先长上去它们会被裁掉
             .onChange(of: hoveredItem != nil || panel != nil || preview != nil
-                          || dragging != nil) { _, needed in
+                          || dragging != nil || model.keyVisible) { _, needed in
                 model.needsFloatRoom(needed)
             }
             // 键盘选中的窗口收在簇、标签组或溢出区里时，把收着它的浮层打开——
@@ -199,10 +203,22 @@ struct BarContent: View {
                 panelFromKeyboard = true
                 panel = (kind: kind, anchorX: anchorX)
             }
-            // 名牌换一格是滑过去，不是这边灭那边亮——一块东西在移动读起来是连续的
+            // 停在一格上犹豫，就把带缩略图的预览卡长出来——键盘与指针最终落到同一处。
+            // 一路划过去时不截图：那会把按需的缩略图变成常驻采样（§2）。
+            // 选中不动、只是刚显形也算一次「停稳」，所以两个来源都要听。
+            .onChange(of: model.keySelection) { _, _ in syncKeyPreview(layout) }
+            .onChange(of: model.keyVisible) { _, _ in syncKeyPreview(layout) }
+            // 名牌与选中底色换一格都是滑过去，不是这边灭那边亮——
+            // 一块东西在移动读起来是连续的，十块各自明灭读起来是抽搐
             .animation(.spring(response: 0.26, dampingFraction: 0.88), value: hoveredItem)
+            .animation(.spring(response: 0.26, dampingFraction: 0.88), value: model.keySelection)
+            .animation(.easeOut(duration: 0.14), value: model.keyVisible)
             .animation(.easeOut(duration: 0.16), value: preview)
-            .animation(.spring(response: 0.30, dampingFraction: 0.78), value: panel?.kind)
+            // 悬停开的浮层带弹性，因为指针可能只是路过，那点回弹是「它在犹豫」；
+            // 键盘是明确意图，即开即合，一路 Tab 过去才不会看成抽搐。
+            .animation(panelFromKeyboard ? .easeOut(duration: 0.12)
+                                         : .spring(response: 0.30, dampingFraction: 0.78),
+                       value: panel?.kind)
         }
     }
 
@@ -366,15 +382,23 @@ struct BarContent: View {
                                                  style: .continuous)
                                     .strokeBorder(ink(scheme, 0.55, 0.42), lineWidth: 2)
                                     .padding(BarMetrics.backingInset)
-                            } else if keySelected(item) {
-                                // 键盘切换的选中环。比拖放的那圈更实，因为它此刻是
-                                // 用户唯一的落点提示——松开 ⌥ 去的就是这里。
-                                RoundedRectangle(cornerRadius: layout.metrics.cellRadius,
-                                                 style: .continuous)
-                                    .strokeBorder(ink(scheme, 0.92, 0.78), lineWidth: 2.5)
-                                    .padding(BarMetrics.backingInset)
                             }
                         }
+                        // 键盘选中的那一块底色。只声明在选中的那一格上，靠
+                        // matchedGeometryEffect 在格与格之间滑过去——十块各自明灭
+                        // 读起来是抽搐，一块东西在移动读起来才是连续的。
+                        .background {
+                            if model.keyVisible, keySelected(item) {
+                                BackingFill(backing: .focused,
+                                            shape: RoundedRectangle(
+                                                cornerRadius: layout.metrics.cellRadius,
+                                                style: .continuous))
+                                    .matchedGeometryEffect(id: "key.focus", in: keyFocus)
+                            }
+                        }
+                        // 会话期间其余项压暗，让选中项自己站出来。
+                        // 最小化的格子本来就是 0.42，两者相乘会更淡——那正是它该有的次序。
+                        .opacity(model.keyVisible && !keySelected(item) ? 0.38 : 1)
                 }
                 // 被拎起来的那一格的层级只在自己这一段里有效，整段不抬起来的话，
                 // 它会从邻段的底色下面穿过去。
@@ -674,11 +698,33 @@ struct BarContent: View {
     }
 
     /// 底色的取值。按下 > 悬停 > 联动，前台那一格自己是亮底，不被悬停顶掉。
+    /// 键盘选中的那个窗口该不该长出预览卡。收在浮层里的不长——浮层的卡片自带缩略图。
+    private func syncKeyPreview(_ layout: BarLayout) {
+        guard model.keyVisible, let id = model.keySelection, model.keyPanel == nil,
+              let window = model.world.windows.first(where: { $0.id == id }),
+              let item = layout.items.first(where: { keySelected($0) }),
+              case .window(let cell) = item, cell.id == id,
+              let anchorX = cellAnchors[item.id]
+        else {
+            schedulePreview(nil, from: hoveredCell ?? 0)
+            return
+        }
+        schedulePreview(PreviewTarget(window: window, appName: cell.appName, anchorX: anchorX),
+                        from: id)
+    }
+
     /// 名牌此刻该报谁的名字。nil = 不出名牌。
     private func pillTarget(_ layout: BarLayout) -> (text: String, anchorX: CGFloat)? {
         // 浮层与预览卡自己就带着标题，名牌该退场——同一处位置不摆两层信息。
         // 悬停停稳后卡片长出来，名牌交班给它。
         guard panel == nil, preview == nil else { return nil }
+        // 键盘会话优先。指针可能停在某处一动不动，那不是用户此刻的注意力所在。
+        if model.keyVisible {
+            guard let item = layout.items.first(where: { keySelected($0) }),
+                  let anchorX = cellAnchors[item.id], let text = name(of: item)
+            else { return nil }
+            return (text, anchorX)
+        }
         guard let hoveredItem, let anchorX = cellAnchors[hoveredItem],
               let item = layout.items.first(where: { $0.id == hoveredItem }),
               let text = name(of: item)
@@ -703,7 +749,8 @@ struct BarContent: View {
     /// 选中的窗口若收在簇、标签组或溢出区里，高亮的是收着它的那一格，
     /// 具体是其中哪一个由随之打开的浮层给出。
     private func keySelected(_ item: BarItem) -> Bool {
-        guard let id = model.keySelection else { return false }
+        // 门禁收在这里，调用点因此不必各自记得加：没显形的会话在视觉上不存在
+        guard model.keyVisible, let id = model.keySelection else { return false }
         switch item {
         case .window(let cell):
             return cell.id == id || cell.tabs.contains { $0.id == id }
@@ -849,7 +896,9 @@ struct Slot {
             self.badge = cell.leadsApp ? model.world.badges[cell.bundleID ?? ""] : nil
             self.activity = cell.leadsApp ? model.world.activities[cell.pid] : nil
             self.minimized = cell.window.minimized
-            self.isFront = cell.id == model.world.frontWindow
+            // 会话显形期间不再标注前台。此刻条回答的是「松手会去哪儿」，不是「现在在哪儿」，
+            // 前台那一格的亮底留着只会和选中底色抢读。
+            self.isFront = cell.id == model.world.frontWindow && !model.keyVisible
             self.bouncing = false
             self.help = cell.window.title
             self.cell = cell
@@ -1151,6 +1200,15 @@ struct BackingFill<S: InsettableShape>: View {
                 shape.fill(ink(scheme, 0.22, 0.115))
                     .overlay(shape.strokeBorder(
                         LinearGradient(colors: [ink(scheme, 0.36, 0.18), .clear],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 0.5))
+            case .focused:
+                // 比前台再实一档。会话期间它是条上唯一亮着的东西，其余项一律压暗，
+                // 所以这一档不必再靠描边去争——描边在 macOS 里是焦点环与拖放接收区的
+                // 语汇，用在这里会读成「可以往这儿放东西」。
+                shape.fill(ink(scheme, 0.34, 0.19))
+                    .overlay(shape.strokeBorder(
+                        LinearGradient(colors: [ink(scheme, 0.48, 0.26), .clear],
                                        startPoint: .top, endPoint: .bottom),
                         lineWidth: 0.5))
             }

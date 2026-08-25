@@ -17,8 +17,13 @@ final class KeyboardSwitch {
     private static let rightKey = Int64(kVK_RightArrow)
     private static let escapeKey = Int64(kVK_Escape)
 
+    /// 会话开始到显形之间的沉默期。飞快按一下 ⌥Tab 换到上一个窗口是最高频的用法，
+    /// 那一下全程不该有任何东西闪，系统的 ⌘Tab 同样如此。§9 的待调参项。
+    private static let revealDelay: TimeInterval = 0.18
+
     private weak var world: World?
     private var tap: CFMachPort?
+    private var reveal: DispatchWorkItem?
 
     /// 按下时吞掉了哪些键。抬起照着这份名单吞，不看修饰键——快切的常见次序是
     /// 按 ⌥Tab、先松 ⌥ 确认、再松 Tab，最后那条 Tab 抬起身上已经没有 ⌥ 了，
@@ -172,6 +177,13 @@ final class KeyboardSwitch {
         let spatial = world.spatialOrder
         watchMouse()
         for bar in world.bars { bar.setKeySession(true) }
+        let work = DispatchWorkItem { [weak self] in
+            self?.reveal = nil
+            guard let world = self?.world, self?.session != nil else { return }
+            for bar in world.bars { bar.setKeyVisible(true) }
+        }
+        reveal = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revealDelay, execute: work)
 
         if let front = world.frontWindow, recency.contains(where: { $0.id == front }) {
             session = Session(selected: front, recency: recency, spatial: spatial)
@@ -245,6 +257,8 @@ final class KeyboardSwitch {
     private func cancel() {
         guard let world, session != nil else { return }
         session = nil
+        reveal?.cancel()
+        reveal = nil
         releaseMouseWatch()
         for bar in world.bars { bar.setKeySession(false) }
     }
@@ -252,6 +266,9 @@ final class KeyboardSwitch {
     private func confirm() {
         guard let world, let session else { return }
         self.session = nil
+        // 还没显形就确认了：这是快按快松那一下，视觉上自始至终什么也没发生过
+        reveal?.cancel()
+        reveal = nil
         releaseMouseWatch()
         // `swallowed` 不在这里清：⌥ 通常先于 Tab 松开，那条 Tab 抬起还得照吞
         for bar in world.bars { bar.setKeySession(false) }

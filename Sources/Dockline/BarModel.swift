@@ -48,8 +48,13 @@ final class BarModel: ObservableObject {
     @Published private(set) var keySelection: CGWindowID?
     /// 选中的窗口收在哪个浮层里。视图据此把浮层打开——选中一个看不见的格子没有意义。
     @Published private(set) var keyPanel: FloatPanel?
-    /// 切换会话进行中。会话期间条无条件现身，否则自动隐藏的屏上高亮画给谁看。
+    /// 切换会话进行中。选中状态从第一次按 Tab 起就成立——确认要靠它。
     private(set) var keySession = false
+    /// 会话已经显形。视觉上的一切都归它管：选中底色、名牌、压暗、条的现身、浮层的展开。
+    ///
+    /// 与会话本身分开，是因为最高频的用法是飞快按一下 ⌥Tab 就松手换到上一个窗口。
+    /// 那个动作全程不该有任何东西闪一下——系统的 ⌘Tab 同样如此。
+    @Published private(set) var keyVisible = false
 
     /// 这条 bar 上的窗口，按格子从左到右。簇成员与收拢的标签页都按它们在条上的次序展开。
     /// 读的是 `barItems` 而不是 `layout()`：后者带渲染帧状态（溢出迟滞、飞回动画），
@@ -74,25 +79,39 @@ final class BarModel: ObservableObject {
 
     func setKeySelection(_ id: CGWindowID?) {
         keySelection = id
-        keyPanel = id.flatMap(container)
+        // 没显形就不开浮层。快按快松那一下不该把簇的扇面弹出来又收回去。
+        keyPanel = keyVisible ? id.flatMap(container) : nil
     }
 
     func setKeySession(_ active: Bool) {
         guard keySession != active else { return }
         if active {
             keySession = true
+        } else {
+            // 先撤选中再落幕。反过来的话视图那边看到的是「没有选中项、也没有会话」，
+            // 分不出该收的是键盘开的浮层还是用户正悬停着的那个。
+            setKeySelection(nil)
+            keySession = false
+            setKeyVisible(false)
+        }
+    }
+
+    /// 会话显形 / 落幕。条的现身也归它——自动隐藏的条不该为一次快按快松冒出来一下。
+    func setKeyVisible(_ value: Bool) {
+        guard keyVisible != value else { return }
+        keyVisible = value
+        if value {
             // 触底唤出的停留判定要作废：条已经被键盘请出来了，那次计时回来只会把它收回去
             dwell?.cancel()
             dwell = nil
             hidden = false
             sampleBackdrop()
         } else {
-            // 先撤选中再落幕。反过来的话视图那边看到的是「没有选中项、也没有会话」，
-            // 分不出该收的是键盘开的浮层还是用户正悬停着的那个。
-            setKeySelection(nil)
-            keySession = false
             hidden = shouldHide
         }
+        // 显形这一刻才轮到浮层：选中项可能早就落在溢出区里了，只在选中变化时算
+        // 会漏掉「选好了才显形」这条路径。
+        keyPanel = keyVisible ? keySelection.flatMap(container) : nil
     }
 
     /// 选中的窗口此刻收在哪个浮层里。三处收纳互斥，按它们在条上的优先次序判。
