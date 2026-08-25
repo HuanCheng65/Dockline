@@ -19,9 +19,16 @@ let channel = "dev.starrydream.Dockline.activity"
 
 let usage = """
 用法：dockctl push  --state working|waiting [--reason question|permission|plan|input]
-                    [--progress 0-1] [--label 文本] [--detail 文本] [--pid 进程号 | --window 窗口号]
-      dockctl event --kind done|failed|quota [--label 摘要] [--detail 文本] [--pid 进程号 | --window 窗口号]
-      dockctl end   [--pid 进程号 | --window 窗口号]
+                    [--progress 0-1] [--label 文本] [--detail 文本] [共用选项]
+      dockctl event --kind done|failed|quota [--label 摘要] [--detail 文本] [共用选项]
+      dockctl end   [共用选项]
+
+共用选项：
+  --session 标识   上报方的会话标识。同一个 App 里的多个会话靠它区分；
+                   缺省时整个 App 共用一条，两个终端标签页会互相覆盖。
+  --cwd 路径       用来推断这个会话住在哪扇窗口里。缺省取当前工作目录。
+  --pid 进程号     宿主 App。缺省沿祖先进程链找到第一个 App。
+  --window 窗口号  直接指定落在哪扇窗口上，跳过推断。
 """
 
 func fail(_ message: String) -> Never {
@@ -65,6 +72,8 @@ var label: String?
 var detail: String?
 var pid: pid_t?
 var window: CGWindowID?
+var session: String?
+var cwd = FileManager.default.currentDirectoryPath
 
 while let flag = arguments.first {
     arguments.removeFirst()
@@ -99,19 +108,26 @@ while let flag = arguments.first {
     case "--window":
         guard let number = CGWindowID(value) else { fail("--window 需要窗口号，收到「\(value)」") }
         window = number
+    case "--session":
+        guard !value.isEmpty else { fail("--session 不能为空") }
+        session = value
+    case "--cwd":
+        guard !value.isEmpty else { fail("--cwd 不能为空") }
+        cwd = value
     default:
         fail("无法识别的选项 \(flag)")
     }
 }
 
-guard pid == nil || window == nil else { fail("--pid 与 --window 不能同时指定") }
-
-var payload: [String: Any] = ["command": command == "end" ? "end" : "push"]
-if let window {
-    payload["window"] = Int(window)
-} else {
-    payload["pid"] = Int(pid ?? hostApp())
-}
+// 宿主 pid 任何情况下都要带上：条上要靠它在宿主退出时把这个 App 名下的活动整批撤下，
+// 推断落点时也要靠它圈出候选窗口。--window 是在它之上直接指定落点，不是替代它。
+var payload: [String: Any] = [
+    "command": command == "end" ? "end" : "push",
+    "pid": Int(pid ?? hostApp()),
+    "cwd": cwd,
+]
+if let window { payload["window"] = Int(window) }
+if let session { payload["session"] = session }
 
 switch command {
 case "push":

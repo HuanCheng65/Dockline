@@ -333,11 +333,8 @@ final class World: ObservableObject {
                            object: nil, queue: .main) { [weak self] note in
             guard let self, let pid = Self.pid(from: note) else { return }
             observers.stop(pid: pid)
-            // 先记下它名下的窗口号，再交给 store 清理：绑在这些窗口上的活动与该进程
-            // 运行在一起，清理之后便无从查起。
-            let owned = Set(windows.filter { $0.pid == pid }.map(\.id))
             store.removeApp(pid: pid)
-            activityCenter.remove(pid: pid, windows: owned)
+            activityCenter.remove(pid: pid)
             publish()
         }
         center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -382,7 +379,17 @@ final class World: ObservableObject {
         missionControl.start()
         activityCenter.onChange = { [weak self] in
             guard let self else { return }
-            activities = activityCenter.activities
+            activities = activityCenter.display
+        }
+        // 上次绑的那扇窗口还在，就原样沿用、不重新判断。复核只发生在会话头一次上报、
+        // cwd 变了、或那扇窗口没了这三种时候——任务结束那一刻的焦点已经不是它了。
+        activityCenter.bind = { [weak self] host, cwd, keeping in
+            guard let self else { return SessionBinding.Outcome(target: .app(host), why: nil) }
+            if case .window(let id) = keeping, windows.contains(where: { $0.id == id }) {
+                return SessionBinding.Outcome(target: .window(id), why: nil)
+            }
+            return SessionBinding.resolve(host: host, cwd: cwd,
+                                          windows: windows, front: frontWindow)
         }
         activityCenter.start()
         placer.onPlaced = { [weak self] wid, kind in self?.corrector.noteWrite(wid, kind) }

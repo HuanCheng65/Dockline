@@ -1,11 +1,11 @@
 import AppKit
 import DocklineCore
 
-/// 活动挂在谁身上。
+/// 活动挂在条上的哪一格。
 ///
-/// 现在只有 `dockctl` 一个来源，它按祖先进程链找到宿主 App，产出的几乎都是 `.app`；
-/// `.window` 这一支要等会话与窗口的绑定做出来才会有真实来源（见实时状态设计 §4.3），
-/// 但模型两支都收，届时不必改结构。
+/// 上报方给不出这个答案：它知道自己的 cwd 与祖先进程，不知道自己住在哪扇窗口里。
+/// 由 `SessionBinding` 从这两样推断，推不出来就退回 `.app`——那是 App 在条上的第一格，
+/// 与未读角标同一条规则。
 enum StatusTarget: Hashable {
     case app(pid_t)
     case window(CGWindowID)
@@ -104,6 +104,21 @@ struct Activity: Equatable {
         return false
     }
 
+    /// 一格上撞了好几条上报时谁露面，以及同屏那一个胶囊归谁。数越小越优先。
+    /// 等待排在最前——它是唯一允许高显著度的状态。
+    var rank: Int {
+        switch salience {
+        case .waiting: return 0
+        case .finished: return 1
+        case .working: return 2
+        }
+    }
+
+    /// 同一格上，这一条是不是该盖过那一条。同档按先来后到。
+    func outranks(_ other: Activity) -> Bool {
+        rank == other.rank ? since < other.since : rank < other.rank
+    }
+
     /// 悬停提示。没有任何文字时不显示提示，而不是显示一句空话。
     var summary: String? {
         let percent = progress.map { "\(Int(($0 * 100).rounded()))%" }
@@ -115,13 +130,33 @@ struct Activity: Equatable {
 /// 活动状态的接收端。计划书 §3 的三层来源中，这里是自定义层：
 /// 用户脚本通过 `dockctl` 上报，走分布式通知。
 ///
+/// **上报方的身份与它显示在哪一格是两件事**（见 `ReportKey`）：这里存的是前者，落到
+/// 哪一格由 `bind` 推断，推断结果连同当时的 cwd 一起记在这条上报上。cwd 没变、绑着的
+/// 窗口还在，就不重算——复核因此只发生在会话头一次上报、cwd 变了、绑着的窗口没了这
+/// 三种时候，而不会在任务结束那一刻拿当时的焦点去改口。那一刻用户多半已经在看别处，
+/// 而「开始时在看、结束时不在看」正是这个功能存在的理由。
+///
 /// 活动一直保留到 `dockctl end`、宿主 App 退出、或（终态）被用户看见。**不设超时**——
 /// 「多久算没动静」只有上报方知道，替它猜只会让长任务的指示器中途消失。
 final class ActivityCenter {
     static let channel = "dev.starrydream.Dockline.activity"
 
-    private(set) var activities: [StatusTarget: Activity] = [:]
+    struct Report {
+        var activity: Activity
+        /// 上报方所在的 App。宿主退出时靠它把整批撤下。
+        var host: pid_t
+        /// 推断这次绑定时用的 cwd。它一变就作废重算。
+        var cwd: String?
+        var target: StatusTarget
+    }
+
+    private(set) var reports: [ReportKey: Report] = [:]
     var onChange: (() -> Void)?
+
+    /// 把一条上报落到条上的哪一格。由 World 提供——窗口与焦点在它手上。
+    /// `keeping` 是这条上报上次绑到的地方；它若仍然成立，实现方原样返回并把 why 留空。
+    var bind: ((_ host: pid_t, _ cwd: String?, _ keeping: StatusTarget?)
+        -> SessionBinding.Outcome)?
 
     func start() {
         DistributedNotificationCenter.default().addObserver(
@@ -131,53 +166,84 @@ final class ActivityCenter {
         }
     }
 
-    /// 宿主 App 退出后，它名下的活动一并撤下。窗口那一支同样撤下：绑在那些窗口上的
-    /// 会话运行在同一个进程内。
-    func remove(pid: pid_t, windows: Set<CGWindowID>) {
-        let before = activities.count
-        activities = activities.filter { target, _ in
-            switch target {
-            case .app(let owner): return owner != pid
-            case .window(let id): return !windows.contains(id)
+    /// 条上每一格该显示哪一条。多条上报落在同一格时按 `Activity.outranks` 取一条；
+    /// 其余的该在 hover 卡里排队，那一段尚未实现。
+    var display: [StatusTarget: Activity] {
+        var result: [StatusTarget: Activity] = [:]
+        for report in reports.values {
+            guard let seated = result[report.target] else {
+                result[report.target] = report.activity
+                continue
             }
+            if report.activity.outranks(seated) { result[report.target] = report.activity }
         }
-        guard activities.count != before else { return }
+        return result
+    }
+
+    /// 宿主 App 退出后，它名下的活动一并撤下。
+    func remove(pid: pid_t) {
+        let before = reports.count
+        reports = reports.filter { $0.value.host != pid }
+        guard reports.count != before else { return }
         onChange?()
     }
 
     /// 终态已被用户看见。未读语义的出口——只撤终态，等待中与运行中的不动。
     func markSeen(_ target: StatusTarget) {
-        guard let activity = activities[target], activity.isUnread else { return }
-        activities[target] = nil
+        let before = reports.count
+        reports = reports.filter { !($0.value.target == target && $0.value.activity.isUnread) }
+        guard reports.count != before else { return }
         onChange?()
     }
 
     private func receive(_ userInfo: [AnyHashable: Any]?) {
         guard let userInfo, let command = userInfo["command"] as? String,
-              let target = Self.target(userInfo) else {
+              let host = (userInfo["pid"] as? Int).map(pid_t.init),
+              let key = Self.key(userInfo, host: host) else {
             Timeline.log("⚠️ 收到格式不符的活动上报：\(userInfo ?? [:])")
             return
         }
         switch command {
         case "end":
-            guard activities.removeValue(forKey: target) != nil else { return }
+            guard reports.removeValue(forKey: key) != nil else { return }
             onChange?()
         case "push":
             guard let salience = Self.salience(userInfo) else { return }
-            activities[target] = Activity(salience: salience,
-                                          progress: userInfo["progress"] as? Double,
-                                          label: userInfo["label"] as? String,
-                                          detail: userInfo["detail"] as? String)
+            let cwd = userInfo["cwd"] as? String
+            let activity = Activity(salience: salience,
+                                    progress: userInfo["progress"] as? Double,
+                                    label: userInfo["label"] as? String,
+                                    detail: userInfo["detail"] as? String)
+            let target = seat(key, host: host, cwd: cwd,
+                              named: (userInfo["window"] as? Int).map(CGWindowID.init))
+            reports[key] = Report(activity: activity, host: host, cwd: cwd, target: target)
             onChange?()
         default:
             Timeline.log("⚠️ 无法识别的活动指令「\(command)」")
         }
     }
 
-    private static func target(_ userInfo: [AnyHashable: Any]) -> StatusTarget? {
+    /// 这条上报该落在哪一格。上报方指名了窗口就照办，其余交给推断。
+    private func seat(_ key: ReportKey, host: pid_t, cwd: String?,
+                      named: CGWindowID?) -> StatusTarget {
+        if let named { return .window(named) }
+        guard let bind else { return .app(host) }
+        // cwd 变了就不沿用：会话换了工作目录，它多半也换了窗口。
+        let previous = reports[key]
+        let keeping = previous?.cwd == cwd ? previous?.target : nil
+        let outcome = bind(host, cwd, keeping)
+        if let why = outcome.why { Timeline.log("活动绑定  \(key) → \(outcome.target)：\(why)") }
+        return outcome.target
+    }
+
+    /// 上报方的身份。会话标识最准，其次是指名的窗口，都没有就整个 App 一条——
+    /// 那意味着同一个 App 里的两个终端标签页会互相覆盖，正是会话标识存在的理由。
+    private static func key(_ userInfo: [AnyHashable: Any], host: pid_t) -> ReportKey? {
+        if let session = userInfo["session"] as? String, !session.isEmpty {
+            return .session(session)
+        }
         if let wid = userInfo["window"] as? Int { return .window(CGWindowID(wid)) }
-        if let pid = userInfo["pid"] as? Int { return .app(pid_t(pid)) }
-        return nil
+        return .host(host)
     }
 
     private static func salience(_ userInfo: [AnyHashable: Any]) -> Activity.Salience? {

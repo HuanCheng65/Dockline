@@ -15,6 +15,15 @@ import Foundation
 /// 天然的分隔符，不带空格也作数。
 private let separatorPattern = try! NSRegularExpression(pattern: "\\s+[-\u{2013}\u{2014}|:]\\s+|[\u{00B7}\u{2022}\u{FF1A}]")
 
+/// 把标题按分隔符切成段。
+///
+/// 区分性标签靠它剥掉共同的首尾段；会话与窗口的绑定也靠它——VS Code 默认标题的尾段
+/// 就是工作区文件夹名，拿它和上报方的 cwd 比对（实时状态设计 §4.3）。两处共用同一套
+/// 切分规则，标题里什么算一段就只有一个答案。
+public func titleSegments(of title: String) -> [String] {
+    segments(of: title)
+}
+
 private func segments(of title: String) -> [String] {
     let full = NSRange(title.startIndex..., in: title)
     var result: [String] = []
