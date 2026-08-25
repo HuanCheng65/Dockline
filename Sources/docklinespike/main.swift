@@ -657,6 +657,40 @@ case "roundtrip":
         exit(1)
     }
     commandRoundtrip(p, preferredWID: arguments.dropFirst(2).first.flatMap(CGWindowID.init))
+case "bridge":
+    var wid: CGWindowID?
+    var space: UInt64?
+    var via = "both"
+    var control = false
+    var activating = false
+    var rest = Array(arguments.dropFirst())
+    while let flag = rest.first {
+        rest.removeFirst()
+        if flag == "--self" { control = true; continue }
+        if flag == "--activate" { activating = true; continue }
+        guard let value = rest.first else {
+            FileHandle.standardError.write(
+                "用法: docklinespike bridge [--wid n] [--space s] [--via direct|fallback|both]\n"
+                    .data(using: .utf8)!)
+            exit(1)
+        }
+        rest.removeFirst()
+        switch flag {
+        case "--wid": wid = CGWindowID(value)
+        case "--space": space = UInt64(value)
+        case "--via": via = value
+        default:
+            FileHandle.standardError.write("bridge: 无法识别的选项 \(flag)\n".data(using: .utf8)!)
+            exit(1)
+        }
+    }
+    if control {
+        commandBridgeSelf(space: space, via: via)
+    } else if let wid {
+        commandBridgeMove(wid: wid, space: space, via: via, activating: activating)
+    } else {
+        commandBridge()
+    }
 case "hold-raise":
     guard let wid = arguments.dropFirst().first.flatMap(CGWindowID.init) else {
         FileHandle.standardError.write("用法: docklinespike hold-raise <wid>\n".data(using: .utf8)!)
@@ -672,5 +706,6 @@ case "raise", "fill":
 default:
     print("用法: docklinespike [list | index | bench | events [起 止 秒] | keytap [秒] [--stall]"
           + " | spaces [--wid n]… [--watch 秒] [--hz N]"
+          + " | bridge [--wid n | --self] [--space s] [--via 路线] [--activate]"
           + " | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
 }
