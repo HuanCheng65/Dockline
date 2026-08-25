@@ -169,8 +169,11 @@ final class World: ObservableObject {
     }
 
     private func landing(_ element: AXUIElement, on target: NSScreen) throws -> CGRect? {
-        let area = target.visibleFrame
-        let from = try screen(of: element).visibleFrame
+        // 读的是扣掉 bar 的那一份，不是 visibleFrame：这一步同样是我们自己在摆窗口，
+        // 没有理由把它摆到自己的条底下去。用 visibleFrame 时，铺满的窗口搬过去正好
+        // 落在目标屏的落点上，还会顺带把结果纠正引进来（见 `TilingCorrector.weWrote`）。
+        let area = maximizer.area(on: target)
+        let from = try maximizer.area(on: screen(of: element))
         guard let rect = axRect(element) else { return nil }
         let frame = flipY(rect)
         let ratio = CGPoint(x: from.width > 0 ? (frame.minX - from.minX) / from.width : 0,
@@ -199,6 +202,8 @@ final class World: ObservableObject {
         }
         do {
             guard let goal = try landing(element, on: target) else { throw FillError.noGeometry }
+            // 报在写之前，理由同 `Maximizer.write`
+            corrector.weWrote(window.id)
             let outcome = try setFrame(element, to: flipY(goal))
             if outcome.fits {
                 Timeline.log("移到屏 \(display)  wid \(window.id) \(window.appName)")
@@ -367,6 +372,7 @@ final class World: ObservableObject {
             activities = activityCenter.activities
         }
         activityCenter.start()
+        maximizer.onWrite = { [weak self] wid in self?.corrector.weWrote(wid) }
         corrector.enabled = pins.correctsTiling
         observers.watchesGeometry = pins.correctsTiling
         observers.onGeometryChanged = { [weak self] element in

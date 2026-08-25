@@ -75,6 +75,11 @@ final class Maximizer {
     /// 贴过去之前的几何。还原要用，所以必须在贴过去的那一刻记下来。
     private var restore: [CGWindowID: CGRect] = [:]
 
+    /// 我们自己写了某个窗口的几何。结果纠正必须知道这件事，否则会把我们的摆位
+    /// 当成用户的动作去解读——见 `TilingCorrector.weWrote`。挂成回调而不是让调用点
+    /// 各自记得报一声：新增一条写入路径时，漏报是不会有任何症状的，直到它出事。
+    var onWrite: ((CGWindowID) -> Void)?
+
     /// 有 bar 的那些屏。只有它们要扣掉 bar 的高度。
     var barDisplays: Set<CGDirectDisplayID> = []
 
@@ -165,6 +170,8 @@ final class Maximizer {
 
     private func write(_ element: AXUIElement, to destination: CGRect,
                        wid: CGWindowID, name: String, as what: String) throws {
+        // 报在写之前：写入本身会触发移动与尺寸通知，晚一步报就来不及挡住它们
+        onWrite?(wid)
         let outcome = try setFrame(element, to: destination)
         if outcome.fits {
             Timeline.log("\(what) wid \(wid) \(name) → \(destination)")
@@ -193,7 +200,10 @@ final class Maximizer {
 
     /// 可用区域 = visibleFrame 再扣掉 bar 占的那一条。visibleFrame 已经排除了菜单栏，
     /// 刘海机型的菜单栏本身就高于刘海，顶边无需另算。
-    private func area(on display: NSScreen) -> CGRect {
+    ///
+    /// 搬窗口到另一块屏也读它（`World.landing`）：那一步同样是我们自己在摆窗口，
+    /// 没有理由把它摆到自己的条底下去。
+    func area(on display: NSScreen) -> CGRect {
         var area = display.visibleFrame
         if let id = displayID(display), barDisplays.contains(id) {
             let barTop = display.frame.minY + BarMetrics.reservedBottom
@@ -242,6 +252,26 @@ final class TilingCorrector {
     func note(wid: CGWindowID, element: AXUIElement) {
         guard enabled, placed[wid] == nil, let rect = axRect(element) else { return }
         placed[wid] = flipY(rect)
+    }
+
+    /// 这个窗口的几何是**我们自己**刚写的：铺满、分屏、搬到另一块屏。
+    ///
+    /// 不报这一声会出实打实的错，而且症状离原因很远。搬屏那条最典型：`World.landing`
+    /// 把窗口夹进目标屏的可用区域，于是它落下去正好等于目标屏的一个落点；纠正器看见
+    /// 「一个纠正过的窗口又落在落点上」，按它的规矩解读成「用户再缩放了一次，也就是要
+    /// 还原」，就把窗口写回 `placed` 记着的老位置——那个位置在**原来那块屏上**。
+    /// 用户看到的是：窗口过来一下，又跳回去，还变回了铺满之前的大小。
+    ///
+    /// 所以这一声要做三件事：这一次通知不算；之前那次「纠正过」的状态作废（我们已经
+    /// 重新摆过它了）；记着的还原点也作废（还原要回到用户自己摆的位置，而不是回到
+    /// 它上一块屏上的老位置）。还原点会在用户下一次自己挪动它时重新记上。
+    func weWrote(_ wid: CGWindowID) {
+        guard enabled else { return }
+        lastWrite[wid] = Date()
+        pending[wid]?.cancel()
+        pending[wid] = nil
+        corrected[wid] = nil
+        placed[wid] = nil
     }
 
     func handle(_ element: AXUIElement) {
