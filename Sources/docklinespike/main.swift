@@ -663,14 +663,20 @@ case "thumbs":
     var seconds: Double = 10
     var width: CGFloat = 720
     var reuse = false
+    var trace = false
+    var live = false
+    var save: String?
     var rest = Array(arguments.dropFirst())
     while let flag = rest.first {
         rest.removeFirst()
         if flag == "--reuse" { reuse = true; continue }
+        if flag == "--trace" { trace = true; continue }
+        if flag == "--live" { live = true; continue }
+        if flag == "--save", let path = rest.first { save = path; rest.removeFirst(); continue }
         guard let value = rest.first.flatMap(Double.init) else {
             FileHandle.standardError.write(
-                "用法: docklinespike thumbs --wid n [--hz N] [--seconds S] [--width W] [--reuse]\n"
-                    .data(using: .utf8)!)
+                ("用法: docklinespike thumbs --wid n [--hz N] [--seconds S] [--width W]"
+                 + " [--reuse] [--live] [--trace] [--save 路径]\n").data(using: .utf8)!)
             exit(1)
         }
         rest.removeFirst()
@@ -688,7 +694,8 @@ case "thumbs":
         FileHandle.standardError.write("thumbs: 要一个 --wid\n".data(using: .utf8)!)
         exit(1)
     }
-    commandThumbs(wid: wid, hz: hz, seconds: seconds, width: width, reuse: reuse)
+    commandThumbs(wid: wid, hz: hz, seconds: seconds, width: width,
+                  reuse: reuse, trace: trace, live: live, save: save)
 case "bridge":
     var wid: CGWindowID?
     var space: UInt64?
@@ -739,6 +746,7 @@ default:
     print("用法: docklinespike [list | index | bench | events [起 止 秒] | keytap [秒] [--stall]"
           + " | spaces [--wid n]… [--watch 秒] [--hz N]"
           + " | bridge [--wid n | --self] [--space s] [--via 路线] [--activate]"
-          + " | thumbs --wid n [--hz N] [--seconds S] [--width W] [--reuse]"
+          + " | thumbs --wid n [--hz N] [--seconds S] [--width W]"
+          + " [--reuse] [--live] [--trace] [--save 路径]"
           + " | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
 }

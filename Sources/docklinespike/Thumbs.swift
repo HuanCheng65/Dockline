@@ -20,9 +20,16 @@ import ScreenCaptureKit
 // 说清楚这个命令**量不到**什么：没有 sudo 就拿不到 `powermetrics`，因此没有真正的
 // 瓦特数与 GPU 占用。CPU 时间是能拿到的最诚实的替身，别把它当功耗读。
 //
-//   docklinespike thumbs --wid n [--hz N] [--seconds S] [--width W] [--reuse]
+//   docklinespike thumbs --wid n [--hz N] [--seconds S] [--width W]
+//                        [--reuse] [--live] [--trace] [--save 路径]
 //
 // `--reuse` 把窗口对象缓存住、只重复抓图，用来和默认的「每轮重新枚举」对照。
+//
+// 另外三个是为「缓存下来的句柄会怎么过期」那一问加的，答案记在计划书 §6 M6：
+// `--trace` 每帧打一行「句柄里记的几何 / 窗口此刻的几何 / 抓回来的图多大」，
+// `--live` 把输出尺寸改成按此刻的几何算（默认按句柄里那份快照算），
+// `--save` 把每一帧覆盖写到一个 PNG——这一问只有把图看一眼才答得了：
+// 尺寸对不上时抓图并不报错，画面缩在缓冲区一角、其余是空白。
 
 // MARK: - CPU 取样
 
@@ -85,22 +92,40 @@ private func shareableWindow(_ wid: CGWindowID) async -> SCWindow? {
 
 /// 抓一张，返回耗时（毫秒）。与 `Preview.swift` 里那段走同一套参数。
 /// 失败要把错误交出去——第一版用 `try?` 吞了，于是读到「0 帧」却不知道为什么。
-private func grab(_ window: SCWindow, width: CGFloat) async -> (ms: Double?, error: String?) {
+private func grab(_ window: SCWindow, width: CGFloat, geometry: CGRect? = nil, save: String? = nil)
+    async -> (ms: Double?, size: CGSize?, error: String?) {
+    let frame = geometry ?? window.frame
     let configuration = SCStreamConfiguration()
-    let scale = min(1, width / window.frame.width)
-    configuration.width = Int(window.frame.width * scale)
-    configuration.height = Int(window.frame.height * scale)
+    let scale = min(1, width / frame.width)
+    configuration.width = Int(frame.width * scale)
+    configuration.height = Int(frame.height * scale)
     configuration.showsCursor = false
     configuration.ignoreShadowsSingleWindow = true
     let filter = SCContentFilter(desktopIndependentWindow: window)
     let began = DispatchTime.now().uptimeNanoseconds
     do {
-        _ = try await SCScreenshotManager.captureImage(contentFilter: filter,
-                                                       configuration: configuration)
-        return (Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6, nil)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter,
+                                                              configuration: configuration)
+        if let save {
+            let rep = NSBitmapImageRep(cgImage: image)
+            try? rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: save))
+        }
+        return (Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6,
+                CGSize(width: image.width, height: image.height), nil)
     } catch {
-        return (nil, String(describing: error))
+        return (nil, nil, String(describing: error))
     }
+}
+
+/// 窗口此刻的几何，直接问窗口服务器要——微秒级，与枚举整份可共享内容不是一回事。
+private func liveBounds(_ wid: CGWindowID) -> CGRect? {
+    guard let raw = CGWindowListCopyWindowInfo([.optionIncludingWindow], wid)
+            as? [[String: Any]],
+          let info = raw.first,
+          let dictionary = info[kCGWindowBounds as String] as? [String: Any]
+    else { return nil }
+    return CGRect(dictionaryRepresentation: dictionary as CFDictionary)
 }
 
 private func percentile(_ values: [Double], _ p: Double) -> Double {
@@ -111,7 +136,8 @@ private func percentile(_ values: [Double], _ p: Double) -> Double {
 
 // MARK: - 命令
 
-func commandThumbs(wid: CGWindowID, hz: Double, seconds: Double, width: CGFloat, reuse: Bool) {
+func commandThumbs(wid: CGWindowID, hz: Double, seconds: Double, width: CGFloat,
+                   reuse: Bool, trace: Bool, live: Bool, save: String?) {
     let group = DispatchGroup()
     group.enter()
     Task {
@@ -170,8 +196,16 @@ func commandThumbs(wid: CGWindowID, hz: Double, seconds: Double, width: CGFloat,
                     enumerate.append(Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6)
                     target = fresh
                 }
-                let shot = await grab(target, width: width)
+                let shot = await grab(target, width: width,
+                                      geometry: live ? liveBounds(wid) : nil, save: save)
                 if let ms = shot.ms { capture.append(ms) } else { failure = shot.error }
+                if trace {
+                    let live = liveBounds(wid).map { "\(Int($0.width))×\(Int($0.height))" } ?? "没了"
+                    let out = shot.size.map { "\(Int($0.width))×\(Int($0.height))" }
+                        ?? "失败 \(shot.error ?? "")"
+                    print("  缓存 \(Int(target.frame.width))×\(Int(target.frame.height))"
+                          + "  实时 \(live)  出图 \(out)")
+                }
                 // 跟不上就不补睡——「实际达成多少帧」正是要读的数之一
                 let rest = interval - Date().timeIntervalSince(round)
                 if rest > 0 { try? await Task.sleep(nanoseconds: UInt64(rest * 1e9)) }
