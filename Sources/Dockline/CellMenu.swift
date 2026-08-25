@@ -109,8 +109,55 @@ extension BarModel {
         if world.windowCount(pid: cell.pid) > 1 {
             menu.addItem(ActionItem("前置全部窗口") { [weak self] in self?.world.raiseAll(pid: cell.pid) })
         }
+        addMoveToDisplay(cell, to: menu)
         menu.addItem(.separator())
         addApp(pid: cell.pid, bundleID: cell.bundleID, url: world.appURL(pid: cell.pid), to: menu)
+    }
+
+    /// 「移到显示器」（计划书 §6 M5）。只在多屏时出现，也不列窗口已经在的那块屏。
+    ///
+    /// 入口挂在窗口自己那一格上，而不是目标屏的 bar 上——那条 bar 上根本没有这个窗口，
+    /// 它归别的屏（§6 M5「对象归属」）。要搬哪个窗口，只有它自己那一格说得清。
+    private func addMoveToDisplay(_ cell: IndexedWindow, to menu: NSMenu) {
+        let elsewhere = NSScreen.screens.filter { displayID($0) != world.home(of: cell) }
+        guard NSScreen.screens.count > 1, !elsewhere.isEmpty else { return }
+        let move = NSMenuItem(title: "移到显示器", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        for screen in elsewhere {
+            guard let id = displayID(screen) else { continue }
+            sub.addItem(ActionItem(screen.localizedName) { [weak self] in
+                self?.world.move(cell, to: id)
+            })
+        }
+        guard !sub.items.isEmpty else { return }
+        move.submenu = sub
+        menu.addItem(move)
+    }
+
+    /// 「在此显示器打开」（计划书 §6 M5）。本屏没有这个 App 的窗口时，让它在本屏开一个。
+    ///
+    /// 计划书原话是「按下程序坞动态菜单里的『新建窗口』」，判据是那个 App 有没有声明这一项。
+    /// 实做时发现只有前半句成立：那一项是 App 自己生成的，标题也由它自己本地化，
+    /// 程序坞的 `DockMenus.strings` 里没有对应的键。要认出「哪一项是新建窗口」，只能维护
+    /// 一张各语言的标题表，而那张表一定会漏。于是这里不猜，把该 App 声明的动态项原样列出来，
+    /// 由用户点哪一项——「有没有声明」这个判据仍然成立，猜的那一步去掉了。
+    private func addOpenHere(pid: pid_t, app url: URL, items: [DockMenu.Item], to menu: NSMenu) {
+        guard NSScreen.screens.count > 1, !items.isEmpty, let display else { return }
+        guard !world.windows.contains(where: {
+            $0.pid == pid && world.home(of: $0) == display
+        }) else { return }
+        let open = NSMenuItem(title: "在此显示器打开", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        for item in items where item.children.isEmpty {
+            sub.addItem(ActionItem(item.title, enabled: item.enabled) { [weak self] in
+                self?.world.openHere(pid: pid, app: url, item: item, on: display)
+            })
+        }
+        guard !sub.items.isEmpty else { return }
+        open.submenu = sub
+        menu.addItem(open)
     }
 
     /// App 级的那一段。窗口格与无窗口的槽位共用——同一个 App，菜单的下半截就该一样。
@@ -126,6 +173,7 @@ extension BarModel {
         for item in dynamic.own {
             menu.addItem(entry(item, app: url))
         }
+        if let pid, let url { addOpenHere(pid: pid, app: url, items: dynamic.own, to: menu) }
         if !dynamic.own.isEmpty { menu.addItem(.separator()) }
 
         let options = NSMenuItem(title: "选项", action: nil, keyEquivalent: "")

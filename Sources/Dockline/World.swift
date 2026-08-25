@@ -157,6 +157,81 @@ final class World: ObservableObject {
         lastDisplay[app] ?? mainDisplay
     }
 
+    /// 把一个窗口搬到另一块屏（计划书 §6 M5「移到此显示器」）。
+    ///
+    /// 尺寸照旧，位置按它在原屏可见区域里的相对位置落下去，装不下就夹进目标的可见区域。
+    /// 写位置用的是接管最大化那套 AX 双写——不擅自动 Space，也不碰窗口层级。
+    func move(_ window: IndexedWindow, to display: CGDirectDisplayID) {
+        guard let element = window.element else {
+            Timeline.log("⚠️ 移到显示器跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
+            return
+        }
+        guard let target = NSScreen.screens.first(where: { displayID($0) == display }) else {
+            Timeline.log("⚠️ 移到显示器跳过 wid \(window.id)：屏 \(display) 已经不在了")
+            return
+        }
+        do {
+            let area = target.visibleFrame
+            let from = try screen(of: element).visibleFrame
+            guard let rect = axRect(element) else { throw FillError.noGeometry }
+            let frame = flipY(rect)
+            let ratio = CGPoint(x: from.width > 0 ? (frame.minX - from.minX) / from.width : 0,
+                                y: from.height > 0 ? (frame.minY - from.minY) / from.height : 0)
+            let size = CGSize(width: min(frame.width, area.width),
+                              height: min(frame.height, area.height))
+            let origin = CGPoint(
+                x: min(max(area.minX + ratio.x * area.width, area.minX), area.maxX - size.width),
+                y: min(max(area.minY + ratio.y * area.height, area.minY), area.maxY - size.height))
+            let outcome = try setFrame(element, to: flipY(CGRect(origin: origin, size: size)))
+            if outcome.fits {
+                Timeline.log("移到屏 \(display)  wid \(window.id) \(window.appName)")
+            } else {
+                // 没正确实现 AX 位置写入的 App 挪不动，这是该功能的已知失败模式
+                Timeline.log("⚠️ 移到显示器未贴合 wid \(window.id) \(window.appName)："
+                             + "实际 \(outcome.after.map(String.init(describing:)) ?? "读不回")")
+            }
+        } catch {
+            Timeline.log("⚠️ 移到显示器失败 wid \(window.id) \(window.appName)：\(error)")
+        }
+    }
+
+    // MARK: 在此显示器打开（计划书 §6 M5）
+
+    /// 按下 App 自己的某一项开窗口之后，等那个窗口出现，再把它挪到指定的屏上。
+    private struct PendingOpen {
+        let pid: pid_t
+        let display: CGDirectDisplayID
+        let deadline: Date
+    }
+    private var pendingOpens: [PendingOpen] = []
+    /// 等新窗口的上限。等不到就作罢并记一笔——不能悄悄丢掉一个用户发起过的动作。
+    private static let openTimeout: TimeInterval = 10
+
+    func openHere(pid: pid_t, app url: URL, item: DockMenu.Item, on display: CGDirectDisplayID) {
+        pendingOpens.append(PendingOpen(pid: pid, display: display,
+                                        deadline: Date().addingTimeInterval(Self.openTimeout)))
+        DockMenu.press(app: url.path, at: item.path)
+    }
+
+    /// - Parameter known: 这一轮之前就在索引里的窗口。新开出来的那个必然不在其中。
+    private func resolvePendingOpens(fresh: [IndexedWindow], known: Set<CGWindowID>) {
+        guard !pendingOpens.isEmpty else { return }
+        let now = Date()
+        pendingOpens = pendingOpens.filter { request in
+            guard let window = fresh.first(where: {
+                $0.pid == request.pid && !known.contains($0.id)
+            }) else {
+                guard request.deadline > now else {
+                    Timeline.log("⚠️ 「在此显示器打开」没等到新窗口：pid \(request.pid)，已作罢")
+                    return false
+                }
+                return true
+            }
+            if window.display != request.display { move(window, to: request.display) }
+            return false
+        }
+    }
+
     // MARK: 启动
 
     func start() {
@@ -373,6 +448,7 @@ final class World: ObservableObject {
 
     private func publish() {
         logDisplayChanges(to: store.windows)
+        resolvePendingOpens(fresh: store.windows, known: Set(windows.map(\.id)))
         windows = store.windows
         // 窗口全关之后占位槽要留在原处，所以归属得趁窗口还在的时候记下来
         for window in windows {
