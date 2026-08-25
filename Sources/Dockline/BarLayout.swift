@@ -245,25 +245,36 @@ enum BarItem: Identifiable {
 
 // MARK: - 组装
 
-/// 计划书 §3 结构顺序：启动台 │ 窗口区 │ 固定文件夹 · 垃圾桶
+/// 让顺序与簇跟上现实。**全局做一次**，在任何一条 bar 出格之前。
+///
+/// 顺序与簇都是全局对象：`WindowOrder.reconcile` 会剪掉不在入参里的窗口，
+/// 每条 bar 各拿本屏那部分窗口来对齐的话，后一条会把前一条的窗口从共享的顺序里剪掉。
+/// 位置的归属从此只在这一处决定。
+///
 /// - Parameter retained: 本会话开过窗口、此刻一个窗口都没有、但进程还活着的 App。
 ///   计划书 §2 只把常驻空间分给「用户会想找回来的东西」——微信 / QQ 关掉窗口后
 ///   进程还在，用户确实想回得去，所以留位；而 Stats / Clash Verge 这类从来没开过
 ///   真窗口的菜单栏 App 一次都不会进来。判据是「历史上有过窗口」，不是「进程在运行」。
-func makeBarItems(windows: [IndexedWindow], pins: PinStore, notice: String?,
-                  retained: Set<AppKey>, clusters: ClusterStore, order: WindowOrder,
-                  labels: LabelWidths, recency: (CGWindowID) -> Int) -> [BarItem] {
+func alignBarOrder(windows: [IndexedWindow], pins: PinStore, retained: Set<AppKey>,
+                   clusters: ClusterStore, order: WindowOrder) {
     clusters.prune(present: Set(windows.map(\.id)))
-
-    // 一、此刻没有窗口、但要占位的 App
     let withWindows = Set(windows.map(\.appKey))
     let placeholders = Set(pins.pinnedApps.map(AppKey.bundle)).union(retained)
         .subtracting(withWindows)
-
-    // 二、让顺序与现实对齐。位置的归属从此只在这一处决定。
     order.reconcile(windows: windows, placeholders: placeholders, rank: pins.rank)
     pins.setAppOrder(order.appOrder)
+}
 
+/// 计划书 §3 结构顺序：启动台 │ 窗口区 │ 固定文件夹 · 垃圾桶
+///
+/// 一条 bar 只画归本屏的窗口（计划书 §6 M5「对象归属」）。入参仍是**全部**窗口：
+/// 标题歧义要按 App 全局算，簇也可能有成员在别的屏上。
+/// - Parameter onThisDisplay: 归本屏的窗口。
+/// - Parameter dormantHere: 一个此刻没有窗口的 App，它的占位槽该不该出现在本屏。
+func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
+                  dormantHere: (AppKey) -> Bool, pins: PinStore, notice: String?,
+                  clusters: ClusterStore, order: WindowOrder,
+                  labels: LabelWidths, recency: (CGWindowID) -> Int) -> [BarItem] {
     // 三、标题只在同 App 有兄弟时出现。按 App 全局算——同 App 的两个窗口
     // 即使被拖散了，也还是要能区分。
     let byID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -282,28 +293,53 @@ func makeBarItems(windows: [IndexedWindow], pins: PinStore, notice: String?,
                          leadsApp: leads)
     }
 
-    // 四、走一遍顺序，一格一个窗口
+    // 四、走一遍顺序，一格一个窗口。顺序是全局的，本屏只挑自己那些。
     var slots: [BarItem] = []
     var emitted = Set<Int>()
+    /// 已经在本屏画过的窗口，供标题缓存做剪枝——簇的成员可能来自别的屏。
+    var shown = Set<CGWindowID>()
+    /// 本屏已经补过槽位的固定 App，别补第二次。
+    var slotted = Set<AppKey>()
+    let localApps = Set(windows.filter { onThisDisplay.contains($0.id) }.map(\.appKey))
+
+    func note(_ window: IndexedWindow, leads: Bool) -> BarWindow {
+        shown.insert(window.id)
+        return cell(window, leads: leads)
+    }
+
     for element in order.elements {
         switch element {
         case .app(let key):
-            guard let bundleID = key.bundleID else { continue }
+            guard dormantHere(key), let bundleID = key.bundleID else { continue }
             slots.append(.dormant(dormant(bundleID: bundleID)))
 
         case .window(let wid):
             guard let window = byID[wid] else { continue }
+            guard onThisDisplay.contains(wid) else {
+                // 这个窗口在别的屏上。它的 App 若被固定、本屏又没有它的窗口，本屏就该在
+                // 这个位置留一个槽位——固定 App 每块屏都有（计划书 §6 M5）。
+                guard let bundleID = window.bundleID, pins.isPinned(bundleID),
+                      !localApps.contains(window.appKey),
+                      slotted.insert(window.appKey).inserted else { continue }
+                slots.append(.dormant(dormant(bundleID: bundleID)))
+                continue
+            }
             guard let id = clusters.clusterID(of: wid) else {
-                slots.append(.window(cell(window, leads: leaders.insert(window.appKey).inserted)))
+                slots.append(.window(note(window, leads: leaders.insert(window.appKey).inserted)))
                 continue
             }
             guard emitted.insert(id).inserted else { continue }
             guard let cluster = clusters.cluster(id) else { continue }
-            // 封面是最近活跃的那一个：折叠态只露一张脸，露最近用过的那张才有用
+            // 封面是最近活跃的那一个：折叠态只露一张脸，露最近用过的那张才有用。
+            // 跨屏的簇在每块有成员的屏上各投影一份，封面与展开次序都优先本屏成员
+            // （计划书 §6 M5「簇跨屏投影」）——身份仍是同一个簇。
             let members = cluster.windows.compactMap { byID[$0] }
-                .sorted { recency($0.id) > recency($1.id) }
+                .sorted {
+                    let (a, b) = (onThisDisplay.contains($0.id), onThisDisplay.contains($1.id))
+                    return a == b ? recency($0.id) > recency($1.id) : a
+                }
             guard members.count > 1 else { continue }
-            let cells = members.map { cell($0, leads: false) }
+            let cells = members.map { note($0, leads: false) }
             let heading = cluster.name ?? cells[0].window.title
             slots.append(.cluster(BarCluster(
                 id: id, windows: cells, name: cluster.name, color: cluster.color,
@@ -314,7 +350,7 @@ func makeBarItems(windows: [IndexedWindow], pins: PinStore, notice: String?,
         }
     }
 
-    labels.prune(present: Set(windows.map { "w\($0.id)" })
+    labels.prune(present: Set(shown.map { "w\($0)" })
         .union(emitted.map { "cluster.\($0)" }))
 
     var items: [BarItem] = [.launcher(pins.launcher), .separator("left")]

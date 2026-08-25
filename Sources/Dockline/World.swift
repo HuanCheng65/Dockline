@@ -46,8 +46,9 @@ final class World: ObservableObject {
 
     let pins = PinStore()
     let clusters = ClusterStore()
-    /// 标题宽度的测量缓存。与屏无关，量出来的是同一份文本。
-    let labelWidths = LabelWidths()
+    /// 每个 App 最后一次拥有窗口时，那个窗口在哪块屏。窗口全关之后留下的占位槽归它
+    /// （计划书 §6 M5）。不清理：条目数以本会话跑过的 App 为上限。
+    private var lastDisplay: [AppKey: CGDirectDisplayID] = [:]
     /// 每个窗口最后一次成为前台的序号。簇的封面取其中最大的那个成员。
     /// 与簇一样只在会话内有效——窗口本身就不跨重启。
     private(set) var lastActive: [CGWindowID: Int] = [:]
@@ -99,7 +100,32 @@ final class World: ObservableObject {
     func rebuild() {
         // 开出窗口即到达，弹跳该收了——但要等这一轮跳完，见 landBounce
         for id in windows.compactMap(\.bundleID) where launching.contains(id) { landBounce(id) }
+        // 顺序与簇是全局的，先对齐一次，再让每条 bar 各挑自己那部分出格
+        alignBarOrder(windows: windows, pins: pins, retained: retainedApps,
+                      clusters: clusters, order: order)
         for bar in bars { bar.rebuildItems() }
+    }
+
+    // MARK: 显示器归属（计划书 §6 M5）
+
+    /// 主显示器：菜单栏所在的那块，也就是坐标原点那块。不是 `NSScreen.main`——
+    /// 那个跟的是键盘焦点，会随用户点哪块屏而变。
+    var mainDisplay: CGDirectDisplayID? {
+        NSScreen.screens.first.flatMap(displayID)
+    }
+
+    /// 这个窗口该出现在哪条 bar 上。
+    ///
+    /// 判不出归属的窗口落到主屏。这不是拿默认值盖住问题——`display` 保持 nil、
+    /// 日志照记，但一个窗口无论如何不能哪条 bar 都不上：够不着比放错一块屏严重得多。
+    func home(of window: IndexedWindow) -> CGDirectDisplayID? {
+        window.display ?? mainDisplay
+    }
+
+    /// 一个此刻没有窗口的 App，它的占位槽归哪块屏。
+    /// 固定 App 不走这条——它在每块屏上都有槽位。
+    func home(of app: AppKey) -> CGDirectDisplayID? {
+        lastDisplay[app] ?? mainDisplay
     }
 
     // MARK: 启动
@@ -319,6 +345,11 @@ final class World: ObservableObject {
     private func publish() {
         logDisplayChanges(to: store.windows)
         windows = store.windows
+        // 窗口全关之后占位槽要留在原处，所以归属得趁窗口还在的时候记下来
+        for window in windows {
+            guard let display = window.display else { continue }
+            lastDisplay[window.appKey] = display
+        }
         rebuild()
         sampleBackdrop()
     }

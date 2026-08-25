@@ -63,11 +63,21 @@ final class BarModel: ObservableObject {
 
     // MARK: 版面
 
+    /// 标题宽度的测量缓存。每条 bar 一份：它按本屏画出来的东西剪枝，
+    /// 共用一份的话每条 bar 都会把别人的量测结果剪掉。
+    private let labelWidths = LabelWidths()
+
     func rebuildItems() {
-        barItems = makeBarItems(windows: world.windows, pins: world.pins, notice: world.notice,
-                                retained: world.retainedApps, clusters: world.clusters,
-                                order: world.order, labels: world.labelWidths,
-                                recency: { [world] in world.lastActive[$0] ?? 0 })
+        let mine = Set(world.windows.filter { world.home(of: $0) == display }.map(\.id))
+        barItems = makeBarItems(
+            windows: world.windows, onThisDisplay: mine,
+            // 固定 App 每块屏都有槽位；其余的只出现在它最后拥有窗口的那块屏上。
+            dormantHere: { [world, display] key in
+                key.bundleID.map(world.pins.isPinned) == true || world.home(of: key) == display
+            },
+            pins: world.pins, notice: world.notice, clusters: world.clusters,
+            order: world.order, labels: labelWidths,
+            recency: { [world] in world.lastActive[$0] ?? 0 })
     }
 
     func layout() -> BarLayout {
@@ -293,10 +303,13 @@ final class BarModel: ObservableObject {
         self.display = display
         world.maximizer.barDisplay = display
         world.corrector.barDisplay = display
-        // 每块显示器有自己当前的 Space。条搬屏时必须立刻切换到那块屏的全屏状态。
-        if changed { refreshFullscreenState() }
+        guard changed else { return }
+        // 条上该有哪些窗口，是按这块屏挑出来的
+        rebuildItems()
+        // 每块显示器有自己当前的 Space，全屏状态要立刻切到那块屏的
+        refreshFullscreenState()
         // 换了屏，条底下就是另一块桌面了
-        if changed { sampleBackdrop() }
+        sampleBackdrop()
     }
 
     /// 条滑回来大约要这么久。采样得等它落位。
