@@ -87,31 +87,51 @@ extension BarModel {
     // MARK: 各段
 
     /// 入参是窗口本身而不是条上的格子：浮层里的窗口没有格子，菜单却该一模一样。
+    /// 菜单只分两段：**这个窗口**，与**这个 App**。段内同一类的操作收进子菜单，
+    /// 不在顶层平铺——顶层每多一行，用户就要多扫一行才找得到他要的那一件。
     private func addWindow(_ cell: IndexedWindow, to menu: NSMenu) {
-        menu.addItem(ActionItem("铺满") { [weak self] in self?.world.fill(cell) })
-        menu.addItem(ActionItem("关闭窗口") { [weak self] in self?.world.close(cell) })
-        if world.clusters.clusterID(of: cell.id) != nil {
-            menu.addItem(ActionItem("移出编组") { [weak self] in self?.world.detachFromCluster(cell.id) })
-        }
-        let others = clusterChoices.filter { $0.id != world.clusters.clusterID(of: cell.id) }
-        if !others.isEmpty {
-            let join = NSMenuItem(title: "加入编组", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
-            sub.autoenablesItems = false
-            for choice in others {
-                sub.addItem(ActionItem(choice.name) { [weak self] in
-                    self?.world.addToCluster(cell.id, choice.id)
-                })
-            }
-            join.submenu = sub
-            menu.addItem(join)
-        }
-        if world.windowCount(pid: cell.pid) > 1 {
-            menu.addItem(ActionItem("前置全部窗口") { [weak self] in self?.world.raiseAll(pid: cell.pid) })
-        }
+        addGeometry(cell, to: menu)
+        // 图形那一带自成一区，与下面的文字项隔开——访达顶上那排标记也是这么隔的。
+        menu.addItem(.separator())
+        addGrouping(cell, to: menu)
         addMoveToDisplay(cell, to: menu)
+        // 关闭落在这一段的末尾：它是其中唯一有破坏性的一项，按 macOS 的惯例排在最后。
+        menu.addItem(ActionItem("关闭窗口") { [weak self] in self?.world.close(cell) })
         menu.addItem(.separator())
         addApp(pid: cell.pid, bundleID: cell.bundleID, url: world.appURL(pid: cell.pid), to: menu)
+    }
+
+    /// 落点：一排示意图，没有文字（见 `MenuRows`）。窗口此刻贴在哪一格，那一格就是
+    /// 选中态，再点一次即还原——「恢复上一个大小」因此不必单占一行。
+    private func addGeometry(_ cell: IndexedWindow, to menu: NSMenu) {
+        menu.addItem(MenuRows.spots(current: world.spot(of: cell)) { [weak self] spot in
+            self?.world.snap(cell, to: spot)
+        })
+    }
+
+    /// 进组与出组说的是同一件事，摊在顶层就占两行。
+    private func addGrouping(_ cell: IndexedWindow, to menu: NSMenu) {
+        let current = world.clusters.clusterID(of: cell.id)
+        let others = clusterChoices.filter { $0.id != current }
+        guard current != nil || !others.isEmpty else { return }
+        let item = NSMenuItem(title: "编组", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        sub.autoenablesItems = false
+        if current != nil {
+            sub.addItem(ActionItem("移出编组") { [weak self] in
+                self?.world.detachFromCluster(cell.id)
+            })
+            if !others.isEmpty { sub.addItem(.separator()) }
+        }
+        for choice in others {
+            let join = ActionItem(choice.name) { [weak self] in
+                self?.world.addToCluster(cell.id, choice.id)
+            }
+            join.image = MenuRows.dot(choice.color)
+            sub.addItem(join)
+        }
+        item.submenu = sub
+        menu.addItem(item)
     }
 
     /// 「移到显示器」（计划书 §6 M5）。只在多屏时出现，也不列窗口已经在的那块屏。
@@ -198,12 +218,26 @@ extension BarModel {
             menu.addItem(options)
         }
         guard let pid else { return }
+        // 前置全部窗口是 App 级的动作，位置对齐系统程序坞——它那里同样排在「选项」之后、
+        // 「隐藏」之前，名为「显示全部窗口」。
+        if world.windowCount(pid: pid) > 1 {
+            menu.addItem(ActionItem("前置全部窗口") { [weak self] in self?.world.raiseAll(pid: pid) })
+        }
         menu.addItem(ActionItem(world.isHidden(pid: pid) ? "取消隐藏" : "隐藏") { [weak self] in
             self?.world.toggleHidden(pid: pid)
         })
-        menu.addItem(ActionItem("退出") { [weak self] in self?.world.quit(pid: pid) })
+        let quit = ActionItem("退出") { [weak self] in self?.world.quit(pid: pid) }
+        // NSMenuItem 默认带 ⌘ 修饰键，替身要靠「同一个快捷键、不同的修饰键」认亲，
+        // 所以本体这一条必须显式清空。
+        quit.keyEquivalentModifierMask = []
+        menu.addItem(quit)
         if let force = dynamic.borrowed[.forceQuit], let url {
-            menu.addItem(entry(force, app: url))
+            // 按住 ⌥，「退出」就地变成「强制退出」——系统程序坞自己就是这个行为，
+            // 少占一行，也不必让一个危险动作常驻在菜单上。
+            let item = entry(force, app: url)
+            item.keyEquivalentModifierMask = .option
+            item.isAlternate = true
+            menu.addItem(item)
         }
     }
 
@@ -227,26 +261,27 @@ extension BarModel {
     }
 
     private func addCluster(_ cluster: BarCluster, to menu: NSMenu) {
+        // 颜色是一排色点，不是一串色名（见 `MenuRows`）。条上簇本来就靠色线认。
+        menu.addItem(MenuRows.colors(current: cluster.color) { [weak self] color in
+            self?.world.recolorCluster(cluster.id, to: color)
+        })
+        menu.addItem(.separator())
         menu.addItem(ActionItem("重新命名…") { [weak self] in self?.world.renameCluster(cluster.id) })
         menu.addItem(ActionItem("显示簇名", checked: cluster.showsName) { [weak self] in
             self?.world.toggleClusterName(cluster.id)
         })
-        let colors = NSMenuItem(title: "颜色", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        sub.autoenablesItems = false
-        for color in ClusterColor.allCases {
-            sub.addItem(ActionItem(color.name, checked: color == cluster.color) { [weak self] in
-                self?.world.recolorCluster(cluster.id, to: color)
-            })
-        }
-        colors.submenu = sub
-        menu.addItem(colors)
-        menu.addItem(.separator())
+        // 成员逐个列在顶层的话，菜单的长度就跟着簇的大小走。收进一格，动词由父项承担，
+        // 里面只留成员的名字。
+        let detach = NSMenuItem(title: "移出成员", action: nil, keyEquivalent: "")
+        let members = NSMenu()
+        members.autoenablesItems = false
         for cell in cluster.windows {
-            menu.addItem(ActionItem("移出「\(cell.window.title)」") { [weak self] in
+            members.addItem(ActionItem(cell.window.title) { [weak self] in
                 self?.world.detachFromCluster(cell.id)
             })
         }
+        detach.submenu = members
+        menu.addItem(detach)
         menu.addItem(.separator())
         menu.addItem(ActionItem("解散编组") { [weak self] in self?.world.dissolveCluster(cluster.id) })
     }

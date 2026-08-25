@@ -217,10 +217,10 @@ final class BarModel: ObservableObject {
     private var loggedTier = ""
 
     /// 条上现有的编组，供右键菜单列出可加入的目标。
-    var clusterChoices: [(id: Int, name: String)] {
+    var clusterChoices: [(id: Int, name: String, color: ClusterColor)] {
         barItems.compactMap {
             guard case .cluster(let cluster) = $0 else { return nil }
-            return (cluster.id, cluster.heading)
+            return (cluster.id, cluster.heading, cluster.color)
         }
     }
 

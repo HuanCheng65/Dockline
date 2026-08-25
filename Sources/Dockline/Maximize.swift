@@ -8,16 +8,43 @@ import DocklineCore
 /// 开放屏幕空间预留，这类窗口一律铺到屏幕底边、压在 bar 之下。自有入口在这里：
 /// 「铺满」= 可见区域再扣掉 bar 占的那一条。
 final class Maximizer {
-    /// 落点。可见区域整块，或它的左右两半。
+    /// 落点。可用区域整块，或把它对半切开的四种。
+    ///
+    /// 次序就是右键菜单里那一排图形的次序，别处不再各排一遍。
     enum Spot: CaseIterable {
-        case fill, left, right
+        case fill, left, right, top, bottom
 
-        /// 只用于日志。
+        /// 只用于日志。用户看到的是图形，没有文案。
         var label: String {
             switch self {
             case .fill: return "铺满"
             case .left: return "左半"
             case .right: return "右半"
+            case .top: return "上半"
+            case .bottom: return "下半"
+            }
+        }
+
+        /// 菜单里那一排图形。这一套字形是系统自己为「窗口占屏幕的哪一块」画的，
+        /// 五个的轮廓粗细与度量天生一致，自己画一套只会更差。
+        var symbol: String {
+            switch self {
+            case .fill: return "rectangle.inset.filled"
+            case .left: return "rectangle.lefthalf.inset.filled"
+            case .right: return "rectangle.righthalf.inset.filled"
+            case .top: return "rectangle.tophalf.inset.filled"
+            case .bottom: return "rectangle.bottomhalf.inset.filled"
+            }
+        }
+
+        /// 在单位矩形里占哪一块，**左上原点**（SwiftUI 系）。落点的实际矩形由它算出来。
+        var unitRect: CGRect {
+            switch self {
+            case .fill: return CGRect(x: 0, y: 0, width: 1, height: 1)
+            case .left: return CGRect(x: 0, y: 0, width: 0.5, height: 1)
+            case .right: return CGRect(x: 0.5, y: 0, width: 0.5, height: 1)
+            case .top: return CGRect(x: 0, y: 0, width: 1, height: 0.5)
+            case .bottom: return CGRect(x: 0, y: 0.5, width: 1, height: 0.5)
             }
         }
     }
@@ -28,13 +55,24 @@ final class Maximizer {
     /// 有 bar 的那些屏。只有它们要扣掉 bar 的高度。
     var barDisplays: Set<CGDirectDisplayID> = []
 
-    /// 铺满；已经铺满则还原。
-    func toggle(_ window: IndexedWindow) {
-        guard let element = window.element else {
-            Timeline.log("⚠️ 铺满跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
-            return
-        }
-        toggle(element: element, name: window.appName)
+    /// 贴到某个落点。**不做开关**：用户把格子丢到左半边，意思就是「贴到左半边」，
+    /// 哪怕它已经在那儿。拖格子分屏走这条。
+    func place(_ window: IndexedWindow, at spot: Spot) {
+        with(window) { apply(element: $0, name: window.appName, spot: spot, toggling: false) }
+    }
+
+    /// 贴到某个落点，已经贴合就还原。右键菜单里那一排落点与快捷键走这条——
+    /// 同一个记号既是「去那儿」也是「回来」，用户不必再找一个「还原」。
+    func toggle(_ window: IndexedWindow, at spot: Spot) {
+        with(window) { apply(element: $0, name: window.appName, spot: spot, toggling: true) }
+    }
+
+    /// 这个窗口此刻正贴在哪个落点上。都不贴合返回 nil。菜单里那一排图形据此显示选中态。
+    func spot(of window: IndexedWindow) -> Spot? {
+        guard let element = window.element,
+              let display = try? screen(of: element),
+              let current = axRect(element) else { return nil }
+        return Spot.allCases.first { matchesFrame(current, flipY(rect($0, on: display))) }
     }
 
     /// 快捷键：直接问前台 App 要焦点窗口，不查索引——索引里的前台标记是事件驱动的，
@@ -47,55 +85,41 @@ final class Maximizer {
             Timeline.log("⚠️ 铺满跳过：\(app.localizedName ?? "?") 当前没有焦点窗口")
             return
         }
-        toggle(element: focused as! AXUIElement, name: app.localizedName ?? "?")
+        apply(element: focused as! AXUIElement, name: app.localizedName ?? "?",
+              spot: .fill, toggling: true)
     }
 
-    /// 贴到某个落点。拖格子分屏走这条，**不做开关**：用户把格子丢到左半边，
-    /// 意思就是「贴到左半边」，哪怕它已经在那儿。
-    func place(_ window: IndexedWindow, at spot: Spot) {
+    private func with(_ window: IndexedWindow, _ body: (AXUIElement) -> Void) {
         guard let element = window.element else {
             Timeline.log("⚠️ 平铺跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
             return
         }
+        body(element)
+    }
+
+    /// 判据是当前几何是否已经贴合目标——不记开关状态。用户中途手动挪动过窗口，
+    /// 下一次触发就该是重新贴过去，而不是还原到更早的位置。
+    private func apply(element: AXUIElement, name: String, spot: Spot, toggling: Bool) {
         let (wid, widError) = windowID(of: element)
         guard let wid else {
-            Timeline.log("⚠️ 平铺跳过 \(window.appName)：取不到窗口号（AXError \(widError.rawValue)）")
+            Timeline.log("⚠️ 平铺跳过 \(name)：取不到窗口号（AXError \(widError.rawValue)）")
             return
         }
         do {
             let display = try screen(of: element)
+            let goal = flipY(rect(spot, on: display))
             guard let current = axRect(element) else { throw FillError.noGeometry }
+            if toggling, matchesFrame(current, goal),
+               let saved = restore.removeValue(forKey: wid) {
+                try write(element, to: saved, wid: wid, name: name, as: "还原")
+                return
+            }
             // 已经贴在某个落点上时不记还原点。还原要回到用户自己摆的那个位置，
             // 不是上一次贴过去的位置。
             if !onAnySpot(current, of: display) { restore[wid] = current }
-            try write(element, to: flipY(rect(spot, on: display)),
-                      wid: wid, name: window.appName, as: spot.label)
+            try write(element, to: goal, wid: wid, name: name, as: spot.label)
         } catch {
-            Timeline.log("⚠️ 平铺失败 wid \(wid) \(window.appName)：\(error)")
-        }
-    }
-
-    /// 铺满与还原共用一个入口，判据是当前几何是否已经贴合目标——不记开关状态。
-    /// 用户中途手动挪动过窗口，下一次触发就该是铺满，而不是还原到更早的位置。
-    private func toggle(element: AXUIElement, name: String) {
-        let (wid, widError) = windowID(of: element)
-        guard let wid else {
-            Timeline.log("⚠️ 铺满跳过 \(name)：取不到窗口号（AXError \(widError.rawValue)）")
-            return
-        }
-        do {
-            let goal = flipY(rect(.fill, on: try screen(of: element)))
-            guard let current = axRect(element) else { throw FillError.noGeometry }
-            let destination: CGRect
-            if matchesFrame(current, goal), let saved = restore.removeValue(forKey: wid) {
-                destination = saved
-            } else {
-                restore[wid] = current
-                destination = goal
-            }
-            try write(element, to: destination, wid: wid, name: name, as: "铺满")
-        } catch {
-            Timeline.log("⚠️ 铺满失败 wid \(wid) \(name)：\(error)")
+            Timeline.log("⚠️ 平铺失败 wid \(wid) \(name)：\(error)")
         }
     }
 
@@ -115,20 +139,16 @@ final class Maximizer {
         Spot.allCases.contains { matchesFrame(rect, flipY(self.rect($0, on: display))) }
     }
 
-    /// 落点的矩形，AppKit 坐标系。左右两半同样切自可用区域，因此不含 bar 那一条——
+    /// 落点的矩形，AppKit 坐标系。落点全部切自可用区域，因此左右两半同样不含 bar 那一条——
     /// 贴过去的窗口不会被条压住，这也是这套入口存在的理由。
     func rect(_ spot: Spot, on display: NSScreen) -> CGRect {
         let area = self.area(on: display)
-        switch spot {
-        case .fill:
-            return area
-        case .left:
-            return CGRect(x: area.minX, y: area.minY, width: area.midX - area.minX,
-                          height: area.height)
-        case .right:
-            return CGRect(x: area.midX, y: area.minY, width: area.maxX - area.midX,
-                          height: area.height)
-        }
+        // 单位矩形是左上原点的，AppKit 是左下原点，纵向要翻过来。
+        let unit = spot.unitRect
+        return CGRect(x: area.minX + unit.minX * area.width,
+                      y: area.maxY - unit.maxY * area.height,
+                      width: unit.width * area.width,
+                      height: unit.height * area.height)
     }
 
     /// 可用区域 = visibleFrame 再扣掉 bar 占的那一条。visibleFrame 已经排除了菜单栏，
