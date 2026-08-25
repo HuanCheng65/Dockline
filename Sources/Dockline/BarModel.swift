@@ -72,6 +72,17 @@ final class BarModel: ObservableObject {
         }
     }
 
+    /// 选中的窗口在不在这条 bar 上。
+    ///
+    /// Tab 走的是时间记忆，而时间不知道有几块屏，所以选中项本来就会跨过屏幕之间那道缝。
+    /// 顺序是对的，难受的是那一跳——一个小方块在另一块屏上凭空出现，眼睛要重新找。
+    /// 于是会话期间**只有拿着选中项的那条 bar 完整亮着**，另一条整条压暗：
+    /// 整条的明暗差隔着一块屏也看得见，找的是「哪条亮着」而不是「方块在哪儿」。
+    var keyOwned: Bool {
+        guard let keySelection else { return false }
+        return windowSequence.contains(keySelection)
+    }
+
     /// 这条 bar 钉在哪块屏上。
     var screen: NSScreen? { NSScreen.screens.first { displayID($0) == display } }
 

@@ -108,6 +108,9 @@ struct BarContent: View {
     private static let previewDwell: TimeInterval = 0.26
     /// 大预览开着时换格子的停留。见 `schedulePreview`。
     private static let peekDwell: TimeInterval = 0.08
+    /// 会话期间，没拿着选中项的那条 bar 的整体不透明度。比格子内部那一档（0.38）浅：
+    /// 它仍要认得出窗口在哪儿——方向键随时会走回来。
+    private static let idleBarDim: CGFloat = 0.5
 
     struct PreviewTarget: Equatable {
         let window: IndexedWindow
@@ -128,6 +131,10 @@ struct BarContent: View {
                 // 面板占满屏幕底部整条；全透明像素不参与命中测试，点击直接穿透到下方窗口
                 Color.clear
                 glassBar(layout)
+                    // 会话期间，没拿着选中项的那条 bar 整条压暗。见 `BarModel.keyOwned`：
+                    // 此刻条回答的是「松手会去哪儿」，而答案不在这块屏上。
+                    .opacity(model.keyVisible && !model.keyOwned ? Self.idleBarDim : 1)
+                    .animation(.easeOut(duration: 0.18), value: model.keyOwned)
                     .padding(.bottom, BarMetrics.bottomGap)
                     .offset(y: model.hidden ? BarMetrics.barHeight + BarMetrics.bottomGap + 6 : 0)
                     .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.hidden)
@@ -409,7 +416,10 @@ struct BarContent: View {
                         }
                         // 会话期间其余项压暗，让选中项自己站出来。
                         // 最小化的格子本来就是 0.42，两者相乘会更淡——那正是它该有的次序。
-                        .opacity(model.keyVisible && !keySelected(item) ? 0.38 : 1)
+                        // 只在拿着选中项的那条 bar 上分明暗：另一条整条压暗（见下），
+                        // 里面再分一次只会把它压成看不清，而用户还要靠它认窗口在哪。
+                        .opacity(model.keyVisible && model.keyOwned && !keySelected(item)
+                                 ? 0.38 : 1)
                 }
                 // 被拎起来的那一格的层级只在自己这一段里有效，整段不抬起来的话，
                 // 它会从邻段的底色下面穿过去。
