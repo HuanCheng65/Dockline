@@ -98,11 +98,31 @@ final class World: ObservableObject {
         refreshBarDisplays()
     }
 
-    /// 铺满与结果纠正要知道哪些屏上有 bar——有 bar 的屏才扣掉底部那一条。
+    /// 铺满与结果纠正要知道哪些屏上有常驻的 bar——只有它们才扣掉底部那一条。
+    /// 自动隐藏的屏不算：那条 bar 平时不在，窗口该用满整块屏。
     func refreshBarDisplays() {
-        let displays = Set(bars.compactMap(\.display))
+        let displays = Set(bars.filter { !$0.autoHides }.compactMap(\.display))
         maximizer.barDisplays = displays
         corrector.barDisplays = displays
+    }
+
+    // MARK: 每块屏的可见性（计划书 §6 M5）
+
+    /// 这块屏的 bar 是自动隐藏还是始终显示。
+    func autoHides(on display: CGDirectDisplayID?) -> Bool {
+        guard let display, let uuid = displayUUID(display) else { return false }
+        return pins.autoHiddenDisplays.contains(uuid)
+    }
+
+    func setAutoHides(_ value: Bool, on display: CGDirectDisplayID) {
+        guard let uuid = displayUUID(display) else {
+            // 存不下来就等于用户改完一重启又变回去，不能装作设上了
+            report("无法为这块显示器保存可见性设置", "系统没有给出它的 UUID（显示器 \(display)）。")
+            return
+        }
+        pins.setAutoHidden(value, display: uuid)
+        bars.first { $0.display == display }?.setAutoHides(value)
+        objectWillChange.send()
     }
 
     /// 世界的内容变了，每条 bar 都要重排一次自己的版面。

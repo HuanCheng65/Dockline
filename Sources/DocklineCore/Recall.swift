@@ -15,6 +15,15 @@ public func displayID(_ screen: NSScreen) -> CGDirectDisplayID? {
     (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
 }
 
+/// 显示器的持久身份。`CGDirectDisplayID` 在拔插之后会被重新分配，凡是要跨拔插存活的
+/// 记录都必须用 UUID 做键——用编号做键会让「同一块屏又回来了」这个判断静默失效。
+public func displayUUID(_ display: CGDirectDisplayID) -> String? {
+    guard let uuid = CGDisplayCreateUUIDFromDisplayID(display)?.takeRetainedValue() else {
+        return nil
+    }
+    return CFUUIDCreateString(nil, uuid) as String?
+}
+
 // MARK: - 召回
 // M0 验收：常规路径（AXRaise + activate）在跨 Space、原生全屏、非宿主 App 下均成立，
 // 且能带动 Space 自动切换。最小化者先写 AXMinimized=false。

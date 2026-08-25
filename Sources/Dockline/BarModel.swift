@@ -17,8 +17,11 @@ final class BarModel: ObservableObject {
     /// 浮层（簇面板、预览卡）背后的明暗。它们浮在条的上方，底下压的常常不是
     /// 同一块东西，所以单独采一次。
     @Published private(set) var floatScheme: ColorScheme = .light
-    /// 全屏场景自动隐藏（计划书 §4）。触底唤出时置回 false。
+    /// 条此刻收着没有。触底唤出时置回 false。两种情况会让它收起来：本屏进了全屏
+    /// Space（计划书 §4），或者本屏被设成自动隐藏（§6 M5）。
     @Published private(set) var hidden = false
+    /// 本屏的可见性设置：false = 始终显示，true = 自动隐藏。
+    private(set) var autoHides = false
     /// 调度中心期间让位。它是这套压制里的逃生口：MC 一开系统程序坞无条件出现，
     /// 而我们的面板浮在它上面，不让开就把逃生口挡死了。
     @Published private(set) var yielding = false
@@ -141,7 +144,21 @@ final class BarModel: ObservableObject {
 
     func fullscreenPredictionTimedOut() {
         fullscreenPredictionPending = false
-        hidden = inFullscreenSpace
+        hidden = shouldHide
+    }
+
+    /// 没有唤出动作时条该不该收着。
+    private var shouldHide: Bool { inFullscreenSpace || autoHides }
+
+    /// 本屏改了可见性。设置窗口走 `World`，由它转到对应的这一条。
+    func setAutoHides(_ value: Bool) {
+        guard autoHides != value else { return }
+        autoHides = value
+        hidden = shouldHide
+        // 自动隐藏的条不占位——铺满不该为一条平时不在的条扣掉底部那一条
+        world.refreshBarDisplays()
+        world.updateMouseMonitor()
+        if !hidden { sampleBackdrop() }
     }
 
     func refreshFullscreenState(reconcilePrediction: Bool = false) {
@@ -152,11 +169,11 @@ final class BarModel: ObservableObject {
             return
         }
         guard fullscreen != inFullscreenSpace else {
-            if reconcilePrediction { hidden = fullscreen }
+            if reconcilePrediction { hidden = shouldHide }
             return
         }
         inFullscreenSpace = fullscreen
-        hidden = fullscreen
+        hidden = shouldHide
         if !fullscreen {
             dwell?.cancel()
             dwell = nil
@@ -166,8 +183,8 @@ final class BarModel: ObservableObject {
         sampleBackdrop()
     }
 
-    /// 盯着指针只为全屏下的触底唤出。不在全屏 Space 里就不必挂监听。
-    var wantsPointer: Bool { inFullscreenSpace }
+    /// 盯着指针只为触底唤出。条常驻的时候一次监听都不必挂。
+    var wantsPointer: Bool { shouldHide }
 
     /// 监听撤掉了，正在计时的停留判定也要一起作废——否则它还会再触发一次，
     /// 而那一次背后已经没有指针位置了。
@@ -176,10 +193,10 @@ final class BarModel: ObservableObject {
         dwell = nil
     }
 
-    /// 只在全屏 Space 里成立：非全屏时条常驻，指针离开底边不该把它收起来。
+    /// 只在条会自己收起来的时候成立：常驻的条，指针离开底边不该把它收起来。
     /// 指针不在本屏时同样不理会——每块屏的条各自唤出。
     func pointerMoved(to point: CGPoint) {
-        guard inFullscreenSpace,
+        guard shouldHide,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
               displayID(screen) == display else { return }
         let y = point.y - screen.frame.minY
@@ -273,6 +290,9 @@ final class BarModel: ObservableObject {
         self.display = display
         world.refreshBarDisplays()
         guard changed else { return }
+        // 可见性是按屏存的，换了屏就是另一份设置
+        autoHides = world.autoHides(on: display)
+        hidden = shouldHide
         // 条上该有哪些窗口，是按这块屏挑出来的
         rebuildItems()
         // 每块显示器有自己当前的 Space，全屏状态要立刻切到那块屏的

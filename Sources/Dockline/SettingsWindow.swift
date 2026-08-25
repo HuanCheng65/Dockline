@@ -1,4 +1,5 @@
 import AppKit
+import DocklineCore
 import SwiftUI
 
 final class SettingsWindowController: NSObject, NSWindowDelegate {
@@ -155,6 +156,23 @@ private struct DockTab: View {
                          + "原有设置会被记录，可随时恢复。")
                         .font(.callout).foregroundStyle(.secondary)
                 }
+            }
+
+            Section("显示器") {
+                ForEach(NSScreen.screens, id: \.self) { screen in
+                    if let display = displayID(screen) {
+                        Picker(screen.localizedName, selection: Binding(
+                            get: { model.autoHides(on: display) },
+                            set: { model.setAutoHides($0, on: display) })) {
+                            Text("始终显示").tag(false)
+                            Text("自动隐藏").tag(true)
+                        }
+                    }
+                }
+                Text("每块显示器各有一条 Dockline，只显示这块屏上的窗口。"
+                     + "自动隐藏的那块屏平时不画条，指针压到屏幕底边停一下即可唤出——"
+                     + "投影仪、电视这类只用来输出的屏适合这一档。")
+                    .font(.callout).foregroundStyle(.secondary)
             }
 
             Section("保留的 App") {

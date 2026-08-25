@@ -39,6 +39,9 @@ final class PinStore {
         var correctsTiling: Bool?
         /// 原生标签页是否始终收成一格。缺省（nil）= 只在宽度不够时才收。
         var foldsTabs: Bool?
+        /// 自动隐藏的显示器，按显示器 UUID（计划书 §6 M5「可见性只有两档」）。
+        /// 只记非缺省的那些，缺省是始终显示。键不用 displayID——它在拔插后会重新分配。
+        var autoHiddenDisplays: [String]?
     }
 
     private static let path = ("~/Library/Application Support/Dockline/pins.json" as NSString)
@@ -63,6 +66,15 @@ final class PinStore {
     var correctsTiling: Bool { config.correctsTiling ?? false }
 
     var foldsTabs: Bool { config.foldsTabs ?? false }
+
+    var autoHiddenDisplays: [String] { config.autoHiddenDisplays ?? [] }
+
+    func setAutoHidden(_ hidden: Bool, display uuid: String) {
+        var displays = autoHiddenDisplays.filter { $0 != uuid }
+        if hidden { displays.append(uuid) }
+        config.autoHiddenDisplays = displays.isEmpty ? nil : displays
+        save()
+    }
 
     func setFoldsTabs(_ enabled: Bool) {
         config.foldsTabs = enabled
