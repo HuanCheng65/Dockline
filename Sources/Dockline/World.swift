@@ -84,12 +84,18 @@ final class World: ObservableObject {
     private let fullscreenWatch = FullscreenWatch()
     private let missionControl = MissionControlWatch()
     private let activityCenter = ActivityCenter()
+    private let askServer = AskServer()
     private var mouseMonitor: Any?
 
     /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
     /// 就消失的通知等于没有发出过。只撤终态，运行中与等待中的不动。
     func markStatusSeen(_ target: StatusTarget) {
         activityCenter.markSeen(target)
+    }
+
+    /// 用户在面板上批了或驳了一次授权（实时状态设计 §4.7）。
+    func answerAsk(_ id: UUID, allow: Bool) {
+        activityCenter.answer(id, allow: allow)
     }
 
     // MARK: 每块屏的 bar
@@ -392,6 +398,14 @@ final class World: ObservableObject {
                                           windows: windows, front: frontWindow)
         }
         activityCenter.start()
+        // 就地授权走自己的一条通道：状态上报是单向的，授权要一问一答（见 `AskServer`）
+        activityCenter.onAnswer = { [weak self] id, allow, message in
+            self?.askServer.answer(id, allow: allow, message: message)
+        }
+        activityCenter.onDecline = { [weak self] id in self?.askServer.decline(id) }
+        askServer.onAsk = { [weak self] id, payload in self?.activityCenter.receiveAsk(id, payload) }
+        askServer.onGone = { [weak self] id in self?.activityCenter.dropAsk(id) }
+        askServer.start()
         placer.onPlaced = { [weak self] wid, kind in self?.corrector.noteWrite(wid, kind) }
         corrector.enabled = pins.correctsTiling
         observers.watchesGeometry = pins.correctsTiling

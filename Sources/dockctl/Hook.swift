@@ -6,9 +6,11 @@ import Foundation
 /// 条只认自己那套状态模型，每接一个新的上报方就往里塞一份对方的事件表，模型迟早被
 /// 上报方的形状带偏。
 ///
-/// **不挂 `PermissionRequest`，改用 `Notification` 的 `permission_prompt`。** 前者是
-/// 决策事件——hook 的返回值能左右这次授权准不准，而这里是个报状态的东西，不该有
-/// 影响授权结果的机会，哪怕只是因为写错了。后者纯是通知。
+/// `PermissionRequest` 不走这里，它有自己的一条路（见 `Ask` 与 `runAsk`）：它不是在报状态，
+/// 是在替用户做一次决定。曾经因为「报状态的东西不该有影响授权结果的机会」而回避这个事件，
+/// 就地授权推翻了那条顾虑，理由是**失败的形状**：这条路上的任何失败——条没在跑、连接断开、
+/// 进程被超时杀掉——都表现为**不打印决定**，而不打印决定在 Claude Code 那边就是照常弹它自己
+/// 的对话框。只有明确打印出来的那一个决定才算数，所以写错的后果止于退回现状。
 enum HookAdapter {
     /// 格子第二行与会话名只放得下一句。
     private static let summaryLimit = 40
@@ -138,7 +140,7 @@ enum HookAdapter {
     /// **只送这一个词，不在这里拼句子。** 界面文案统一走条那边的本地化资源，
     /// 而 dockctl 不带资源包；让它拼好一句中文送过去，等于把界面文字散到条外面。
     /// 工具名原样送，动作怎么说由条决定。
-    private static func object(_ json: [String: Any]) -> String? {
+    static func object(_ json: [String: Any]) -> String? {
         let input = json["tool_input"] as? [String: Any] ?? [:]
         func path(_ key: String) -> String? {
             (input[key] as? String).map { ($0 as NSString).lastPathComponent }
@@ -199,6 +201,105 @@ enum HookAdapter {
         else { return nil }
         guard let next = words.dropFirst().first, !next.hasPrefix("-") else { return program }
         return "\(program) \(next)"
+    }
+
+    // MARK: 就地授权要看的那一段
+
+    /// 面板上给出几行。多了就不再是「扫一眼决定批不批」，而是要读的东西——
+    /// 那时候本来就该切回终端。
+    private static let previewLines = 14
+    /// 每行的宽度上限。面板只有那么宽，超出的部分在屏幕上根本落不下。
+    private static let previewWidth = 200
+
+    /// 这次授权要判断的内容，按行给出，每行带一个记号：`+` 增、`−` 删、空格是原文。
+    ///
+    /// **只送记号与文本，不在这里排版。** 怎么上色、怎么截断由条决定，
+    /// 与工具名怎么翻成动词是同一条规矩。
+    ///
+    /// 返回的第二个数是截掉了多少行。条要把它说出来——一份被悄悄截短的 diff
+    /// 会让人以为改动就这么点。
+    static func preview(_ json: [String: Any]) -> (lines: [[String]], more: Int) {
+        let input = json["tool_input"] as? [String: Any] ?? [:]
+        let raw: [[String]]
+        switch json["tool_name"] as? String {
+        case "Bash":
+            raw = split(input["command"] as? String).map { [" ", $0] }
+        case "Edit", "NotebookEdit":
+            raw = diff(old: input["old_string"] as? String, new: input["new_string"] as? String)
+        case "Write":
+            raw = split(input["content"] as? String).map { ["+", $0] }
+        // 这几样在标题行上已经说清了（读哪个文件、搜什么），再抄一遍是废话
+        case "Read", "Grep", "Glob", "WebFetch", "WebSearch", "Task", "Agent":
+            raw = []
+        default:
+            // 认不出的工具（MCP 一类）：把参数原样摆出来。判断不了它要干什么的时候，
+            // 至少要让人看得见它拿到了什么。
+            let data = try? JSONSerialization.data(withJSONObject: input,
+                                                  options: [.prettyPrinted, .sortedKeys,
+                                                            .withoutEscapingSlashes])
+            raw = split(data.flatMap { String(data: $0, encoding: .utf8) }).map { [" ", $0] }
+        }
+        let kept = raw.prefix(previewLines).map { [$0[0], String($0[1].prefix(previewWidth))] }
+        return (Array(kept), raw.count - kept.count)
+    }
+
+    private static func split(_ text: String?) -> [String] {
+        guard let text, !text.isEmpty else { return [] }
+        return text.components(separatedBy: "\n")
+    }
+
+    /// 一次替换真正动了哪几行。
+    ///
+    /// 逐行求最长公共子序列，**只列不同的那些**，相同的行一概不列。两条理由：
+    ///
+    ///   · 只掐掉两头相同的行是不够的。一次替换里常常夹着没动的行——改一个块里的
+    ///     某一行是最典型的形状——那些行会被同时列成删和增，也就是在说「这一行动过」，
+    ///     而它没动。面板是拿来下判断的，不能说一件没发生的事。
+    ///   · 相同的行作上下文也不列。面板只放得下十几行，用来摆没动的行，
+    ///     真正改了的那几行就被挤出去了。
+    ///
+    /// 行数有上界：最长公共子序列是二次的。超过就退回只掐两头——那样的改动本来就不该
+    /// 在条上判，该切回终端看。
+    private static let diffLimit = 400
+
+    private static func diff(old: String?, new: String?) -> [[String]] {
+        let before = split(old)
+        let after = split(new)
+        guard before.count <= diffLimit, after.count <= diffLimit else {
+            var head = 0
+            while head < before.count, head < after.count, before[head] == after[head] { head += 1 }
+            var tail = 0
+            while tail < before.count - head, tail < after.count - head,
+                  before[before.count - 1 - tail] == after[after.count - 1 - tail] { tail += 1 }
+            return before[head..<(before.count - tail)].map { ["−", $0] }
+                + after[head..<(after.count - tail)].map { ["+", $0] }
+        }
+        // lengths[i][j] = before 的第 i 行起、after 的第 j 行起，两者最长公共子序列的长度
+        var lengths = [[Int]](repeating: [Int](repeating: 0, count: after.count + 1),
+                              count: before.count + 1)
+        for i in stride(from: before.count - 1, through: 0, by: -1) {
+            for j in stride(from: after.count - 1, through: 0, by: -1) {
+                lengths[i][j] = before[i] == after[j]
+                    ? lengths[i + 1][j + 1] + 1
+                    : max(lengths[i + 1][j], lengths[i][j + 1])
+            }
+        }
+        var result: [[String]] = []
+        var i = 0
+        var j = 0
+        while i < before.count, j < after.count {
+            if before[i] == after[j] {
+                i += 1
+                j += 1
+            } else if lengths[i + 1][j] >= lengths[i][j + 1] {
+                result.append(["−", before[i]])
+                i += 1
+            } else {
+                result.append(["+", after[j]])
+                j += 1
+            }
+        }
+        return result + before[i...].map { ["−", $0] } + after[j...].map { ["+", $0] }
     }
 
     private static func clamp(_ text: String) -> String {

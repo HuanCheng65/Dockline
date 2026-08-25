@@ -87,6 +87,36 @@ struct Activity: Equatable {
         var symbol: String { Activity.symbol(tool: tool) }
     }
 
+    /// 一次等着你批的授权（实时状态设计 §4.7）。
+    ///
+    /// 它与其余状态的分别在于**对面正停着等这一条**：面板上那两个按钮按下去，
+    /// 答复顺着来时那条连接回去，那一步随即放行或被挡下。其余状态只是在陈述。
+    struct Ask: Equatable, Identifiable {
+        struct Line: Equatable, Identifiable {
+            enum Sign: String, Equatable {
+                case same = " "
+                case added = "+"
+                case removed = "−"
+            }
+
+            let id: Int
+            let sign: Sign
+            let text: String
+        }
+
+        let id: UUID
+        let tool: String
+        let object: String?
+        /// 要判断的那一段：命令全文、增删行、要写进去的内容。
+        let lines: [Line]
+        /// 截掉了多少行。**必须说出来**——一份被悄悄截短的 diff 会让人以为改动就这么点。
+        let more: Int
+        let since: Date
+
+        var verb: String { localized("activity.tool.\(tool)", fallback: tool) }
+        var symbol: String { Activity.symbol(tool: tool) }
+    }
+
     /// 工具的图标。SF Symbols，不进本地化资源——图标不是文案。
     static func symbol(tool: String) -> String {
         switch tool {
@@ -193,6 +223,9 @@ struct Activity: Equatable {
     var response: String?
     /// 哪个 agent。多个 agent 同时在跑时，光看格子分不出是谁。
     var agent: String?
+    /// 正等着你批的那次授权。它不随上报来去，生命周期由那条连接决定
+    /// （见 `AskServer`），因此不在 `push` 里赋值，由 `display` 挂上来。
+    var ask: Ask?
     /// 近期走过的几步，旧的在前。只留末尾几条：面板要的是「刚才发生了什么」，
     /// 不是一份完整日志——完整的在终端里。
     var steps: [Step] = []
@@ -249,7 +282,12 @@ struct Activity: Equatable {
     /// 一条正在活动的会话永久遮住，而它自己再也不会更新（实测撞到过）。
     func outranks(_ other: Activity) -> Bool {
         guard rank == other.rank else { return rank < other.rank }
-        if case .waiting = salience { return since < other.since }
+        if case .waiting = salience {
+            // 待授权先于其余等待。它是唯一能在条上**当场办掉**的一档，其余等待只是陈述；
+            // 把它压在下面，用户就没有地方按那一下，而对面还阻塞着等这个答复。
+            if (ask != nil) != (other.ask != nil) { return ask != nil }
+            return since < other.since
+        }
         return updated > other.updated
     }
 
@@ -302,20 +340,98 @@ final class ActivityCenter {
 
     /// 条上每一格该显示哪一条。多条上报落在同一格时按 `Activity.outranks` 取一条；
     /// 其余的该在 hover 卡里排队，那一段尚未实现。
+    ///
+    /// 待授权要**先挂上再排序**：谁能当场办掉是排序的判据之一（见 `Activity.outranks`），
+    /// 排完再挂就晚了。同一条会话上撞了两次授权时只挂最早的那次，答掉它下一次才露面。
     var display: [StatusTarget: Activity] {
+        let asks = Dictionary(grouping: pending.values, by: \.key)
+            .compactMapValues { $0.map(\.ask).min { $0.since < $1.since } }
         var result: [StatusTarget: Activity] = [:]
-        for report in reports.values {
+        for (key, report) in reports {
+            var activity = report.activity
+            activity.ask = asks[key]
             guard let seated = result[report.target] else {
-                result[report.target] = report.activity
+                result[report.target] = activity
                 continue
             }
-            if report.activity.outranks(seated) { result[report.target] = report.activity }
+            if activity.outranks(seated) { result[report.target] = activity }
         }
         return result
     }
 
+    // MARK: 就地授权（实时状态设计 §4.7）
+
+    private struct Pending {
+        let key: ReportKey
+        let host: pid_t
+        let ask: Activity.Ask
+    }
+
+    private var pending: [UUID: Pending] = [:]
+
+    /// 把答复送回去。由 `World` 接到 `AskServer` 上。
+    var onAnswer: ((_ id: UUID, _ allow: Bool, _ message: String?) -> Void)?
+    /// 不作决定，把这次授权交回 Claude Code 自己那套流程。
+    var onDecline: ((UUID) -> Void)?
+
+    /// 收到一次授权请求。
+    ///
+    /// 它同时是一条**等待态上报**：格子那一行要立刻说「待授权」，不能等六秒后
+    /// Claude Code 自己那条通知过来。这里因此借道 `receive` 走一遍完整的上报路径——
+    /// 会话名、提示词、落在哪一格的推断，与其余状态共用同一套，不另立一份。
+    func receiveAsk(_ id: UUID, _ payload: [String: Any]) {
+        guard let host = (payload["pid"] as? Int).map(pid_t.init),
+              let key = Self.key(payload, host: host),
+              let tool = payload["tool"] as? String,
+              let raw = payload["lines"] as? [[String]] else {
+            Timeline.log("⚠️ 收到格式不符的授权请求，已交回 Claude Code 自行处理：\(payload)")
+            onDecline?(id)
+            return
+        }
+        var lines: [Activity.Ask.Line] = []
+        for (index, pair) in raw.enumerated() {
+            guard pair.count == 2, let sign = Activity.Ask.Line.Sign(rawValue: pair[0]) else {
+                Timeline.log("⚠️ 授权请求里有读不懂的行「\(pair)」，已交回 Claude Code 自行处理")
+                onDecline?(id)
+                return
+            }
+            lines.append(Activity.Ask.Line(id: index, sign: sign, text: pair[1]))
+        }
+        pending[id] = Pending(key: key, host: host,
+                              ask: Activity.Ask(id: id, tool: tool,
+                                                object: payload["object"] as? String,
+                                                lines: lines,
+                                                more: payload["more"] as? Int ?? 0,
+                                                since: Date()))
+        var push: [String: Any] = ["command": "push", "state": "waiting", "reason": "permission",
+                                   "pid": Int(host)]
+        for field in ["session", "cwd", "task", "agent"] { push[field] = payload[field] }
+        receive(push)
+    }
+
+    /// 用户在条上按了一下。
+    func answer(_ id: UUID, allow: Bool) {
+        guard pending.removeValue(forKey: id) != nil else { return }
+        // 拒绝的理由会进模型的上下文。它是给人看的字，所以在这里取本地化资源，
+        // 而不是让 dockctl 拼一句话送过来（见设计文档 §4 的界面文字一条）。
+        onAnswer?(id, allow, allow ? nil : localized("activity.ask.denied"))
+        onChange?()
+    }
+
+    /// 对面在拿到答复之前走了：hook 被超时杀掉、会话被中断、终端被关掉。
+    func dropAsk(_ id: UUID) {
+        guard pending.removeValue(forKey: id) != nil else { return }
+        onChange?()
+    }
+
     /// 宿主 App 退出后，它名下的活动一并撤下。
     func remove(pid: pid_t) {
+        // 待授权也一并交回去。宿主没了，这条待授权在条上再没有落点，
+        // 留着它就是一条谁也看不见、对面却还在等的请求。
+        for (id, entry) in pending where entry.host == pid {
+            pending[id] = nil
+            onDecline?(id)
+        }
         let before = reports.count
         reports = reports.filter { $0.value.host != pid }
         guard reports.count != before else { return }
