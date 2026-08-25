@@ -150,7 +150,7 @@ extension BarModel {
         for screen in elsewhere {
             guard let id = displayID(screen) else { continue }
             sub.addItem(ActionItem(screen.localizedName) { [weak self] in
-                self?.world.move(cell, to: id)
+                self?.world.send(cell, to: id)
             })
         }
         guard !sub.items.isEmpty else { return }

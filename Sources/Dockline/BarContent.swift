@@ -59,7 +59,10 @@ struct BarContent: View {
     @State private var splitOrigin: CGRect?
     /// 落点在哪块屏上——指针所在的那块。松手时要拿它去摆位，不能让摆位那边再推一次。
     @State private var splitScreen: NSScreen?
-    /// 本次拖拽能不能分屏。起拖那一刻定一次，拖拽期间不会变。
+    /// 要搬到哪块屏。与 `splitSpot` 互斥：同一次拖拽在同一时刻只可能是其中一件事。
+    @State private var moveTarget: NSScreen?
+    /// 本次拖拽能不能把这个窗口交出去（分屏、或搬到另一块屏）。两件事的前提一样：
+    /// 都要写它的几何。起拖那一刻定一次，拖拽期间不会变。
     @State private var splitable = false
     /// 本次拖拽已被 Esc 取消。手势没法从外面掐断，只能记下来、松手时什么都不做。
     @State private var splitCancelled = false
@@ -443,13 +446,13 @@ struct BarContent: View {
                 // 分屏态下这一格回到原位：它已经交给屏幕上那块落点了，再跟着指针走
                 // 就成了两个东西在表示同一件事。
                 if unit == dragging {
-                    return splitSpot == nil ? CGSize(width: dragOffset, height: 0) : .zero
+                    return handedOff ? .zero : CGSize(width: dragOffset, height: 0)
                 }
                 return CGSize(width: displacement(of: unit), height: 0)
             },
-            lifted: { $0 == dragging && splitSpot == nil },
+            lifted: { $0 == dragging && !handedOff },
             merging: { $0 == mergeTarget },
-            placing: { $0 == dragging && splitSpot != nil },
+            placing: { $0 == dragging && handedOff },
             changed: { unit, translation in
                 guard !splitCancelled else { return }
                 // 手势的最小距离是 0，为的是拿到「按下」；没走出 dragThreshold
@@ -472,7 +475,8 @@ struct BarContent: View {
                 dragOffset = translation.width
                 // 提出条的上沿即转入分屏。此时既不重排也不捏合——落点在屏幕上，
                 // 条上的次序一个字都没改。
-                guard !aimSplit(unit) else {
+                guard !aimDrag(unit) else {
+                    // 分屏与搬屏都不动条上的次序，让位与捏合的反馈一并撤掉。
                     mergeTarget = nil
                     dropBefore = nil
                     return
@@ -487,10 +491,12 @@ struct BarContent: View {
                 pressedItem = nil
                 let spot = splitSpot
                 let screen = splitScreen
+                let moveTo = moveTarget
                 let cancelled = splitCancelled
                 splitSpot = nil
                 splitOrigin = nil
                 splitScreen = nil
+                moveTarget = nil
                 splitable = false
                 splitCancelled = false
                 watchEscape(false)
@@ -501,6 +507,8 @@ struct BarContent: View {
                     // Esc 已经把状态收干净了，这里只负责别再做事
                 } else if let spot, let screen {
                     tile(unit, at: spot, on: screen)
+                } else if let moveTo {
+                    send(unit, to: moveTo)
                 } else if let mergeTarget {
                     model.world.formCluster(unit, into: mergeTarget)
                 } else {
@@ -519,29 +527,37 @@ struct BarContent: View {
     // 它做得到系统做不到的事——压在别人底下、已经最小化的窗口，一个手势就贴过去，
     // 不必先把它翻出来。
 
-    /// 这一次拖拽能不能分屏。
+    /// 这一次拖拽能不能把窗口交出去（分屏或搬屏）。
     private func canSplit(_ unit: DragUnit) -> Bool {
         // 簇与没有窗口的槽位不参与：一个簇往哪半边贴是歧义的。
         guard case .window(let id) = unit,
               let window = world.windows.first(where: { $0.id == id }) else { return false }
         guard splitOrigin != nil else {
             // 正在被拖的格子一定在条上，量不到它只可能是几何上报断了。
-            Timeline.log("⚠️ 分屏取不到 wid \(id) 那一格在屏幕上的位置，本次拖拽不能分屏")
+            Timeline.log("⚠️ 取不到 wid \(id) 那一格在屏幕上的位置，本次拖拽只能重排")
             return false
         }
-        // 摆位要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有引用。
-        // 这时要么先把它迁过来（计划书 §5 第 1.5 层），要么干脆不上膛——宁可提上去
-        // 没有反应，也不要把用户甩到另一个桌面去、还什么都没摆成。
+        // 分屏与搬屏都要写窗口的几何，写几何要有 AX 引用，而别的 Space 上的窗口没有
+        // 引用。这时要么先把它迁过来（计划书 §5 第 1.5 层），要么这次拖拽就只能重排——
+        // 宁可提上去没有反应，也不要把用户甩到另一个桌面去、还什么都没摆成。
         guard window.element != nil || SpaceMove.available else {
-            Timeline.log("分屏不可用 wid \(id) \(window.appName)：窗口在其他 Space，"
+            Timeline.log("本次拖拽只能重排 wid \(id) \(window.appName)：窗口在其他 Space，"
                          + "而迁移能力不可用（缺 \(SpaceMove.missing.joined(separator: ", "))）")
             return false
         }
         return true
     }
 
-    /// 更新落点，返回是否处于分屏态。
-    private func aimSplit(_ unit: DragUnit) -> Bool {
+    /// 这次拖拽此刻是什么意思：重排、分屏、还是搬到另一块屏。返回 true = 不是重排。
+    ///
+    /// 三者共用同一个判据来源——**指针此刻压着哪块屏、抬得多高**：
+    ///
+    ///   · 抬到条的上沿以上 → 分屏，贴那块屏的某一半（**改尺寸**）
+    ///   · 没抬起来、压在**别的**屏的条上 → 搬到那块屏（**尺寸不变**）
+    ///   · 没抬起来、压在自己这条上 → 普通重排
+    ///
+    /// 「你正压着哪条 bar，就是在动哪块屏」，这条读得出来，也不必再造第二套判据。
+    private func aimDrag(_ unit: DragUnit) -> Bool {
         guard splitable, case .window(let id) = unit,
               let window = world.windows.first(where: { $0.id == id }),
               let origin = splitOrigin else { return false }
@@ -552,16 +568,13 @@ struct BarContent: View {
         // 判据是指针离条的上沿多高，不是手势拖了多远：抓在格子的哪个位置、条有多高
         // 都不该影响「提出去了没有」这件事。
         let lift = pointer.y - (screen.frame.minY + BarMetrics.reservedBottom)
-        if splitSpot == nil {
-            guard lift >= Self.splitArm else { return false }
-            watchEscape(true)
-        } else if lift < Self.splitDisarm {
-            splitSpot = nil
-            splitScreen = nil
-            watchEscape(false)
-            world.splitPreview.cancel()
-            return false
+        let armed = splitSpot == nil ? lift >= Self.splitArm : lift >= Self.splitDisarm
+        guard armed else {
+            clearSplit()
+            return aimMove(window, from: origin, on: screen)
         }
+        clearMove()
+        watchEscape(true)
         let middle = screen.frame.midX
         let spot: Maximizer.Spot
         switch splitSpot {
@@ -578,6 +591,53 @@ struct BarContent: View {
                                icon: world.icon(pid: window.pid),
                                title: window.title.isEmpty ? window.appName : window.title)
         return true
+    }
+
+    /// 压在别的屏的条上 = 搬过去。预览显示的就是它**真正会落到的那个矩形**
+    /// （`World.landing`，与写下去的是同一个函数）——尺寸不变，因此一眼就和分屏分得开：
+    /// 那边是半块屏，这边是它自己的形状。
+    private func aimMove(_ window: IndexedWindow, from origin: CGRect, on screen: NSScreen) -> Bool {
+        guard let display = displayID(screen), display != model.display else {
+            clearMove()
+            return false
+        }
+        // 跨 Space 的窗口读不到自己的几何，也就画不出落点。它仍然搬得动（松手时会先迁
+        // 过来），但预览给不出来——没有可信的图就不画，不拿一个编的矩形冒充。
+        guard let goal = world.landing(window, on: screen) else {
+            clearMove()
+            return false
+        }
+        moveTarget = screen
+        watchEscape(true)
+        world.splitPreview.aim(at: goal, on: screen, from: origin,
+                               icon: world.icon(pid: window.pid),
+                               title: window.title.isEmpty ? window.appName : window.title)
+        return true
+    }
+
+    private func clearSplit() {
+        guard splitSpot != nil else { return }
+        splitSpot = nil
+        splitScreen = nil
+        watchEscape(false)
+        world.splitPreview.cancel()
+    }
+
+    private func clearMove() {
+        guard moveTarget != nil else { return }
+        moveTarget = nil
+        watchEscape(false)
+        world.splitPreview.cancel()
+    }
+
+    /// 这一格已经交给屏幕上那块玻璃了——分屏或搬屏。此时它留在条上的原位、压暗成占位。
+    private var handedOff: Bool { splitSpot != nil || moveTarget != nil }
+
+    private func send(_ unit: DragUnit, to screen: NSScreen) {
+        guard case .window(let id) = unit,
+              let window = world.windows.first(where: { $0.id == id }),
+              let display = displayID(screen) else { return }
+        world.send(window, to: display, why: "拖到别的屏")
     }
 
     private func tile(_ unit: DragUnit, at spot: Maximizer.Spot, on screen: NSScreen) {
@@ -608,6 +668,7 @@ struct BarContent: View {
             splitSpot = nil
             splitOrigin = nil
             splitScreen = nil
+            moveTarget = nil
             dragging = nil
             dragOffset = 0
             dropBefore = nil
@@ -669,7 +730,7 @@ struct BarContent: View {
     private func displacement(of unit: DragUnit) -> CGFloat {
         // 判定为捏合时谁都不让位：让位是「要插到这儿」的反馈，与捏合无关。
         // 分屏同理，而且更要紧：那一格根本没离开条上的位置。
-        guard mergeTarget == nil, splitSpot == nil else { return 0 }
+        guard mergeTarget == nil, splitSpot == nil, moveTarget == nil else { return 0 }
         guard let moving = dragging, moving != unit,
               let width = unitFrames[moving]?.width else { return 0 }
         let units = dragUnits

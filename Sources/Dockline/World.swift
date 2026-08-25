@@ -159,6 +159,30 @@ final class World: ObservableObject {
         lastDisplay[app] ?? mainDisplay
     }
 
+    /// 搬过去之后它会落在哪儿。AppKit 坐标系，nil = 读不到它现在的几何。
+    ///
+    /// **预览与写入读同一个函数**：拖格子拖到另一块屏时，浮起来的那块玻璃显示的就是
+    /// 这个矩形。各算一遍的话，看到的和落下去的迟早会不一样（分屏那边已经栽过一次）。
+    func landing(_ window: IndexedWindow, on target: NSScreen) -> CGRect? {
+        guard let element = window.element else { return nil }
+        return try? landing(element, on: target)
+    }
+
+    private func landing(_ element: AXUIElement, on target: NSScreen) throws -> CGRect? {
+        let area = target.visibleFrame
+        let from = try screen(of: element).visibleFrame
+        guard let rect = axRect(element) else { return nil }
+        let frame = flipY(rect)
+        let ratio = CGPoint(x: from.width > 0 ? (frame.minX - from.minX) / from.width : 0,
+                            y: from.height > 0 ? (frame.minY - from.minY) / from.height : 0)
+        let size = CGSize(width: min(frame.width, area.width),
+                          height: min(frame.height, area.height))
+        let origin = CGPoint(
+            x: min(max(area.minX + ratio.x * area.width, area.minX), area.maxX - size.width),
+            y: min(max(area.minY + ratio.y * area.height, area.minY), area.maxY - size.height))
+        return CGRect(origin: origin, size: size)
+    }
+
     /// 把一个窗口搬到另一块屏（计划书 §6 M5「移到此显示器」）。
     ///
     /// 尺寸照旧，位置按它在原屏可见区域里的相对位置落下去，装不下就夹进目标的可见区域。
@@ -174,18 +198,8 @@ final class World: ObservableObject {
             return
         }
         do {
-            let area = target.visibleFrame
-            let from = try screen(of: element).visibleFrame
-            guard let rect = axRect(element) else { throw FillError.noGeometry }
-            let frame = flipY(rect)
-            let ratio = CGPoint(x: from.width > 0 ? (frame.minX - from.minX) / from.width : 0,
-                                y: from.height > 0 ? (frame.minY - from.minY) / from.height : 0)
-            let size = CGSize(width: min(frame.width, area.width),
-                              height: min(frame.height, area.height))
-            let origin = CGPoint(
-                x: min(max(area.minX + ratio.x * area.width, area.minX), area.maxX - size.width),
-                y: min(max(area.minY + ratio.y * area.height, area.minY), area.maxY - size.height))
-            let outcome = try setFrame(element, to: flipY(CGRect(origin: origin, size: size)))
+            guard let goal = try landing(element, on: target) else { throw FillError.noGeometry }
+            let outcome = try setFrame(element, to: flipY(goal))
             if outcome.fits {
                 Timeline.log("移到屏 \(display)  wid \(window.id) \(window.appName)")
             } else {
@@ -1127,10 +1141,23 @@ final class World: ObservableObject {
             Timeline.log("⚠️ 拿到本屏跳过 \(app.name)：它此刻一个窗口都没有")
             return
         }
-        // 别的 Space 上的窗口先迁过来——挪位置和摆位一样要写它的几何，同样要 AX 引用。
-        reach(window, on: display, why: "拿到本屏") { [weak self] element in
-            guard let self, let element else { return }
-            // 先召回：最小化的窗口挪不动，它得先从最小化里出来。
+        send(window, to: display, why: "拿到本屏")
+    }
+
+    /// 把这扇窗口搬到某块屏，并叫到前台。
+    ///
+    /// 三个入口共用：拖格子拖到另一块屏的条上、点那个空心圈的槽位、右键「移到显示器」。
+    /// 合成一处是因为它们要处理的边界完全一样——别的 Space 上的窗口没有 AX 引用，
+    /// 而挪位置和摆位一样要写它的几何；最小化的窗口挪不动，得先从最小化里出来。
+    /// 分开写就会像以前那样，只有其中一条记得处理。
+    func send(_ window: IndexedWindow, to display: CGDirectDisplayID, why: String = "移到显示器") {
+        reach(window, on: display, why: why) { [weak self] element in
+            guard let self else { return }
+            // 拖过去的那条会挂着落点预览，要等窗口真的到位再让它化开——跨 Space 的窗口
+            // 中间还有一次迁移，早化开就会露出「预览没了、窗口还没动」那一段。
+            // 没有预览时这一句是空操作，另外两个入口因此不必各自判一遍。
+            defer { splitPreview.dissolve() }
+            guard let element else { return }
             recall(window)
             noteActivated(window.id)
             move(window, to: display, using: element)
