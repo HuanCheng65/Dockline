@@ -57,14 +57,33 @@ final class Maximizer {
 
     /// 贴到某个落点。**不做开关**：用户把格子丢到左半边，意思就是「贴到左半边」，
     /// 哪怕它已经在那儿。拖格子分屏走这条。
-    func place(_ window: IndexedWindow, at spot: Spot) {
-        with(window) { apply(element: $0, name: window.appName, spot: spot, toggling: false) }
+    ///
+    /// **目标屏由调用点给，不在这里按窗口的几何去推。** 拖格子分屏问的是「指针指着
+    /// 哪块屏的哪一半」，而窗口此刻可能还在另一块屏上；两边各推一次，预览飞到了 B 屏、
+    /// 窗口却贴在 A 屏——实机撞到过。
+    func place(_ window: IndexedWindow, at spot: Spot, on display: NSScreen) {
+        guard let element = window.element else {
+            Timeline.log("⚠️ 平铺跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
+            return
+        }
+        apply(element: element, name: window.appName, spot: spot, on: display, toggling: false)
     }
 
     /// 贴到某个落点，已经贴合就还原。右键菜单里那一排落点与快捷键走这条——
     /// 同一个记号既是「去那儿」也是「回来」，用户不必再找一个「还原」。
+    ///
+    /// 这条不给屏：菜单作用在窗口自己身上，没有「指针指着哪块屏」这回事，
+    /// 目标就是它现在所在的那块屏。
     func toggle(_ window: IndexedWindow, at spot: Spot) {
-        with(window) { apply(element: $0, name: window.appName, spot: spot, toggling: true) }
+        guard let element = window.element else {
+            Timeline.log("⚠️ 平铺跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
+            return
+        }
+        guard let display = try? screen(of: element) else {
+            Timeline.log("⚠️ 平铺跳过 wid \(window.id)：判不出它在哪块屏上")
+            return
+        }
+        apply(element: element, name: window.appName, spot: spot, on: display, toggling: true)
     }
 
     /// 这个窗口此刻正贴在哪个落点上。都不贴合返回 nil。菜单里那一排图形据此显示选中态。
@@ -85,28 +104,25 @@ final class Maximizer {
             Timeline.log("⚠️ 铺满跳过：\(app.localizedName ?? "?") 当前没有焦点窗口")
             return
         }
-        apply(element: focused as! AXUIElement, name: app.localizedName ?? "?",
-              spot: .fill, toggling: true)
-    }
-
-    private func with(_ window: IndexedWindow, _ body: (AXUIElement) -> Void) {
-        guard let element = window.element else {
-            Timeline.log("⚠️ 平铺跳过 wid \(window.id)：窗口在其他 Space，尚无 AX 引用")
+        let element = focused as! AXUIElement
+        guard let display = try? screen(of: element) else {
+            Timeline.log("⚠️ 铺满跳过：判不出焦点窗口在哪块屏上")
             return
         }
-        body(element)
+        apply(element: element, name: app.localizedName ?? "?",
+              spot: .fill, on: display, toggling: true)
     }
 
     /// 判据是当前几何是否已经贴合目标——不记开关状态。用户中途手动挪动过窗口，
     /// 下一次触发就该是重新贴过去，而不是还原到更早的位置。
-    private func apply(element: AXUIElement, name: String, spot: Spot, toggling: Bool) {
+    private func apply(element: AXUIElement, name: String, spot: Spot,
+                       on display: NSScreen, toggling: Bool) {
         let (wid, widError) = windowID(of: element)
         guard let wid else {
             Timeline.log("⚠️ 平铺跳过 \(name)：取不到窗口号（AXError \(widError.rawValue)）")
             return
         }
         do {
-            let display = try screen(of: element)
             let goal = flipY(rect(spot, on: display))
             guard let current = axRect(element) else { throw FillError.noGeometry }
             if toggling, matchesFrame(current, goal),

@@ -751,10 +751,11 @@ final class World: ObservableObject {
         maximizer.toggle(window, at: spot)
     }
 
-    func tile(_ window: IndexedWindow, at spot: Maximizer.Spot) {
+    /// **目标屏由手势给**——指针指着哪块屏，就贴那块屏的那一半；窗口此刻在哪块屏与此无关。
+    func tile(_ window: IndexedWindow, at spot: Maximizer.Spot, on display: NSScreen) {
         recall(window)
         noteActivated(window.id)
-        maximizer.place(window, at: spot)
+        maximizer.place(window, at: spot, on: display)
         splitPreview.dissolve()
     }
 

@@ -57,6 +57,8 @@ struct BarContent: View {
     @State private var splitSpot: Maximizer.Spot?
     /// 落点是从这一格长出来的，取消时也缩回这里。屏幕坐标。
     @State private var splitOrigin: CGRect?
+    /// 落点在哪块屏上——指针所在的那块。松手时要拿它去摆位，不能让摆位那边再推一次。
+    @State private var splitScreen: NSScreen?
     /// 本次拖拽能不能分屏。起拖那一刻定一次，拖拽期间不会变。
     @State private var splitable = false
     /// 本次拖拽已被 Esc 取消。手势没法从外面掐断，只能记下来、松手时什么都不做。
@@ -469,9 +471,11 @@ struct BarContent: View {
             ended: { unit in
                 pressedItem = nil
                 let spot = splitSpot
+                let screen = splitScreen
                 let cancelled = splitCancelled
                 splitSpot = nil
                 splitOrigin = nil
+                splitScreen = nil
                 splitable = false
                 splitCancelled = false
                 watchEscape(false)
@@ -480,8 +484,8 @@ struct BarContent: View {
                 guard dragging != nil else { return }
                 if cancelled {
                     // Esc 已经把状态收干净了，这里只负责别再做事
-                } else if let spot {
-                    tile(unit, at: spot)
+                } else if let spot, let screen {
+                    tile(unit, at: spot, on: screen)
                 } else if let mergeTarget {
                     model.world.formCluster(unit, into: mergeTarget)
                 } else {
@@ -537,6 +541,7 @@ struct BarContent: View {
             watchEscape(true)
         } else if lift < Self.splitDisarm {
             splitSpot = nil
+            splitScreen = nil
             watchEscape(false)
             world.splitPreview.cancel()
             return false
@@ -549,6 +554,9 @@ struct BarContent: View {
         default: spot = pointer.x < middle ? .left : .right
         }
         splitSpot = spot
+        // 落定要用的是**这块屏**，不是窗口现在所在的那块。两边各推一次的话，预览飞到了
+        // 这块屏、窗口却贴回原来那块——实机撞到过。
+        splitScreen = screen
         world.splitPreview.aim(at: world.maximizer.rect(spot, on: screen), on: screen,
                                from: origin,
                                icon: world.icon(pid: window.pid),
@@ -556,10 +564,10 @@ struct BarContent: View {
         return true
     }
 
-    private func tile(_ unit: DragUnit, at spot: Maximizer.Spot) {
+    private func tile(_ unit: DragUnit, at spot: Maximizer.Spot, on screen: NSScreen) {
         guard case .window(let id) = unit,
               let window = world.windows.first(where: { $0.id == id }) else { return }
-        world.tile(window, at: spot)
+        world.tile(window, at: spot, on: screen)
     }
 
     private func cellRect(of unit: DragUnit) -> CGRect? {
@@ -583,6 +591,7 @@ struct BarContent: View {
             splitCancelled = true
             splitSpot = nil
             splitOrigin = nil
+            splitScreen = nil
             dragging = nil
             dragOffset = 0
             dropBefore = nil
