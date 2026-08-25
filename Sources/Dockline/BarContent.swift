@@ -1067,9 +1067,11 @@ struct BarContent: View {
                     while !Task.isCancelled {
                         try? await Task.sleep(for: .seconds(1.2))
                         guard !Task.isCancelled else { return }
-                        // 大预览开着时不来抢采集：那一档自己在一轮接一轮地抓，
-                        // 而小图这一张此刻根本没人在看
-                        guard !model.peeking else { continue }
+                        // 大预览开着时也照抓。原先在这里让了路，结果是：按着空格沿条
+                        // 滑到新的一格，那一格只被大档抓过；松手时大图一丢，它连一张
+                        // 小图都没有，卡片于是塌成一个没有画面的占位，直到 1.2 秒后
+                        // 这一轮补上。**小图是大图的落地点**，不能在大图开着时饿着它。
+                        // 代价是每 1.2 秒多抓一张（约 35ms），大预览掉不到一帧。
                         thumbnails.capture(id)
                     }
                 }

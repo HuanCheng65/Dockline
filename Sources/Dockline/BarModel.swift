@@ -100,22 +100,46 @@ final class BarModel: ObservableObject {
     var onPeekRoom: ((Bool) -> Void)?
 
     private var peekRelease: DispatchWorkItem?
-    /// 收回等一下：卡片缩回小档是一段约 0.28s 的弹簧，面板先落回来会把它拦腰裁掉。
+    /// 指针已经离开条之后，还要等卡片缩完才收地方：卡片缩回小档是一段约 0.28s 的弹簧，
+    /// 面板先落回来会把它拦腰裁掉。
     private static let peekReleaseDelay: TimeInterval = 0.36
+    /// 用户此刻要不要大预览。与 `peeking` 分开：地方要先腾出来，下一轮才翻开关。
+    private var peekWanted = false
 
     func setPeekTarget(_ id: CGWindowID?) {
         peekTarget = id
     }
 
     func setPeeking(_ value: Bool) {
-        guard peeking != value else { return }
-        peeking = value
+        guard peekWanted != value else { return }
+        peekWanted = value
         peekRelease?.cancel()
         peekRelease = nil
-        guard !value else {
-            onPeekRoom?(true)
+        guard value else {
+            peeking = false
+            releasePeekRoom()
             return
         }
+        // **先腾地方，下一轮才翻开关。** 两件事挤进同一次事务的话，卡片的位置会被
+        // 「面板改高」那一下抢先拽到终点——面板高度一变，浮层在面板里的纵坐标跟着变，
+        // 而那次变化不带动画。于是只剩尺寸在动，看起来就是「先瞬移上去，再从那儿长大」。
+        // 分成两轮，改高发生在卡片还是小的时候（此时它在屏幕上的位置根本没动），
+        // 长大的那一段才是完整的一段。
+        onPeekRoom?(true)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, peekWanted else { return }
+            peeking = true
+        }
+    }
+
+    /// 收回大预览借走的那块地方。
+    ///
+    /// **指针还在条上就先不收。** 改面板高度会打断指针底下的悬停——AppKit 会重建跟踪区，
+    /// 预览卡因此退回名字档、再等一次停留才回来，看起来就是松手之后自己抽搐一下。
+    /// 那就留给浮层那块地方一起收（见 `needsFloatRoom`），那一刻指针已经离开条了。
+    /// 计划书 §3.1 已经为拖放记过同一条：面板的几何不该在指针正用着它的时候变。
+    private func releasePeekRoom() {
+        guard !floatRoomNeeded else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             peekRelease = nil
@@ -183,6 +207,8 @@ final class BarModel: ObservableObject {
     /// 浮层要不要用到条以上的空间。面板的几何归 BarPanel 管。
     var onFloatRoom: ((Bool) -> Void)?
     private var roomRelease: DispatchWorkItem?
+    /// 条上此刻还有人在用（悬停、浮层、拖拽、键盘会话）。大预览据此决定收不收地方。
+    private var floatRoomNeeded = false
     private var dwell: DispatchWorkItem?
     private var inFullscreenSpace = false
     /// event tap 为防转场闪烁而预先藏过条；Space 通知到达后要无条件校正一次可见性。
@@ -409,6 +435,7 @@ final class BarModel: ObservableObject {
     private static let roomReleaseDelay: TimeInterval = 0.4
 
     func needsFloatRoom(_ needed: Bool) {
+        floatRoomNeeded = needed
         roomRelease?.cancel()
         roomRelease = nil
         guard !needed else {
@@ -419,6 +446,9 @@ final class BarModel: ObservableObject {
             guard let self else { return }
             roomRelease = nil
             onFloatRoom?(false)
+            // 大预览借走的那块也在这一刻收。它在松手时没有收，为的是不在指针底下改
+            // 面板高度（见 `releasePeekRoom`）；此刻指针已经离开条了，收它是安全的。
+            onPeekRoom?(false)
         }
         roomRelease = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.roomReleaseDelay, execute: work)
