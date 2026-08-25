@@ -4,6 +4,7 @@ import DocklineCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let world = World()
     private lazy var bars = BarController(world: world)
+    private lazy var keyboard = KeyboardSwitch(world: world)
     private var reconcileTimer: Timer?
 
     /// 计划书 §4 通道三：CGWindowList 对账兜底，1–2 秒周期。
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         bars.start()
         world.start()
+        keyboard.start()
         tick()
 
         reconcileTimer = Timer.scheduledTimer(withTimeInterval: Self.reconcileInterval,

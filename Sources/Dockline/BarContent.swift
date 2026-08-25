@@ -57,6 +57,9 @@ struct BarContent: View {
     @State private var panelHide: DispatchWorkItem?
     /// 从面板里往外拖的窗口
     @State private var overflowAnchor: CGFloat = 0
+    /// 当前这个浮层是键盘切换开的，不是悬停开的。收的时候要认这一点：
+    /// 不能因为键盘那边没有选中项了，就把用户正悬停着的浮层一并收掉。
+    @State private var panelFromKeyboard = false
     @State private var cellAnchors: [String: CGFloat] = [:]
     @State private var panelDragging: CGWindowID?
     @State private var panelDragOffset: CGSize = .zero
@@ -105,7 +108,9 @@ struct BarContent: View {
                                 scheme: model.floatScheme,
                                 thumbnails: thumbnails,
                                 icon: { model.world.icon(for: $0) },
-                                hovered: { hoveredItem == "panel.w\($0)" },
+                                // 键盘选中的那张卡与悬停用同一套高亮：面板里此刻
+                                // 只会有一个焦点，两条来路不必长得不一样
+                                hovered: { hoveredItem == "panel.w\($0)" || model.keySelection == $0 },
                                 onHover: { id, inside in
                                     let key = "panel.w\(id)"
                                     if inside { hoveredItem = key }
@@ -167,8 +172,42 @@ struct BarContent: View {
                           || dragging != nil) { _, needed in
                 model.needsFloatRoom(needed)
             }
+            // 键盘选中的窗口收在簇、标签组或溢出区里时，把收着它的浮层打开——
+            // 选中一个看不见的格子没有意义。走的是悬停那一套 `panel` 状态，
+            // 不另起一层：同一时刻只该有一个浮层。
+            .onChange(of: model.keyPanel) { _, kind in
+                panelShow?.cancel()
+                panelShow = nil
+                keepPanel()
+                guard let kind, let anchorX = keyAnchor(kind, in: layout) else {
+                    guard panelFromKeyboard else { return }
+                    panelFromKeyboard = false
+                    panel = nil
+                    if preview == nil { model.setFloatFrame(nil) }
+                    return
+                }
+                panelFromKeyboard = true
+                panel = (kind: kind, anchorX: anchorX)
+            }
             .animation(.easeOut(duration: 0.16), value: preview)
             .animation(.spring(response: 0.30, dampingFraction: 0.78), value: panel?.kind)
+        }
+    }
+
+    /// 键盘要打开的浮层该从哪一格长出来。量到的锚点还没到（格子刚出现）时返回 nil，
+    /// 那一轮就不开浮层——条上那一格的选中环仍然指得出位置。
+    private func keyAnchor(_ kind: FloatPanel, in layout: BarLayout) -> CGFloat? {
+        switch kind {
+        case .cluster(let id):
+            return clusterAnchors[id]
+        case .overflow:
+            return overflowAnchor
+        case .tabs(let host):
+            for item in layout.items {
+                guard case .window(let cell) = item, cell.id == host else { continue }
+                return cellAnchors[item.id]
+            }
+            return nil
         }
     }
 
@@ -314,6 +353,13 @@ struct BarContent: View {
                                 RoundedRectangle(cornerRadius: layout.metrics.cellRadius,
                                                  style: .continuous)
                                     .strokeBorder(ink(scheme, 0.55, 0.42), lineWidth: 2)
+                                    .padding(BarMetrics.backingInset)
+                            } else if keySelected(item) {
+                                // 键盘切换的选中环。比拖放的那圈更实，因为它此刻是
+                                // 用户唯一的落点提示——松开 ⌥ 去的就是这里。
+                                RoundedRectangle(cornerRadius: layout.metrics.cellRadius,
+                                                 style: .continuous)
+                                    .strokeBorder(ink(scheme, 0.92, 0.78), lineWidth: 2.5)
                                     .padding(BarMetrics.backingInset)
                             }
                         }
@@ -616,6 +662,23 @@ struct BarContent: View {
     }
 
     /// 底色的取值。按下 > 悬停 > 联动，前台那一格自己是亮底，不被悬停顶掉。
+    /// 这一格是不是键盘切换此刻选中的那个窗口所在之处。
+    /// 选中的窗口若收在簇、标签组或溢出区里，高亮的是收着它的那一格，
+    /// 具体是其中哪一个由随之打开的浮层给出。
+    private func keySelected(_ item: BarItem) -> Bool {
+        guard let id = model.keySelection else { return false }
+        switch item {
+        case .window(let cell):
+            return cell.id == id || cell.tabs.contains { $0.id == id }
+        case .cluster(let cluster):
+            return cluster.windows.contains { $0.id == id }
+        case .overflow(let windows):
+            return windows.contains { $0.id == id }
+        default:
+            return false
+        }
+    }
+
     private func backing(_ id: String, key: AppKey? = nil) -> Backing {
         if pressedItem == id { return .bright }
         if hoveredItem == id { return .light }

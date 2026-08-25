@@ -680,6 +680,33 @@ final class World: ObservableObject {
     }
 
     /// 点击格子：召回。后台标签页没有 AX 元素，改按标签栏上的那一项。
+    /// 我们自己把某个窗口切到了前台。
+    ///
+    /// 前台窗口平时靠 `kAXFocusedWindowChangedNotification` 更新，那条路要经 80ms 合并、
+    /// 再加 AX 自身的延迟。键盘切换连按两次的间隔比这短，等通知回来再排序，第二次读到的
+    /// 还是上一轮的名次，于是「上一个窗口」算成刚切过去的那个，来回切换变成原地不动。
+    /// 这里不是兜底：谁在前台是我们刚刚亲自决定的，直接记下来即可。
+    func noteActivated(_ id: CGWindowID) {
+        activationClock += 1
+        lastActive[id] = activationClock
+        frontWindow = id
+    }
+
+    /// 时间序：最近用过的排在前面，第一个就是当前前台窗口。键盘切换的 Tab 走这条。
+    var recencyOrder: [IndexedWindow] {
+        windows.sorted { (lastActive[$0.id] ?? 0) > (lastActive[$1.id] ?? 0) }
+    }
+
+    /// 空间序：各条 bar 按屏幕从左到右接起来，条内按格子的排布顺序。方向键走这条。
+    /// 单屏时它就退化成「条上从左到右」。
+    var spatialOrder: [IndexedWindow] {
+        let byID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let ordered = bars.sorted { left, right in
+            (left.screenOriginX ?? 0) < (right.screenOriginX ?? 0)
+        }
+        return ordered.flatMap { $0.windowSequence }.compactMap { byID[$0] }
+    }
+
     func recall(_ window: IndexedWindow) {
         guard case .tab(let host) = window.source else {
             DocklineCore.recall(window)

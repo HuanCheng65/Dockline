@@ -39,6 +39,80 @@ final class BarModel: ObservableObject {
     /// 这条 bar 所在的屏。
     private(set) var display: CGDirectDisplayID?
 
+    // MARK: 键盘切换（计划书 §6 M6）
+    //
+    // 选中态归模型，不归视图：选中的窗口在哪块屏由窗口自己决定，切换会话却是全局一份，
+    // 视图各画各的。
+
+    /// 键盘切换当前选中的窗口。不在本屏的窗口留给拥有它的那条 bar 去画。
+    @Published private(set) var keySelection: CGWindowID?
+    /// 选中的窗口收在哪个浮层里。视图据此把浮层打开——选中一个看不见的格子没有意义。
+    @Published private(set) var keyPanel: FloatPanel?
+    /// 切换会话进行中。会话期间条无条件现身，否则自动隐藏的屏上高亮画给谁看。
+    private(set) var keySession = false
+
+    /// 这条 bar 上的窗口，按格子从左到右。簇成员与收拢的标签页都按它们在条上的次序展开。
+    /// 读的是 `barItems` 而不是 `layout()`：后者带渲染帧状态（溢出迟滞、飞回动画），
+    /// 在渲染之外调用会把那些状态搅乱。
+    var windowSequence: [CGWindowID] {
+        barItems.flatMap { item -> [CGWindowID] in
+            switch item {
+            case .window(let cell):
+                return [cell.id] + cell.tabs.map(\.id).filter { $0 != cell.id }
+            case .cluster(let cluster):
+                return cluster.windows.map(\.id)
+            default:
+                return []
+            }
+        }
+    }
+
+    /// 这条 bar 所在屏幕的左边界，用来把多块屏从左到右接起来。
+    var screenOriginX: CGFloat? {
+        NSScreen.screens.first { displayID($0) == display }?.frame.minX
+    }
+
+    func setKeySelection(_ id: CGWindowID?) {
+        keySelection = id
+        keyPanel = id.flatMap(container)
+    }
+
+    func setKeySession(_ active: Bool) {
+        guard keySession != active else { return }
+        if active {
+            keySession = true
+            // 触底唤出的停留判定要作废：条已经被键盘请出来了，那次计时回来只会把它收回去
+            dwell?.cancel()
+            dwell = nil
+            hidden = false
+            sampleBackdrop()
+        } else {
+            // 先撤选中再落幕。反过来的话视图那边看到的是「没有选中项、也没有会话」，
+            // 分不出该收的是键盘开的浮层还是用户正悬停着的那个。
+            setKeySelection(nil)
+            keySession = false
+            hidden = shouldHide
+        }
+    }
+
+    /// 选中的窗口此刻收在哪个浮层里。三处收纳互斥，按它们在条上的优先次序判。
+    private func container(of id: CGWindowID) -> FloatPanel? {
+        // 选中的窗口不在本条上就与本条无关。标签组的成员关系来自索引、是全局的，
+        // 不先挡这一道，别的屏也会为一个自己没有的窗口打开标签页面板。
+        guard windowSequence.contains(id) else { return nil }
+        if overflowed.contains(id) { return .overflow }
+        // 标签组是否收拢由上一次布局决定；成员关系本身来自索引，不是布局的产物
+        if foldedTabs, let window = world.windows.first(where: { $0.id == id }),
+           case .tab(let host) = window.source {
+            return .tabs(host)
+        }
+        for case .cluster(let cluster) in barItems
+        where cluster.windows.contains(where: { $0.id == id }) {
+            return .cluster(cluster.id)
+        }
+        return nil
+    }
+
     /// 浮层要不要用到条以上的空间。面板的几何归 BarPanel 管。
     var onFloatRoom: ((Bool) -> Void)?
     private var roomRelease: DispatchWorkItem?
@@ -208,7 +282,9 @@ final class BarModel: ObservableObject {
     /// 只在条会自己收起来的时候成立：常驻的条，指针离开底边不该把它收起来。
     /// 指针不在本屏时同样不理会——每块屏的条各自唤出。
     func pointerMoved(to point: CGPoint) {
-        guard shouldHide,
+        // 切换会话期间条是被键盘请出来的，指针挪开不该把它收回去
+        guard !keySession,
+              shouldHide,
               let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }),
               displayID(screen) == display else { return }
         let y = point.y - screen.frame.minY
