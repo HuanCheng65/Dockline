@@ -127,6 +127,33 @@ public func setFrame(_ element: AXUIElement, to target: CGRect) throws -> FillOu
     return FillOutcome(target: target, before: before, passes: passes, after: axRect(element))
 }
 
+// MARK: - 原生全屏
+
+private let fullscreenAttribute = "AXFullScreen" as CFString
+
+public func isFullscreen(_ element: AXUIElement) -> Bool? {
+    var raw: AnyObject?
+    guard AXUIElementCopyAttributeValue(element, fullscreenAttribute, &raw) == .success
+    else { return nil }
+    return raw as? Bool
+}
+
+/// 这扇窗口的全屏状态写得动吗。
+///
+/// 换屏那一串（退全屏 → 摆过去 → 重新全屏）一旦开了头，中途失败会把窗口留在
+/// 「退了全屏、还没到目的地」的半截状态。所以动手之前先问一次，写不动就一步都不做。
+public func fullscreenSettable(_ element: AXUIElement) -> Bool {
+    var settable = DarwinBoolean(false)
+    guard AXUIElementIsAttributeSettable(element, fullscreenAttribute, &settable) == .success
+    else { return false }
+    return settable.boolValue
+}
+
+@discardableResult
+public func setFullscreen(_ element: AXUIElement, _ value: Bool) -> AXError {
+    AXUIElementSetAttributeValue(element, fullscreenAttribute, value as CFTypeRef)
+}
+
 // MARK: - 最小化
 
 /// 点击当前前台窗口的格子时把它收起。

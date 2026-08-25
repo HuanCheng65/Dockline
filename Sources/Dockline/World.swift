@@ -1160,10 +1160,95 @@ final class World: ObservableObject {
             // 没有预览时这一句是空操作，另外两个入口因此不必各自判一遍。
             defer { splitPreview.dissolve() }
             guard let element else { return }
+            guard isFullscreen(element) != true else {
+                sendFullscreen(window, element: element, to: display)
+                return
+            }
             recall(window)
             noteActivated(window.id)
             move(window, to: display, using: element)
         }
+    }
+
+    /// 轮询的间隔，以及每一步等实际状态的上限。
+    /// 全屏进出各是一段系统转场，上限要盖得住最慢的那一次，不是拿来当节拍的。
+    private static let settleTick: TimeInterval = 0.04
+    private static let fullscreenLimit: TimeInterval = 3
+
+    /// 把一扇**全屏**窗口搬到另一块屏：退全屏 → 摆过去 → 重新全屏。
+    ///
+    /// macOS 自己没有这条路：全屏窗口独占一个 Space，而那个 Space 属于某一块屏；
+    /// 用户要么手动退全屏、拖过去、再全屏，要么去调度中心里拖那张缩略图。一个动作做完
+    /// 是我们能给的，代价是两段看得见的系统转场——那是这件事的真实成本，且是用户点了
+    /// 才发生的。
+    ///
+    /// **三步之间必须等实际状态，不能靠 sleep 蒙**：退全屏是一段动画，窗口会飞回全屏之前
+    /// 的位置；动画没走完就写几何，写进去的会被动画的收尾覆盖掉。摆位同理，没停稳就重新
+    /// 全屏，系统会按旧位置挑屏幕。判据都是「矩形连着两次读到一样」。
+    private func sendFullscreen(_ window: IndexedWindow, element: AXUIElement,
+                                to display: CGDirectDisplayID) {
+        guard fullscreenSettable(element) else {
+            Timeline.log("⚠️ 移到显示器放弃 wid \(window.id) \(window.appName)："
+                         + "它是全屏窗口，而这个 App 不让改 AXFullScreen")
+            report("这个窗口挪不过去",
+                   "\(window.appName) 不允许由程序改变它的全屏状态。先手动退出全屏，再移动它。")
+            return
+        }
+        let began = Date()
+        recall(window)
+        noteActivated(window.id)
+        setFullscreen(element, false)
+        awaitStable(element, also: { isFullscreen(element) == false }) { [weak self] settled in
+            guard let self else { return }
+            guard settled else {
+                // 停在这里，不往下走：窗口此刻要么还全屏着、要么退了全屏仍在原来那块屏上，
+                // 两种都是用户认得出、也能自己接手的状态。继续摆位才会摆出个半截。
+                Timeline.log("⚠️ 移到显示器中止 wid \(window.id) \(window.appName)："
+                             + "等不到它退出全屏，没有再动它")
+                return
+            }
+            move(window, to: display, using: element)
+            awaitStable(element) { placed in
+                guard placed else {
+                    Timeline.log("⚠️ 移到显示器中止 wid \(window.id) \(window.appName)："
+                                 + "退了全屏但位置一直没停稳，没有替它重新全屏")
+                    return
+                }
+                setFullscreen(element, true)
+                Timeline.log(String(format: "全屏窗口移到屏 %u  wid %u %@  用时 %.0fms",
+                                    display, window.id, window.appName,
+                                    Date().timeIntervalSince(began) * 1000))
+            }
+        }
+    }
+
+    /// 等窗口的几何停稳（可再附加一个条件）。判据是连着两次读到同一个矩形。
+    ///
+    /// 轮询而不是订阅，理由同 `awaitMigration`：窗口服务器不为这件事广播任何东西，
+    /// 而这是用户一次显式动作里的一小段，不是常驻路径。
+    private func awaitStable(_ element: AXUIElement,
+                             also ready: @escaping () -> Bool = { true },
+                             then body: @escaping (Bool) -> Void) {
+        let deadline = Date().addingTimeInterval(Self.fullscreenLimit)
+        var previous: CGRect?
+        func poll() {
+            if ready(), let now = axRect(element) {
+                if let previous, matchesFrame(previous, now) {
+                    body(true)
+                    return
+                }
+                previous = now
+            } else {
+                // 条件还不成立，之前那次读数就不能拿来比：中间隔着一段没被观察到的变化
+                previous = nil
+            }
+            guard Date() < deadline else {
+                body(false)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleTick) { poll() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleTick) { poll() }
     }
 
     /// - Parameter display: 从哪块屏的条上点的。它开出来的窗口要落在这块屏上——
