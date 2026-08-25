@@ -62,132 +62,124 @@ final class Thumbnails: ObservableObject {
     }
 }
 
-/// 名牌：条上正被关注的那一格叫什么。
+/// 浮层里那张卡。计划书 §3。
 ///
-/// 系统程序坞的悬停名牌做的是同一件事——dock 上的项目自身不带标题，关注哪一项就在它
-/// 上方报一次名字。条上按 §3.1 只有需要与兄弟区分的窗口才显示标题，单窗口的 App
-/// 那一格只有一个图标；即使显示了，那也是剥掉共同首尾段之后的片段，还压过宽度。
-/// 名牌给的是完整的那一个。
+/// 它有两档：只报名字的一档，和长出缩略图与 App 名的一档。两档是同一棵视图树的两种
+/// 尺寸，不是两个控件——两个控件之间只能互相淡入淡出，接不上。同一棵树才谈得上过渡：
+/// 浮层贴着条的上沿向上长，标题那一行原地不动，缩略图从它上方展开。
 ///
-/// 它是预览卡的前身：同一处位置，停稳之后换成带缩略图的那一层。
-struct NamePill: View {
-    let text: String
-    let scheme: ColorScheme
-
-    static let height: CGFloat = 25
-    /// 条与浮层之间留的那道缝
-    static let gap: CGFloat = 8
-
-    private static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
-    private static let maxWidth: CGFloat = 260
-    private static let pad: CGFloat = 10
-    private static let radius: CGFloat = 9
-
-    /// 宽度自己算准，理由与格子标题一样（见 `LabelWidths`）：`frame(maxWidth:)` 的
-    /// 理想宽就是上限值，短标题也会撑满一整条。
-    static func width(_ text: String) -> CGFloat {
-        let measured = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        return min(measured + pad * 2, maxWidth)
-    }
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .medium))
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .padding(.horizontal, Self.pad)
-            .frame(width: Self.width(text), height: Self.height)
-            .environment(\.colorScheme, scheme)
-            .background { DockGlass(cornerRadius: Self.radius).allowsHitTesting(false) }
-            .clipShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
-    }
-}
-
-/// 悬停预览卡。计划书 §3：标题 + App + 实时缩略图。
+/// 名字那一档就是系统程序坞悬停名牌的位置：dock 上的项目自身不带标题，关注哪一项就在
+/// 它上方报一次名字。条上按 §3.1 只有需要与兄弟区分的窗口才显示标题，单窗口的 App
+/// 那一格只有一个图标；即使显示了，那也是剥掉共同首尾段之后又压过宽度的片段。
 ///
-/// 材质与圆角跟条本体走，见下方 background。
+/// 玻璃、圆角与定位都不归它管，归浮层本身——三个阶段共用同一块。
 struct PreviewCard: View {
-    let window: IndexedWindow
-    let appName: String
-    let scheme: ColorScheme
-    let image: NSImage?
-    let unavailable: Bool
+    let title: String
+    /// nil = 只报名字那一档
+    let detail: Detail?
 
-
+    /// 长出来的那一层。窗口相关的东西全在这里，非窗口的项（固定文件夹、废纸篓、
+    /// 启动台）因此天然只有名字那一档。
+    struct Detail: Equatable {
+        let window: IndexedWindow
+        let appName: String
+        let image: NSImage?
+        let unavailable: Bool
+    }
 
     /// 卡片宽度随缩略图的比例变——固定比例的框只会让宽窗口两边留白、窄窗口上下留白。
-    /// 这两个值是上界，定位时按上界夹屏幕边缘。
-    static let width: CGFloat = 252
+    static let maxWidth: CGFloat = 252
     static let imageHeight: CGFloat = 136
     /// 太窄了标题排不开
     private static let minWidth: CGFloat = 168
+    /// 缩略图四周
+    private static let pad: CGFloat = 8
+    private static let textPad: CGFloat = 12
+    private static let textInset: CGFloat = 9
+    private static let titleFont = NSFont.systemFont(ofSize: 12.5, weight: .medium)
+    /// 标题固定占两行的高度，卡片才不会一高一矮（`WindowPanel` 里的卡片同理）
+    private static let titleHeight: CGFloat = 32
+    private static let appNameHeight: CGFloat = 14
+    /// 只报名字那一档的高度
+    static let nameHeight: CGFloat = 26
+    private static var textHeight: CGFloat {
+        textInset * 2 + titleHeight + 2 + appNameHeight
+    }
+
+    /// 缩略图的圆角与卡片同心——外圆角减去这一圈内边距，两条弧才是平行的。
+    /// 各取各的值会看出两个不相干的圆。
+    private static var innerRadius: CGFloat { BarMetrics.barRadius - pad }
 
     /// 缩略图按原比例装进上界里
-    private var imageSize: CGSize {
-        let limit = Self.width - Self.pad * 2
+    static func imageSize(_ image: NSImage?) -> CGSize {
+        let limit = maxWidth - pad * 2
         guard let image, image.size.width > 0, image.size.height > 0 else {
-            return CGSize(width: Self.minWidth - Self.pad * 2, height: 60)
+            return CGSize(width: minWidth - pad * 2, height: 60)
         }
         let ratio = image.size.width / image.size.height
-        let height = min(Self.imageHeight, limit / ratio)
+        let height = min(imageHeight, limit / ratio)
         return CGSize(width: (height * ratio).rounded(), height: height.rounded())
     }
 
-    private var cardWidth: CGFloat {
-        min(Self.width, max(Self.minWidth, imageSize.width + Self.pad * 2))
+    /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
+    static func size(title: String, detail: Detail?) -> CGSize {
+        guard let detail else {
+            let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
+            return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
+        }
+        let image = imageSize(detail.image)
+        return CGSize(width: min(maxWidth, max(minWidth, image.width + pad * 2)),
+                      height: image.height + pad * 2 + textHeight)
     }
-
-    /// 卡片外圆角与条本体一致；缩略图的圆角与它同心——外圆角减去这一圈内边距，
-    /// 两条弧才是平行的。各取各的值会看出两个不相干的圆。
-    private static let pad: CGFloat = 8
-    private var innerRadius: CGFloat { BarMetrics.barRadius - Self.pad }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            thumbnail
+            if let detail { thumbnail(detail) }
             VStack(alignment: .leading, spacing: 2) {
-                Text(window.title)
+                // 两档共用这一个 Text。换成两个，它们之间就只剩淡入淡出可做了。
+                Text(title)
                     .font(.system(size: 12.5, weight: .medium))
-                    .lineLimit(2)
-                Text(appName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .lineLimit(detail == nil ? 1 : 2)
+                    .truncationMode(.tail)
+                    .frame(height: detail == nil ? Self.nameHeight : Self.titleHeight,
+                           alignment: detail == nil ? .center : .topLeading)
+                if let detail {
+                    Text(detail.appName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(height: Self.appNameHeight, alignment: .topLeading)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
+            .padding(.horizontal, Self.textPad)
+            .padding(.vertical, detail == nil ? 0 : Self.textInset)
         }
-        .frame(width: cardWidth)
-        .environment(\.colorScheme, scheme)
-        .background { DockGlass(cornerRadius: BarMetrics.barRadius).allowsHitTesting(false) }
-        .clipShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius, style: .continuous))
     }
 
-    @ViewBuilder
-    private var thumbnail: some View {
-        ZStack {
-            if let image {
+    private func thumbnail(_ detail: Detail) -> some View {
+        let size = Self.imageSize(detail.image)
+        return ZStack {
+            if let image = detail.image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
             } else {
-                Text(unavailable ? placeholder : "")
+                Text(detail.unavailable
+                     ? (detail.window.minimized ? "窗口已最小化，暂时无法预览"
+                                                : "此窗口暂时无法预览")
+                     : "")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 16)
             }
         }
-        .frame(width: imageSize.width, height: imageSize.height)
-        .clipShape(RoundedRectangle(cornerRadius: innerRadius, style: .continuous))
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: Self.innerRadius, style: .continuous))
         .background(.quaternary,
-                    in: RoundedRectangle(cornerRadius: innerRadius, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: Self.innerRadius, style: .continuous))
         .padding(Self.pad)
         .frame(maxWidth: .infinity)
-    }
-
-    private var placeholder: String {
-        window.minimized ? "窗口已最小化，暂时无法预览" : "此窗口暂时无法预览"
     }
 }
 
@@ -210,8 +202,6 @@ struct WindowPanel: View {
     let color: ClusterColor?
     /// 可用宽度。成员数是无界的（溢出区尤其），排不下要折行。
     let available: CGFloat
-    /// 浮层就贴在条的正上方，与条共用同一次背景采样，不再各采一次
-    let scheme: ColorScheme
     @ObservedObject var thumbnails: Thumbnails
     let icon: (BarWindow) -> NSImage?
     let hovered: (CGWindowID) -> Bool
@@ -265,13 +255,8 @@ struct WindowPanel: View {
     }
 
     var body: some View {
+        // 玻璃、圆角与定位归浮层本身，这里只出内容——三个阶段共用同一块
         panel
-            .environment(\.colorScheme, scheme)
-            .background {
-                DockGlass(cornerRadius: BarMetrics.barRadius).allowsHitTesting(false)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
-                                           style: .continuous))
         .task(id: windows.map(\.id)) {
             while !Task.isCancelled {
                 for cell in windows { thumbnails.capture(cell.id) }

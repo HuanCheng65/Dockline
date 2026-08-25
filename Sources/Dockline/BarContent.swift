@@ -100,77 +100,40 @@ struct BarContent: View {
                     .offset(y: model.hidden ? BarMetrics.barHeight + BarMetrics.bottomGap + 6 : 0)
                     .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.hidden)
                     .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
-                if let panel, !model.hidden,
-                   let content = panelContent(panel.kind, in: layout) {
-                    WindowPanel(windows: content.windows,
-                                heading: content.heading,
-                                subheading: content.subheading,
-                                color: content.color,
-                                available: geometry.size.width,
-                                scheme: model.floatScheme,
-                                thumbnails: thumbnails,
-                                icon: { model.world.icon(for: $0) },
-                                // 键盘选中的那张卡与悬停用同一套高亮：面板里此刻
-                                // 只会有一个焦点，两条来路不必长得不一样
-                                hovered: { hoveredItem == "panel.w\($0)"
-                                    || (model.keyVisible && model.keySelection == $0) },
-                                onHover: { id, inside in
-                                    let key = "panel.w\(id)"
-                                    if inside { hoveredItem = key }
-                                    else if hoveredItem == key { hoveredItem = nil }
-                                },
-                                onRecall: { model.world.recall($0) },
-                                onMenuZone: { model.setMenuZone("panel.w\($0)", $1) },
-                                metrics: layout.metrics,
-                                drag: panelDrag)
+                if let stage = floatStage(layout) {
+                    let size = floatSize(stage, in: geometry.size, layout: layout)
+                    floatContent(stage, in: layout, available: geometry.size.width)
+                        // 底边对齐：浮层贴着条的上沿往上长，长大缩小时下面这条边不动，
+                        // 名字那一行因此原地不动，缩略图从它上方展开。
+                        .frame(width: size.width, height: size.height, alignment: .bottom)
+                        .environment(\.colorScheme, model.floatScheme)
+                        .background {
+                            DockGlass(cornerRadius: BarMetrics.barRadius).allowsHitTesting(false)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
+                                                    style: .continuous))
+                        .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
+                                                       style: .continuous))
+                        // 只有一排窗口那一档是可操作的，另外两档纯是说明
+                        .allowsHitTesting(stage.isList)
                         // 量尺寸与悬停判定都必须挂在 .position 之前。`.position` 交回来的是
                         // 一个铺满可用空间的容器，挂在它后面，量到的是整块根视图、
                         // 悬停判定也变成整块根视图（面板因此收不回去，采样也采到半屏）。
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
                             action: { model.setFloatFrame($0) }
                         .onHover { $0 ? keepPanel() : dismissPanel() }
-                        // 从簇那一格的位置长出来，收回时缩回同一个点。
+                        .onDisappear { model.setFloatFrame(nil) }
+                        // 从那一格的位置长出来，收回时缩回同一个点
                         .transition(.scale(scale: 0.28,
-                                           anchor: panelAnchor(panel.anchorX, in: geometry.size))
+                                           anchor: panelAnchor(stage.anchorX, in: geometry.size))
                             .combined(with: .opacity))
-                        .position(x: floatingX(panel.anchorX, in: geometry.size.width,
-                                               half: WindowPanel.width(content.windows.count,
-                                                                       available: geometry.size.width) / 2),
+                        .position(x: floatingX(stage.anchorX, in: geometry.size.width,
+                                               half: size.width / 2),
                                   y: geometry.size.height - BarMetrics.bottomGap
-                                      - BarMetrics.barHeight - 10
-                                      - WindowPanel.height(content.windows.count,
-                                                           available: geometry.size.width) / 2)
-                }
-                if let pill = pillTarget(layout), !model.hidden {
-                    NamePill(text: pill.text, scheme: model.floatScheme)
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                        .position(x: floatingX(pill.anchorX, in: geometry.size.width,
-                                               half: NamePill.width(pill.text) / 2),
-                                  y: geometry.size.height - BarMetrics.bottomGap
-                                      - BarMetrics.barHeight - NamePill.gap
-                                      - NamePill.height / 2)
-                }
-                if let preview, !model.hidden {
-                    PreviewCard(window: preview.window,
-                                appName: preview.appName,
-                                scheme: model.floatScheme,
-                                image: thumbnails.images[preview.window.id],
-                                unavailable: thumbnails.unavailable.contains(preview.window.id))
-                        // 同上：量尺寸必须在 .position 之前
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
-                            action: { model.setFloatFrame($0) }
-                        .position(x: previewX(preview.anchorX, in: geometry.size.width),
-                                  y: previewY(in: geometry.size.height))
-                        .transition(.opacity.combined(with: .offset(y: 6)))
-                        .allowsHitTesting(false)
-                        .task(id: preview.window.id) {
-                            while !Task.isCancelled {
-                                try? await Task.sleep(for: .seconds(1.2))
-                                guard !Task.isCancelled else { return }
-                                thumbnails.capture(preview.window.id)
-                            }
-                        }
+                                      - BarMetrics.barHeight - Self.floatGap - size.height / 2)
+                        // 动效挂在浮层自己身上，不挂在整棵树上：挂在外面的话，
+                        // 悬停与键盘在同一次事务里都变了时，两条 .animation 会互相打架。
+                        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: stage)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -197,7 +160,6 @@ struct BarContent: View {
                     guard panelFromKeyboard else { return }
                     panelFromKeyboard = false
                     panel = nil
-                    if preview == nil { model.setFloatFrame(nil) }
                     return
                 }
                 panelFromKeyboard = true
@@ -210,7 +172,6 @@ struct BarContent: View {
             .onChange(of: model.keyVisible) { _, _ in syncKeyPreview(layout) }
             // 名牌与选中底色换一格都是滑过去，不是这边灭那边亮——
             // 一块东西在移动读起来是连续的，十块各自明灭读起来是抽搐
-            .animation(.spring(response: 0.26, dampingFraction: 0.88), value: hoveredItem)
             .animation(.spring(response: 0.26, dampingFraction: 0.88), value: model.keySelection)
             .animation(.easeOut(duration: 0.14), value: model.keyVisible)
             .animation(.easeOut(duration: 0.16), value: preview)
@@ -255,10 +216,6 @@ struct BarContent: View {
         min(max(anchor, half + 12), width - half - 12)
     }
 
-    private func previewX(_ anchor: CGFloat, in width: CGFloat) -> CGFloat {
-        floatingX(anchor, in: width, half: PreviewCard.width / 2)
-    }
-
     // MARK: 簇的面板
     //
     // 面板浮在条的上方，而不是原地把条撑开：原地展开会把右边的项全推走，
@@ -284,7 +241,6 @@ struct BarContent: View {
         panelShow?.cancel()
         panelShow = nil
         panel = panel?.kind == .overflow ? nil : (kind: .overflow, anchorX: anchorX)
-        if panel == nil, preview == nil { model.setFloatFrame(nil) }
     }
 
     /// 面板里要显示什么。
@@ -312,10 +268,7 @@ struct BarContent: View {
         panelShow = nil
         guard panelDragging == nil else { return }
         panelHide?.cancel()
-        let work = DispatchWorkItem {
-            panel = nil
-            if preview == nil { model.setFloatFrame(nil) }
-        }
+        let work = DispatchWorkItem { panel = nil }
         panelHide = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
     }
@@ -323,13 +276,6 @@ struct BarContent: View {
     private func keepPanel() {
         panelHide?.cancel()
         panelHide = nil
-    }
-
-    /// 预览卡浮在条的上方。两个浮层不会打架：簇的成员只出现在面板里，
-    /// 而面板自带缩略图，不再另开预览卡。
-    private func previewY(in height: CGFloat) -> CGFloat {
-        let card = PreviewCard.imageHeight + 66
-        return height - BarMetrics.bottomGap - BarMetrics.barHeight - 10 - card / 2
     }
 
     // MARK: 悬停预览
@@ -341,7 +287,6 @@ struct BarContent: View {
             previewDwell?.cancel()
             previewDwell = nil
             preview = nil
-            if panel == nil { model.setFloatFrame(nil) }
             return
         }
         hoveredCell = id
@@ -698,6 +643,109 @@ struct BarContent: View {
     }
 
     /// 底色的取值。按下 > 悬停 > 联动，前台那一格自己是亮底，不被悬停顶掉。
+    // MARK: 浮层
+    //
+    // 条上方只有一块浮层，三档形态是它的三种尺寸，不是三个控件：
+    //   ① 名字（只报一格叫什么）→ ② 预览卡（加缩略图与 App 名）→ ③ 一排窗口（簇 / 标签组 / 溢出）
+    // 因此它们共用一块玻璃、一个圆角、一条底边、一套进出动效。档与档之间是这块东西
+    // 自己长大或缩小——三个控件之间只能互相淡入淡出，那是接不上的。
+    //
+    // 尺寸必须由这里算准、驱动到 `.frame` 上，不能交给排版去撑：交给排版的话，
+    // 尺寸只在布局完成后才知道，动画拿不到起止值，也就没有过渡可言。
+
+    /// 条与浮层之间那道缝。三档共用一个值——各留各的，换档时浮层会上下跳一下。
+    private static let floatGap: CGFloat = 9
+
+    private struct FloatStage: Equatable {
+        enum Kind: Equatable {
+            case name(String)
+            case preview(PreviewTarget)
+            case list(FloatPanel)
+        }
+        let kind: Kind
+        /// 从条上哪一格长出来
+        let anchorX: CGFloat
+
+        var isList: Bool { if case .list = kind { return true } else { return false } }
+    }
+
+    /// 此刻该显示哪一档。三档互斥，按信息量从多到少挑。
+    private func floatStage(_ layout: BarLayout) -> FloatStage? {
+        guard !model.hidden else { return nil }
+        if let panel, let content = panelContent(panel.kind, in: layout), !content.windows.isEmpty {
+            return FloatStage(kind: .list(panel.kind), anchorX: panel.anchorX)
+        }
+        if let preview {
+            return FloatStage(kind: .preview(preview), anchorX: preview.anchorX)
+        }
+        if let pill = pillTarget(layout) {
+            return FloatStage(kind: .name(pill.text), anchorX: pill.anchorX)
+        }
+        return nil
+    }
+
+    private func floatSize(_ stage: FloatStage, in size: CGSize, layout: BarLayout) -> CGSize {
+        switch stage.kind {
+        case .name(let text):
+            return PreviewCard.size(title: text, detail: nil)
+        case .preview(let target):
+            return PreviewCard.size(title: target.window.title, detail: detail(of: target))
+        case .list(let kind):
+            guard let content = panelContent(kind, in: layout) else { return .zero }
+            return CGSize(width: WindowPanel.width(content.windows.count, available: size.width),
+                          height: WindowPanel.height(content.windows.count, available: size.width))
+        }
+    }
+
+    private func detail(of target: PreviewTarget) -> PreviewCard.Detail {
+        PreviewCard.Detail(window: target.window,
+                           appName: target.appName,
+                           image: thumbnails.images[target.window.id],
+                           unavailable: thumbnails.unavailable.contains(target.window.id))
+    }
+
+    @ViewBuilder
+    private func floatContent(_ stage: FloatStage, in layout: BarLayout,
+                              available: CGFloat) -> some View {
+        switch stage.kind {
+        case .name(let text):
+            PreviewCard(title: text, detail: nil)
+        case .preview(let target):
+            PreviewCard(title: target.window.title, detail: detail(of: target))
+                // 缩略图的刷新跟着这一档走，换档时随视图一起注销
+                .task(id: target.window.id) {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(1.2))
+                        guard !Task.isCancelled else { return }
+                        thumbnails.capture(target.window.id)
+                    }
+                }
+        case .list(let kind):
+            if let content = panelContent(kind, in: layout) {
+                WindowPanel(windows: content.windows,
+                            heading: content.heading,
+                            subheading: content.subheading,
+                            color: content.color,
+                            available: available,
+                            thumbnails: thumbnails,
+                            icon: { model.world.icon(for: $0) },
+                            // 键盘选中的那张卡与悬停用同一套高亮：面板里此刻只会有
+                            // 一个焦点，两条来路不必长得不一样
+                            hovered: { hoveredItem == "panel.w\($0)"
+                                || (model.keyVisible && model.keySelection == $0) },
+                            onHover: { id, inside in
+                                let key = "panel.w\(id)"
+                                if inside { hoveredItem = key }
+                                else if hoveredItem == key { hoveredItem = nil }
+                            },
+                            onRecall: { model.world.recall($0) },
+                            onMenuZone: { model.setMenuZone("panel.w\($0)", $1) },
+                            metrics: layout.metrics,
+                            drag: panelDrag)
+            }
+        }
+    }
+
     /// 键盘选中的那个窗口该不该长出预览卡。收在浮层里的不长——浮层的卡片自带缩略图。
     private func syncKeyPreview(_ layout: BarLayout) {
         guard model.keyVisible, let id = model.keySelection, model.keyPanel == nil,
@@ -715,9 +763,7 @@ struct BarContent: View {
 
     /// 名牌此刻该报谁的名字。nil = 不出名牌。
     private func pillTarget(_ layout: BarLayout) -> (text: String, anchorX: CGFloat)? {
-        // 浮层与预览卡自己就带着标题，名牌该退场——同一处位置不摆两层信息。
-        // 悬停停稳后卡片长出来，名牌交班给它。
-        guard panel == nil, preview == nil else { return nil }
+        // 让不让位给信息更多的那两档，由 `floatStage` 统一定，这里只管报名字。
         // 键盘会话优先。指针可能停在某处一动不动，那不是用户此刻的注意力所在。
         if model.keyVisible {
             guard let item = layout.items.first(where: { keySelected($0) }),
