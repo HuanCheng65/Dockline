@@ -615,6 +615,32 @@ case "events":
     commandEvents(from: first, to: last, seconds: seconds)
 case "mc":
     commandMissionControl(seconds: arguments.dropFirst().first.flatMap(Double.init) ?? 30)
+case "spaces":
+    var watch: Double?
+    var hz: Double = 60
+    var wids: [CGWindowID] = []
+    var rest = Array(arguments.dropFirst())
+    while let flag = rest.first {
+        rest.removeFirst()
+        guard let value = rest.first.flatMap(Double.init) else {
+            FileHandle.standardError.write("用法: docklinespike spaces [--wid n]… [--watch 秒] [--hz N]\n".data(using: .utf8)!)
+            exit(1)
+        }
+        rest.removeFirst()
+        switch flag {
+        case "--watch": watch = value
+        case "--hz": hz = value
+        case "--wid": wids.append(CGWindowID(value))
+        default:
+            FileHandle.standardError.write("spaces: 无法识别的选项 \(flag)\n".data(using: .utf8)!)
+            exit(1)
+        }
+    }
+    if let watch {
+        commandSpacesWatch(seconds: watch, hz: hz, extraWIDs: wids)
+    } else {
+        commandSpaces(extraWIDs: wids)
+    }
 case "keytap":
     let rest = Array(arguments.dropFirst())
     commandKeyTap(seconds: rest.first.flatMap(Double.init) ?? 60,
@@ -645,5 +671,6 @@ case "raise", "fill":
     arguments[0] == "raise" ? commandRaise(wid) : commandFill(wid)
 default:
     print("用法: docklinespike [list | index | bench | events [起 止 秒] | keytap [秒] [--stall]"
+          + " | spaces [--wid n]… [--watch 秒] [--hz N]"
           + " | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
 }

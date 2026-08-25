@@ -122,4 +122,79 @@ public enum SkyLight {
         guard let result = fn(cid, 0x7, [wid] as CFArray) else { return nil }
         return (result.takeRetainedValue() as? [NSNumber])?.map { $0.uint64Value }
     }
+
+    // MARK: - 诊断专用（只读，不计入启动自检）
+    //
+    // 这一组只有 `docklinespike spaces` 在用，App 的运行路径一次也不碰，所以**不进**
+    // `missingSymbols`。那份清单的语义是「缺了就得关掉 App 的某个功能」；把诊断符号混进去，
+    // 会让一个只影响诊断命令的系统改动在 App 启动时报成功能故障。缺失时各自返回 nil，
+    // 由诊断命令自己报出来。
+    //
+    // 全是 Get / Copy 族。窗口 tag 的写操作（`SLSSetWindowTags`）刻意不封装：
+    // 要不要写、写哪几位，正是这个诊断要回答的问题，答案出来之前不给出这个口子。
+
+    private typealias GetWindowTagsFn =
+        @convention(c) (Int32, CGWindowID, UnsafeMutablePointer<UInt64>, Int32) -> Int32
+    private typealias GetWindowLevelFn =
+        @convention(c) (Int32, CGWindowID, UnsafeMutablePointer<Int32>) -> Int32
+    /// 原型由反汇编定：`CGAffineTransform SLSSpaceGetTransform(int cid, uint64_t space, int *options)`。
+    /// 第三个参数不能省——省掉它，x2 里上一次调用留下的残留值会被当作 `options` 出参写进去，
+    /// 崩在 `SLSWindowServerClientSpaceGetTransform` 里，地址随残留值变；两参数版本偶尔
+    /// 跑得通，纯粹是那个寄存器恰好指着一段可写内存。`options` 可以传 nil（函数里查了空）。
+    private typealias SpaceGetTransformFn =
+        @convention(c) (Int32, UInt64, UnsafeMutablePointer<Int32>?) -> CGAffineTransform
+
+    private static let getWindowTags = sym("SLSGetWindowTags", as: GetWindowTagsFn.self)
+    private static let getWindowLevel = sym("SLSGetWindowLevel", as: GetWindowLevelFn.self)
+    private static let spaceGetTransform = sym("SLSSpaceGetTransform", as: SpaceGetTransformFn.self)
+
+    /// 窗口服务器给这个窗口记的 tag 位。跨连接可读——别人家的窗口（程序坞、菜单栏）
+    /// 一样问得出来，诊断要的正是这一点。
+    ///
+    /// 第四个参数是位宽，取 64；此时出参是一个 uint64。多备一个字的余量是因为这个符号
+    /// 没有公开原型，位宽语义万一是「两个 32 位字」也不会写出界。
+    public static func windowTags(of wid: CGWindowID) -> UInt64? {
+        guard let cid = connection, let fn = getWindowTags else { return nil }
+        var buffer: (UInt64, UInt64) = (0, 0)
+        let err = withUnsafeMutablePointer(to: &buffer) {
+            $0.withMemoryRebound(to: UInt64.self, capacity: 2) { fn(cid, wid, $0, 64) }
+        }
+        return err == 0 ? buffer.0 : nil
+    }
+
+    /// 窗口服务器记的 level。与 `kCGWindowLayer` 通常一致，两个都打出来是为了在不一致时看得见。
+    public static func windowLevel(of wid: CGWindowID) -> Int32? {
+        guard let cid = connection, let fn = getWindowLevel else { return nil }
+        var level: Int32 = 0
+        return fn(cid, wid, &level) == 0 ? level : nil
+    }
+
+    /// 某个 Space 当前的仿射变换，附带那个含义未知的 `options` 出参。
+    /// 转场期间窗口服务器把整个 Space 横向推走，位移落在 tx 上。
+    ///
+    /// 函数开头先问 `SLSWindowManagementClientOperationsEnabled()`：为真走「问窗口管理器
+    /// 要一个对象、再取它的 affineTransform」，为假直接转给 `SLSWindowServerClientSpaceGetTransform`。
+    /// 两条路读到的未必是同一个东西——读数不合预期时，这道闸是首先要排除的嫌疑。
+    public static func spaceTransform(of space: UInt64) -> (transform: CGAffineTransform, options: Int32)? {
+        guard let cid = connection, let fn = spaceGetTransform else { return nil }
+        var options: Int32 = 0
+        return (fn(cid, space, &options), options)
+    }
+
+    /// 每块显示器的 Space 列表原样奉上（`activeSpaceIsFullscreen(on:)` 只取其中一格）。
+    /// 结构：[["Display Identifier": UUID 串, "Current Space": [...], "Spaces": [[...]]]]
+    public static func managedDisplaySpaces() -> [[String: Any]]? {
+        guard let cid = connection, let fn = copyManagedDisplaySpaces else { return nil }
+        return fn(cid)?.takeRetainedValue() as? [[String: Any]]
+    }
+
+    /// 任意 Space 的 type。App 只关心「当前这个是不是全屏」，诊断要逐个看。
+    public static func spaceType(of space: UInt64) -> Int32? {
+        guard let cid = connection, let fn = spaceGetType else { return nil }
+        return fn(cid, space)
+    }
+
+    /// 普通桌面 Space 的 type。与 `fullscreenSpaceType` 成对，供诊断给 type 取个名字。
+    public static let desktopSpaceType: Int32 = 0
+    public static let fullscreenSpaceTypeValue: Int32 = fullscreenSpaceType
 }
