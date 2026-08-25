@@ -41,8 +41,9 @@ final class World: ObservableObject {
     /// 未读角标，按 bundle ID。只在真的变了才发布，否则每 2 秒一次的读取会
     /// 把整条 bar 重绘一遍，打断动画。
     @Published private(set) var badges: [String: String] = [:]
-    /// 活动状态，按上报进程。计划书 §3。
-    @Published private(set) var activities: [pid_t: Activity] = [:]
+    /// 活动状态。计划书 §3。挂点见 `StatusTarget`：来源现在只产出 App 级，
+    /// 窗口级要等会话与窗口的绑定做出来。
+    @Published private(set) var activities: [StatusTarget: Activity] = [:]
 
     let pins = PinStore()
     let clusters = ClusterStore()
@@ -84,6 +85,12 @@ final class World: ObservableObject {
     private let missionControl = MissionControlWatch()
     private let activityCenter = ActivityCenter()
     private var mouseMonitor: Any?
+
+    /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
+    /// 就消失的通知等于没有发出过。只撤终态，运行中与等待中的不动。
+    func markStatusSeen(_ target: StatusTarget) {
+        activityCenter.markSeen(target)
+    }
 
     // MARK: 每块屏的 bar
     //
@@ -326,8 +333,11 @@ final class World: ObservableObject {
                            object: nil, queue: .main) { [weak self] note in
             guard let self, let pid = Self.pid(from: note) else { return }
             observers.stop(pid: pid)
+            // 先记下它名下的窗口号，再交给 store 清理：绑在这些窗口上的活动与该进程
+            // 运行在一起，清理之后便无从查起。
+            let owned = Set(windows.filter { $0.pid == pid }.map(\.id))
             store.removeApp(pid: pid)
-            activityCenter.remove(pid: pid)
+            activityCenter.remove(pid: pid, windows: owned)
             publish()
         }
         center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,

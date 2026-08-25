@@ -126,6 +126,7 @@ struct BarContent: View {
         // 看起来就是闪一下。`lingering` 让它把这一帧撑过去。
         let live = floatStage(layout)
         let stage = live ?? lingering
+        let capsule = capsuleTarget(layout)
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
                 // 面板占满屏幕底部整条；全透明像素不参与命中测试，点击直接穿透到下方窗口
@@ -139,6 +140,31 @@ struct BarContent: View {
                     .offset(y: model.hidden ? BarMetrics.barHeight + BarMetrics.bottomGap + 6 : 0)
                     .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.hidden)
                     .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
+                // 胶囊排在浮层下面：浮层是用户主动唤出的，两者重叠时由它覆盖。
+                if let capsule {
+                    let half = StatusCapsule.width(capsule.text) / 2
+                    StatusCapsule(activity: capsule.activity, text: capsule.text)
+                        // 与另外几档浮层同一块玻璃、同一套明暗。直接铺在桌面上的话，
+                        // 浅色或杂乱的壁纸上会读不清，那会把「胶囊是否干扰」这个待验的
+                        // 问题污染成「胶囊是否清晰」。
+                        .environment(\.colorScheme, model.floatScheme)
+                        .background {
+                            DockGlass(cornerRadius: StatusCapsule.height / 2)
+                                .allowsHitTesting(false)
+                        }
+                        .clipShape(Capsule(style: .continuous))
+                        // 胶囊的点按交互（就地作答、跳回窗口）尚未实现，因此不接收事件：
+                        // 可点却无反应比不可点更难理解。未读的出口暂时是点按对应格子。
+                        .allowsHitTesting(false)
+                        .transition(.scale(scale: 0.3, anchor: .bottom).combined(with: .opacity))
+                        .position(x: floatingX(capsule.anchorX, in: geometry.size.width,
+                                               half: half),
+                                  y: geometry.size.height - BarMetrics.bottomGap
+                                      - BarMetrics.barHeight - Self.floatGap
+                                      - StatusCapsule.height / 2)
+                        .animation(.spring(response: 0.30, dampingFraction: 0.82),
+                                   value: capsule.text)
+                }
                 if let stage {
                     let size = floatSize(stage, in: geometry.size, layout: layout)
                     floatContent(stage, in: layout, available: geometry.size.width)
@@ -188,8 +214,10 @@ struct BarContent: View {
             // 条以上那块空间由面板按需长出来（见 BarPanel）。悬停也算——浮出前的
             // 那两百多毫秒里就得把地方准备好，等浮层出现再长就晚了。
             // 键盘会话也要算进来：名牌与预览卡浮在条上方，面板不先长上去它们会被裁掉
+            // 胶囊也要算：它不由悬停驱动，条上没人碰的时候照样浮着，
+            // 面板不先长上去它会被裁掉。
             .onChange(of: hoveredItem != nil || panel != nil || preview != nil
-                          || dragging != nil || model.keyVisible) { _, needed in
+                          || dragging != nil || model.keyVisible || capsule != nil) { _, needed in
                 model.needsFloatRoom(needed)
             }
             // 键盘选中的窗口收在簇、标签组或溢出区里时，把收着它的浮层打开——
@@ -962,6 +990,31 @@ struct BarContent: View {
         return nil
     }
 
+    /// 此刻该浮出哪一个胶囊。
+    ///
+    /// **同屏只弹一个**（设计文档 §3）：等待优先于终态，同一档按先来后到。落选的那些
+    /// 应在 hover 卡里排队，该段尚未实现，它们目前只剩格子边缘的点缀。
+    private func capsuleTarget(_ layout: BarLayout)
+        -> (activity: Activity, text: String, anchorX: CGFloat)? {
+        // 条隐藏时胶囊一并隐藏。它不由悬停驱动，不在此拦下的话，全屏 Space 里条已经
+        // 滑出屏幕，胶囊仍浮在全屏内容之上，底下没有任何依托。
+        // 等待那一档要不要穿透全屏是另一个问题，待实机验证后再定。
+        guard !model.hidden else { return nil }
+        return layout.items.compactMap { item -> (activity: Activity, text: String, anchorX: CGFloat)? in
+            guard case .window(let cell) = item,
+                  let anchorX = cellAnchors[item.id],
+                  let activity = Slot.activity(of: cell, in: model),
+                  let text = activity.capsuleText
+            else { return nil }
+            return (activity, text, anchorX)
+        }
+        .min { a, b in
+            // 等待是唯一允许高显著度的状态，排在终态之前
+            guard a.activity.isUnread == b.activity.isUnread else { return !a.activity.isUnread }
+            return a.activity.since < b.activity.since
+        }
+    }
+
     /// 大预览那一档的上界。**按这条 bar 所在的屏算，不从容器量**——容器的高度正是随这张卡
     /// 长出来的（见 `BarPanel`），从它量就成了循环。
     ///
@@ -1237,6 +1290,12 @@ struct BarContent: View {
             }
             return
         }
+        // 未读语义的出口：点过这一格就算看见了，终态退场。放在召回之前，
+        // 因为召回本身可能改变这一格是谁。
+        if slot.activity?.isUnread == true {
+            model.world.markStatusSeen(model.world.activities[.window(cell.id)] != nil
+                                       ? .window(cell.id) : .app(cell.pid))
+        }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
         // 但它也不可能是前台窗口，走召回。
         if slot.isFront, cell.window.element != nil {
@@ -1324,7 +1383,7 @@ struct Slot {
             self.tabs = cell.tabs.count
             // App 级的东西只挂在该 App 的第一格上，不逐格重复
             self.badge = cell.leadsApp ? model.world.badges[cell.bundleID ?? ""] : nil
-            self.activity = cell.leadsApp ? model.world.activities[cell.pid] : nil
+            self.activity = Slot.activity(of: cell, in: model)
             self.minimized = cell.window.minimized
             // 会话显形期间不再标注前台。此刻条回答的是「松手会去哪儿」，不是「现在在哪儿」，
             // 前台那一格的亮底留着只会和选中底色抢读。
@@ -1366,6 +1425,13 @@ struct Slot {
             self.cell = nil
             self.app = nil
         }
+    }
+
+    /// 这一格该显示谁的活动状态。窗口级的先问——它更精确；问不到再退回 App 级，
+    /// 而 App 级的东西只挂在该 App 在条上的第一格，与未读角标同一条规则。
+    static func activity(of cell: BarWindow, in model: BarModel) -> Activity? {
+        if let own = model.world.activities[.window(cell.id)] { return own }
+        return cell.leadsApp ? model.world.activities[.app(cell.pid)] : nil
     }
 }
 
@@ -1584,7 +1650,11 @@ private struct ClusterLine: View {
     }
 }
 
-/// 活动状态：有确定进度时格子边缘走进度环，否则边缘呼吸。计划书 §3。
+/// 活动状态的点缀层（实时状态设计 §2）：画在格子边缘上，不额外占一行。
+///
+/// 三档的强度差别在这里只表达一半，另一半是胶囊——**高显著度只归 waiting**，
+/// 所以这里 waiting 与 finished 都只常亮、不呼吸：边缘再闪一遍，会与它头顶的胶囊
+/// 争抢同一份注意力。呼吸留给 working，它唯一要传达的就是任务仍在运行。
 private struct ActivityEdge: View {
     let activity: Activity
     let radius: CGFloat
@@ -1595,17 +1665,76 @@ private struct ActivityEdge: View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         Group {
             if let progress = activity.progress {
+                // 有确定进度就走进度环。它属于点缀层、显著度本来就低，不构成打断；
+                // 文字型的进度（n/m、耗时、ETA）只在 hover 里出现（设计文档 §3）。
                 shape.trim(from: 0, to: progress)
                     .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .animation(.easeOut(duration: 0.3), value: progress)
             } else {
-                shape.stroke(.primary.opacity(breathing ? 0.7 : 0.16), lineWidth: 2)
-                    .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true),
-                               value: breathing)
-                    .onAppear { breathing = true }
+                switch activity.salience {
+                case .working:
+                    shape.stroke(.primary.opacity(breathing ? 0.7 : 0.16), lineWidth: 2)
+                        .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+                                   value: breathing)
+                        .onAppear { breathing = true }
+                case .waiting:
+                    shape.stroke(.tint, lineWidth: 2)
+                case .finished(let outcome):
+                    shape.stroke(Self.color(outcome).opacity(0.8), lineWidth: 2)
+                }
             }
         }
         .padding(BarMetrics.backingInset)
+    }
+
+    static func color(_ outcome: Activity.Outcome) -> Color {
+        switch outcome {
+        case .done: return .green
+        case .failed: return .red
+        // 被限额与「完成」含义相反，也不是失败，给它自己的颜色（设计文档 §3）
+        case .quota: return .orange
+        }
+    }
+}
+
+/// 等待与终态浮出的胶囊。
+///
+/// **向上浮出，不在条内横向扩展。** 横向扩展会把相邻格子推开，而位置稳定是身份层的规则——
+/// 主计划文档 §3 原先写的「横向膨胀为胶囊」据此修订。
+private struct StatusCapsule: View {
+    let activity: Activity
+    let text: String
+
+    static let height: CGFloat = 26
+    private static let inset: CGFloat = 11
+    private static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+
+    /// 供外部定位使用：`.position` 需要半宽才能把它夹在屏幕之内。
+    static func width(_ text: String) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: font]).width) + inset * 2
+    }
+
+    private var tint: Color {
+        switch activity.salience {
+        case .working: return .secondary
+        case .waiting: return .accentColor
+        case .finished(let outcome): return ActivityEdge.color(outcome)
+        }
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .lineLimit(1)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, Self.inset)
+            .frame(height: Self.height)
+            .background {
+                Capsule(style: .continuous).fill(tint.opacity(0.22))
+            }
+            .overlay {
+                Capsule(style: .continuous).strokeBorder(tint.opacity(0.5), lineWidth: 0.5)
+            }
     }
 }
 

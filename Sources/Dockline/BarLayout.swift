@@ -286,10 +286,13 @@ func alignBarOrder(windows: [IndexedWindow], pins: PinStore, retained: Set<AppKe
 /// 标题歧义要按 App 全局算，簇也可能有成员在别的屏上。
 /// - Parameter onThisDisplay: 归本屏的窗口。
 /// - Parameter dormantHere: 一个此刻没有窗口的 App，它的占位槽该不该出现在本屏。
+/// - Parameter activity: 挂在某个目标上的活动状态。文本层要用它（见下面的优先级栈），
+///   所以必须在这里问——宽度是按最终要显示的那行字算的。
 func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
                   dormantHere: (AppKey) -> Bool, pins: PinStore, notice: String?,
                   clusters: ClusterStore, order: WindowOrder,
-                  labels: LabelWidths, recency: (CGWindowID) -> Int) -> [BarItem] {
+                  labels: LabelWidths, recency: (CGWindowID) -> Int,
+                  activity: (StatusTarget) -> Activity?) -> [BarItem] {
     // 三、标题只在同 App 有兄弟时出现。按 App 全局算——同 App 的两个窗口
     // 即使被拖散了，也还是要能区分。
     let byID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -299,8 +302,21 @@ func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
     // 一个 App 在条上的「第一格」：未读角标与活动状态挂在它上面，它也沿用 App 的身份。
     // 只在条上直接露面的窗口里选——簇里的窗口平时看不见，挂上去等于没挂。
     var leaders = Set<AppKey>()
+    /// 文本层的优先级栈（实时状态设计 §2）：**常驻状态文字 > 歧义标题 > 空。**
+    ///
+    /// 等待态与终态的文字不在这里，它们走胶囊：那两档本来就浮着一个高显著度的东西，
+    /// 在格子里重复一遍既冗余，又要为容纳文字改变格子宽度，而格子一变宽就推挤邻格。
+    /// 留在文本层的只有常驻型（歌名一类），它更换频率低，`LabelWidths` 那 6pt 的迟滞
+    /// 足以挡住抖动。
+    func text(of window: IndexedWindow, leads: Bool) -> String? {
+        if let own = activity(.window(window.id))?.label { return own }
+        // App 级的东西只挂在该 App 的第一格上，与未读角标同一条规则
+        if leads, let shared = activity(.app(window.pid))?.label { return shared }
+        return hasSiblings.contains(window.id) ? window.title : nil
+    }
+
     func cell(_ window: IndexedWindow, leads: Bool) -> BarWindow {
-        let label = hasSiblings.contains(window.id) ? window.title : nil
+        let label = text(of: window, leads: leads)
         return BarWindow(window: window, label: label,
                          labelWidth: label.map { labels.width(of: "w\(window.id)", $0) } ?? 0,
                          key: window.appKey,

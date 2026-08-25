@@ -250,7 +250,8 @@ final class BarModel: ObservableObject {
             },
             pins: world.pins, notice: world.notice, clusters: world.clusters,
             order: world.order, labels: labelWidths,
-            recency: { [world] in world.lastActive[$0] ?? 0 })
+            recency: { [world] in world.lastActive[$0] ?? 0 },
+            activity: { [world] in world.activities[$0] })
     }
 
     func layout() -> BarLayout {
