@@ -19,11 +19,19 @@ private func ink(_ scheme: ColorScheme, _ dark: Double, _ light: Double) -> Colo
 /// 玻璃岛——独立岛会把整条 bar 打碎成十几段。
 struct BarContent: View {
     @ObservedObject var model: BarModel
+    /// 世界侧的变化也要驱动重绘：角标、活动状态、启动弹跳、窗口索引都在那边，
+    /// 只观察 `model` 的话它们变了这里不会重画。
+    @ObservedObject var world: World
     /// 手绘层与文字的明暗跟条背后的背景走，不跟窗口外观走。玻璃自己不管这件事
     /// （只对 ≤64pt 的玻璃管，见 `DockGlass`），由 `BackdropSensor` 采出来。
     private var scheme: ColorScheme { model.backdropScheme }
     /// 悬停的那一项。底色只在这一格与前台那一格上出现（计划书 §3.1）。
     @State private var hoveredItem: String?
+
+    init(model: BarModel) {
+        self.model = model
+        world = model.world
+    }
     /// 指针停在哪个 App 的窗口上。同 App 的兄弟格子据此联动高亮——
     /// 窗口可以被拖散到条上任何位置，散落的兄弟只能靠这个看见。
     @State private var hoveredApp: AppKey?
@@ -98,14 +106,14 @@ struct BarContent: View {
                                 available: geometry.size.width,
                                 scheme: model.floatScheme,
                                 thumbnails: thumbnails,
-                                icon: { model.icon(for: $0) },
+                                icon: { model.world.icon(for: $0) },
                                 hovered: { hoveredItem == "panel.w\($0)" },
                                 onHover: { id, inside in
                                     let key = "panel.w\(id)"
                                     if inside { hoveredItem = key }
                                     else if hoveredItem == key { hoveredItem = nil }
                                 },
-                                onRecall: { model.recall($0) },
+                                onRecall: { model.world.recall($0) },
                                 onMenuZone: { model.setMenuZone("panel.w\($0)", $1) },
                                 metrics: layout.metrics,
                                 drag: panelDrag)
@@ -385,9 +393,9 @@ struct BarContent: View {
                 // 在这里执行就成了「点一下就把它挪到最后」。
                 guard dragging != nil else { return }
                 if let mergeTarget {
-                    model.formCluster(unit, into: mergeTarget)
+                    model.world.formCluster(unit, into: mergeTarget)
                 } else {
-                    model.move(unit, before: dropBefore)
+                    model.world.move(unit, before: dropBefore)
                 }
                 dragging = nil
                 dragOffset = 0
@@ -419,7 +427,7 @@ struct BarContent: View {
             },
             ended: { unit in
                 guard case .window(let id) = unit, panelDragging == id else { return }
-                model.detachFromCluster(id)
+                model.world.detachFromCluster(id)
                 panelDragging = nil
                 panelDragOffset = .zero
                 dismissPanel()
@@ -506,11 +514,11 @@ struct BarContent: View {
     private func itemView(_ item: BarItem, metrics: BarMetrics) -> some View {
         switch item {
         case .launcher(let url):
-            BareItem(icon: model.icon(app: url, bundleID: Bundle(url: url)?.bundleIdentifier),
+            BareItem(icon: model.world.icon(app: url, bundleID: Bundle(url: url)?.bundleIdentifier),
                      metrics: metrics, backing: backing(item.id))
                 .hoverTracked(item.id, $hoveredItem)
-                .clickable(item.id, $pressedItem) { model.open(url) }
-                .help(model.displayName(of: url))
+                .clickable(item.id, $pressedItem) { model.world.open(url) }
+                .help(model.world.displayName(of: url))
 
         case .separator:
             // 计划书 §3.1：分隔线只隔「不是窗口的东西」，窗口之间一律不隔。
@@ -523,14 +531,14 @@ struct BarContent: View {
                 .onHover { $0 ? NSCursor.resizeUpDown.push() : NSCursor.pop() }
                 .gesture(DragGesture(minimumDistance: 2)
                     .onChanged { value in
-                        if resizeAnchor == nil { resizeAnchor = model.iconSize }
-                        let base = resizeAnchor ?? model.iconSize
-                        model.iconSize = min(max(base - value.translation.height,
+                        if resizeAnchor == nil { resizeAnchor = model.world.iconSize }
+                        let base = resizeAnchor ?? model.world.iconSize
+                        model.world.iconSize = min(max(base - value.translation.height,
                                                  BarMetrics.minIcon), BarMetrics.maxIcon)
                     }
                     .onEnded { _ in
                         resizeAnchor = nil
-                        model.commitIconSize()
+                        model.world.commitIconSize()
                     })
 
         case .notice(let text):
@@ -554,7 +562,7 @@ struct BarContent: View {
                 .help("还有 \(cells.count) 个窗口")
 
         case .cluster(let cluster):
-            FoldedCluster(cluster: cluster, icons: cluster.windows.map(model.icon(for:)),
+            FoldedCluster(cluster: cluster, icons: cluster.windows.map(model.world.icon(for:)),
                           metrics: metrics, backing: backing(item.id))
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.rootSpace)).midX }
                     action: { center in
@@ -568,22 +576,22 @@ struct BarContent: View {
                              : dismissPanel()
                 }
                 // 单击 = 整体开关。与单个窗口同一条规则，簇上没有例外。
-                .onTapGesture { model.toggleCluster(cluster.id) }
+                .onTapGesture { model.world.toggleCluster(cluster.id) }
 
         case .folder(let url):
-            BareItem(icon: model.icon(file: url), metrics: metrics, backing: backing(item.id))
+            BareItem(icon: model.world.icon(file: url), metrics: metrics, backing: backing(item.id))
                 .hoverTracked(item.id, $hoveredItem)
-                .clickable(item.id, $pressedItem) { model.open(url) }
+                .clickable(item.id, $pressedItem) { model.world.open(url) }
                 .dropZone(item.id, model: model)
-                .help(model.displayName(of: url))
+                .help(model.world.displayName(of: url))
 
         case .trash:
-            BareItem(icon: NSImage(named: model.trashFull ? NSImage.trashFullName
+            BareItem(icon: NSImage(named: model.world.trashFull ? NSImage.trashFullName
                                                           : NSImage.trashEmptyName),
                      metrics: metrics, backing: backing(item.id))
                 .hoverTracked(item.id, $hoveredItem)
-                .clickable(item.id, $pressedItem) { model.open(model.trashURL) }
-                .help(model.trashFull ? "废纸篓（非空）" : "废纸篓")
+                .clickable(item.id, $pressedItem) { model.world.open(model.world.trashURL) }
+                .help(model.world.trashFull ? "废纸篓（非空）" : "废纸篓")
                 .dropZone(item.id, model: model)
         }
     }
@@ -635,7 +643,7 @@ struct BarContent: View {
         guard let cell = slot.cell else {
             // 正在启动的 App 再点没有意义：它还没到达，也就谈不上「已在眼前」
             guard let app = slot.app, !slot.bouncing else { return }
-            model.launch(app)
+            model.world.launch(app)
             return
         }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
@@ -643,7 +651,7 @@ struct BarContent: View {
         if slot.isFront, cell.window.element != nil {
             _ = minimizeWindow(cell.window)
         } else {
-            model.recall(cell.window)
+            model.world.recall(cell.window)
         }
     }
 
@@ -713,32 +721,32 @@ struct Slot {
         switch item {
         case .window(let cell):
             self.key = cell.key
-            self.icon = model.icon(for: cell)
+            self.icon = model.world.icon(for: cell)
             self.label = cell.label
             self.labelWidth = cell.labelWidth
             self.showsDot = cell.showsDot
             self.tabs = cell.tabs.count
             // App 级的东西只挂在该 App 的第一格上，不逐格重复
-            self.badge = cell.leadsApp ? model.badges[cell.bundleID ?? ""] : nil
-            self.activity = cell.leadsApp ? model.activities[cell.pid] : nil
+            self.badge = cell.leadsApp ? model.world.badges[cell.bundleID ?? ""] : nil
+            self.activity = cell.leadsApp ? model.world.activities[cell.pid] : nil
             self.minimized = cell.window.minimized
-            self.isFront = cell.id == model.frontWindow
+            self.isFront = cell.id == model.world.frontWindow
             self.bouncing = false
             self.help = cell.window.title
             self.cell = cell
             self.app = nil
         case .dormant(let app):
             self.key = AppKey.bundle(app.bundleID)
-            self.icon = model.icon(app: app.url, bundleID: app.bundleID)
+            self.icon = model.world.icon(app: app.url, bundleID: app.bundleID)
             self.label = nil
             self.labelWidth = 0
             self.showsDot = false
             self.tabs = 0
-            self.badge = model.badges[app.bundleID]
+            self.badge = model.world.badges[app.bundleID]
             self.activity = nil
             self.minimized = false
             self.isFront = false
-            self.bouncing = model.launching.contains(app.bundleID)
+            self.bouncing = model.world.launching.contains(app.bundleID)
             self.help = app.name
             self.cell = nil
             self.app = app

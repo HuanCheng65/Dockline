@@ -12,7 +12,7 @@ import SwiftUI
 /// 成立的前提已实测：非 opaque 窗口的全透明像素不参与窗口服务器的命中测试，
 /// 点击会穿透到下方窗口（alpha ≥ 0.005 就不再穿透）。
 final class BarPanel: NSPanel {
-    let model = BarModel()
+    let model: BarModel
 
     /// 条当前所在的屏。多屏下条只有一条，跟着指针走（计划书 §3.1）。
     private var current: CGDirectDisplayID?
@@ -36,7 +36,8 @@ final class BarPanel: NSPanel {
             + BarMetrics.maxIcon + 20 + 10
             + PreviewCard.imageHeight + 90
 
-    init() {
+    init(world: World) {
+        model = BarModel(world: world)
         super.init(contentRect: NSRect(x: 0, y: 0, width: 800, height: Self.panelHeight),
                    styleMask: [.nonactivatingPanel, .borderless],
                    backing: .buffered,

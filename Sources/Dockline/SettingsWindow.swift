@@ -4,7 +4,7 @@ import SwiftUI
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
-    func show(model: BarModel) {
+    func show(model: World) {
         NSApp.activate(ignoringOtherApps: true)
         if let window {
             window.makeKeyAndOrderFront(nil)
@@ -28,7 +28,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 }
 
 private struct SettingsView: View {
-    @ObservedObject var model: BarModel
+    @ObservedObject var model: World
 
     var body: some View {
         TabView {
@@ -45,7 +45,7 @@ private struct SettingsView: View {
 // MARK: - 通用
 
 private struct GeneralTab: View {
-    @ObservedObject var model: BarModel
+    @ObservedObject var model: World
 
     var body: some View {
         Form {
@@ -125,7 +125,7 @@ private struct GeneralTab: View {
 // MARK: - 程序坞
 
 private struct DockTab: View {
-    @ObservedObject var model: BarModel
+    @ObservedObject var model: World
 
     var body: some View {
         Form {
@@ -205,7 +205,7 @@ private struct DockTab: View {
 // MARK: - 权限
 
 private struct PermissionsTab: View {
-    @ObservedObject var model: BarModel
+    @ObservedObject var model: World
 
     var body: some View {
         Form {

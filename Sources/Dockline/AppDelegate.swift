@@ -2,6 +2,7 @@ import AppKit
 import DocklineCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let world = World()
     private var bar: BarPanel?
     private var reconcileTimer: Timer?
 
@@ -27,9 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .data(using: .utf8)!)
         }
 
-        let panel = BarPanel()
+        let panel = BarPanel(world: world)
         bar = panel
-        panel.model.start()
+        world.start()
         tick()
         panel.orderFrontRegardless()
 
@@ -42,18 +43,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows: Bool) -> Bool {
         Timeline.log("收到 reopen 事件，打开设置")
-        bar?.model.showSettings()
+        world.showSettings()
         return true
     }
 
     private func tick() {
-        guard let bar else { return }
-        bar.model.accessibility = AXIsProcessTrusted()
-        bar.model.screenRecording = CGPreflightScreenCaptureAccess()
+        world.accessibility = AXIsProcessTrusted()
+        world.screenRecording = CGPreflightScreenCaptureAccess()
         // 无辅助功能权限时 AX 枚举全线失败，跑对账只是白烧 CPU
-        if bar.model.accessibility { bar.model.reconcile() }
+        if world.accessibility { world.reconcile() }
         // 废纸篓状态没有通知可订阅，跟着对账 tick 顺带读一次（一次 CFPreferences 读，可忽略）
-        bar.model.refreshTrash()
-        bar.model.refreshBadges()
+        world.refreshTrash()
+        world.refreshBadges()
     }
 }
