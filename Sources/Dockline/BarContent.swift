@@ -232,6 +232,13 @@ struct BarContent: View {
                 return cellAnchors[item.id]
             }
             return nil
+        case .elsewhere(let key):
+            for item in layout.items {
+                guard case .dormant(let app) = item,
+                      AppKey.bundle(app.bundleID) == key else { continue }
+                return cellAnchors[item.id]
+            }
+            return nil
         }
     }
 
@@ -294,6 +301,14 @@ struct BarContent: View {
         case .overflow:
             guard !layout.overflow.isEmpty else { return nil }
             return (layout.overflow, "更多窗口", "\(layout.overflow.count) 个窗口", nil)
+        case .elsewhere(let key):
+            let cells = model.world.elsewhereWindows(key)
+            guard let first = cells.first else { return nil }
+            // 这些窗口不在本条上，没有「兄弟之间要区分」这回事，所以不给短标签——
+            // 卡片本来就显示完整标题。
+            return (cells, first.appName,
+                    cells.count == 1 ? "在其他显示器" : "\(cells.count) 个窗口 · 在其他显示器",
+                    nil)
         }
     }
 
@@ -1039,14 +1054,24 @@ struct BarContent: View {
                             guard let anchorX else {
                                 if hoveredItem == item.id { hoveredItem = nil }
                                 if hoveredApp == slot.key { hoveredApp = nil }
-                                guard let cell = slot.cell else { return }
+                                guard let cell = slot.cell else {
+                                    if case .elsewhere = slot.mark { dismissPanel() }
+                                    return
+                                }
                                 cell.tabs.isEmpty ? schedulePreview(nil, from: cell.id)
                                                   : dismissPanel()
                                 return
                             }
                             hoveredItem = item.id
                             hoveredApp = slot.key
-                            guard let cell = slot.cell else { return }
+                            guard let cell = slot.cell else {
+                                // 空心圈那一档：浮出它在别的屏上的窗口。这一格没有本屏的
+                                // 窗口可预览，能给的正是「它在别处有什么」。
+                                if case .elsewhere = slot.mark {
+                                    schedulePanel(.elsewhere(slot.key), anchorX: anchorX)
+                                }
+                                return
+                            }
                             // 收着标签的格子里有好几样东西，浮出的应该是「这一格里有什么」，
                             // 而不是宿主窗口一个人的预览卡
                             guard cell.tabs.isEmpty else {
@@ -1092,6 +1117,11 @@ enum FloatPanel: Equatable {
     /// 收拢了原生标签页的那一格
     case tabs(CGWindowID)
     case overflow
+    /// 窗口全在别的屏上的那个固定 App 槽位（指示点是空心圈的那一档）。
+    ///
+    /// 那一格现在什么都不说，却长着一副启动图标的样子。悬停给出它在别处的窗口，
+    /// 「只想看一眼」才有工具可用——否则点它把窗口拿过来这个语义没有对照物。
+    case elsewhere(AppKey)
 }
 
 // MARK: - 顶层项：窗口格 / 簇 / 单图标项

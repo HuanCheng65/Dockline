@@ -1097,6 +1097,25 @@ final class World: ObservableObject {
         return windows.filter { $0.bundleID == app.bundleID }
     }
 
+    /// 这个 App 在别的屏上的窗口，供空心圈那一格的悬停浮层用。
+    ///
+    /// 按最近使用排：第一张就是点这一格会拿过来的那一扇，看与做因此对得上。
+    func elsewhereWindows(_ key: AppKey) -> [BarWindow] {
+        let mine = windows.filter { window in
+            switch key {
+            case .bundle(let id): return window.bundleID == id
+            case .process(let pid): return window.pid == pid
+            }
+        }
+        return mine
+            .sorted { (lastActive[$0.id] ?? 0) > (lastActive[$1.id] ?? 0) }
+            .map {
+                BarWindow(window: $0, label: nil, labelWidth: 0,
+                          key: key, appName: $0.appName, pid: $0.pid,
+                          bundleID: $0.bundleID, leadsApp: false)
+            }
+    }
+
     /// 把这个 App 已有的窗口拿到这块屏来（计划书 §6 M5）。
     ///
     /// 槽位下面那个空心圈已经预告了这件事——它说的是「有窗口，但不在这块屏」，
