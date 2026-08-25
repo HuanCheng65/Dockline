@@ -3,7 +3,11 @@ import DocklineCore
 import SwiftUI
 
 /// 计划书 §4：nonactivating 浮动面板，居中置底。
-/// .canJoinAllSpaces + .fullScreenAuxiliary + 抬高 level，使其可浮于原生全屏之上。
+/// .fullScreenAuxiliary + 抬高 level，使其可浮于原生全屏之上。
+///
+/// 刻意**不带** `.canJoinAllSpaces`：这条 bar 靠挂进自建的 private Space 来跨 Space，
+/// 那样它在桌面切换时钉在屏幕坐标里不动，而不是被 AppKit 复制一份到每个 Space、
+/// 跟着桌面横向滑走。挂载在 `BarController` 里做，没挂上时才由它把这个标志加回来。
 ///
 /// 面板本身占满屏幕底部整条，玻璃条只是画在里面居中的一块。这样宽度变化、
 /// 悬停展开、隐藏滑出全部由 SwiftUI 负责，一次 setFrame 都不必做——
@@ -48,7 +52,7 @@ final class BarPanel: NSPanel {
                    defer: false)
         isFloatingPanel = true
         level = .statusBar
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        collectionBehavior = [.fullScreenAuxiliary, .stationary, .ignoresCycle]
         hidesOnDeactivate = false
         // 不开这个，面板收不到 mouse-moved，悬停展开与 .help 提示都不会触发
         acceptsMouseMovedEvents = true
@@ -84,6 +88,12 @@ final class BarPanel: NSPanel {
         model.onFloatRoom = { [weak self] needed in self?.setExpanded(needed) }
         checkActiveAppearanceOverride()
         apply()
+    }
+
+    /// private Space 没挂上，退回让 AppKit 把面板复制到每个 Space。
+    /// 后果是条会跟着桌面横向滑走，但每个 Space 上都还有一条。由 `BarController` 调用。
+    func fallBackToAllSpaces() {
+        collectionBehavior.insert(.canJoinAllSpaces)
     }
 
     /// nonactivating 面板不该成为 key/main，否则会抢走用户当前 App 的焦点。

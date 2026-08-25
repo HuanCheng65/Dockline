@@ -29,10 +29,10 @@ public enum SkyLight {
     private typealias RegisterNotifyProcFn =
         @convention(c) (NotifyProc, UInt32, UnsafeMutableRawPointer?) -> Void
 
-    private static let handle: UnsafeMutableRawPointer? =
+    fileprivate static let handle: UnsafeMutableRawPointer? =
         dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
 
-    private static func sym<T>(_ name: String, as type: T.Type) -> T? {
+    fileprivate static func sym<T>(_ name: String, as type: T.Type) -> T? {
         guard let handle, let p = dlsym(handle, name) else { return nil }
         return unsafeBitCast(p, to: T.self)
     }
@@ -62,7 +62,7 @@ public enum SkyLight {
 
     public static var available: Bool { missingSymbols.isEmpty }
 
-    private static var connection: Int32? { mainConnectionID?() }
+    fileprivate static var connection: Int32? { mainConnectionID?() }
 
     public static var activeSpace: UInt64? {
         guard let cid = connection, let fn = getActiveSpace else { return nil }
@@ -116,12 +116,20 @@ public enum SkyLight {
         return true
     }
 
-    /// kCGSAllSpacesMask == 0x7：返回该窗口所属的全部 space id。
-    public static func spaces(for wid: CGWindowID) -> [UInt64]? {
+    /// 返回该窗口所属的全部 space id。
+    ///
+    /// 掩码缺省取 kCGSAllSpacesMask == 0x7，那是**受管** Space 的全部——自建的
+    /// private Space 不在其中，0x7 问一个挂进 private Space 的窗口会得到空数组。
+    /// 第 3 位（0xF 里多出来的那位）才把私有 Space 算进来，实测确认；再往上加位无效，
+    /// `0xFFFFFFFF` 反而什么都读不到，掩码是被校验的。
+    public static func spaces(for wid: CGWindowID, mask: Int32 = 0x7) -> [UInt64]? {
         guard let cid = connection, let fn = copySpacesForWindows else { return nil }
-        guard let result = fn(cid, 0x7, [wid] as CFArray) else { return nil }
+        guard let result = fn(cid, mask, [wid] as CFArray) else { return nil }
         return (result.takeRetainedValue() as? [NSNumber])?.map { $0.uint64Value }
     }
+
+    /// 连私有 Space 一起算进来的掩码。见 `spaces(for:mask:)`。
+    public static let allSpacesIncludingPrivateMask: Int32 = 0xF
 
     // MARK: - 诊断专用（只读，不计入启动自检）
     //
@@ -197,4 +205,83 @@ public enum SkyLight {
     /// 普通桌面 Space 的 type。与 `fullscreenSpaceType` 成对，供诊断给 type 取个名字。
     public static let desktopSpaceType: Int32 = 0
     public static let fullscreenSpaceTypeValue: Int32 = fullscreenSpaceType
+}
+
+// MARK: - 第 1.6 层私有符号：自建 private Space（写操作）
+//
+// 用途只有一个：把**本进程**的面板挂进一个自己建的 private Space，使它在桌面之间
+// 切换时钉在屏幕坐标里不动（计划书 §4 的 spike）。作用面止于自己的窗口和自己建的
+// Space，不碰任何别人家的窗口——这是它与计划书 §5 第 2 层的分界。
+//
+// 自检与第 1 层的 `missingSymbols` **分开**：那份清单缺一个就意味着窗口判别或全屏
+// 隐藏要关掉，而这一族缺失只是条不钉、跟着桌面滑走，App 的其余部分照常。降级在调用点
+// （`BarController`）：把 `.canJoinAllSpaces` 加回去。
+public enum PrivateSpace {
+    /// Space id 一律按 32 位走：`SLSSpaceCreate` 只填低半个寄存器，声明成 64 位会把
+    /// 高位的残留读进来。第 1 层的 `spaceType(of:)` 收 `UInt64`，传进去时再放宽。
+    private typealias SpaceCreateFn = @convention(c) (Int32, Int32, Int32) -> UInt32
+    private typealias SpaceSetAbsoluteLevelFn = @convention(c) (Int32, UInt32, Int32) -> Int32
+    private typealias ShowSpacesFn = @convention(c) (Int32, CFArray) -> Int32
+    private typealias AddWindowsAndRemoveFn =
+        @convention(c) (Int32, UInt32, CFArray, UInt32) -> Int32
+
+    private static let spaceCreate = SkyLight.sym("SLSSpaceCreate", as: SpaceCreateFn.self)
+    private static let setAbsoluteLevel =
+        SkyLight.sym("SLSSpaceSetAbsoluteLevel", as: SpaceSetAbsoluteLevelFn.self)
+    private static let showSpaces = SkyLight.sym("SLSShowSpaces", as: ShowSpacesFn.self)
+    private static let addWindowsAndRemove =
+        SkyLight.sym("SLSSpaceAddWindowsAndRemoveFromSpaces", as: AddWindowsAndRemoveFn.self)
+
+    public static var missingSymbols: [String] {
+        if SkyLight.handle == nil { return ["SkyLight.framework (dlopen 失败)"] }
+        var missing: [String] = []
+        if spaceCreate == nil { missing.append("SLSSpaceCreate") }
+        if setAbsoluteLevel == nil { missing.append("SLSSpaceSetAbsoluteLevel") }
+        if showSpaces == nil { missing.append("SLSShowSpaces") }
+        if addWindowsAndRemove == nil { missing.append("SLSSpaceAddWindowsAndRemoveFromSpaces") }
+        return missing
+    }
+
+    public static var available: Bool { missingSymbols.isEmpty }
+
+    /// 这一族的 CFArray 参数要的是 **32 位** CFNumber，不能走 `[UInt32] as CFArray`
+    /// 的 NSNumber 桥接——桥出来的数宽度由 NSNumber 自己定，窗口服务器读到的就不是
+    /// 这个数。（只有 `SLSCopySpacesForWindows` 例外，它收普通 NSNumber，见第 1 层。）
+    private static func numbers32(_ values: [UInt32]) -> CFArray? {
+        let numbers = values.compactMap { value -> CFNumber? in
+            var signed = Int32(bitPattern: value)
+            return CFNumberCreate(nil, .sInt32Type, &signed)
+        }
+        guard numbers.count == values.count else { return nil }
+        return numbers as CFArray
+    }
+
+    /// 建一个 private Space（`SLSSpaceGetType` 读出来是 3，既不是桌面也不是全屏），
+    /// 并让窗口服务器把它显示出来。失败返回 nil。
+    ///
+    /// 三步的取值与 spike 里验过的那次逐字节一致。中间那步的 level 0 是照抄：
+    /// spike 里 `SLSSpaceSetAbsoluteLevel` 返回 0，但**没有证据说明它生效了**——
+    /// 当时那句回读用的 `SLSSpaceGetAbsoluteLevel` 根本没往出参里写。去掉它就偏离了
+    /// 验过的那条路径，所以留着，但不要据此以为这个 Space 的层级是我们定的。
+    public static func create() -> UInt32? {
+        guard let cid = SkyLight.connection,
+              let create = spaceCreate, let setLevel = setAbsoluteLevel, let show = showSpaces
+        else { return nil }
+        let space = create(cid, 1, 0)
+        guard space != 0 else { return nil }
+        _ = setLevel(cid, space, 0)
+        guard let list = numbers32([space]), show(cid, list) == 0 else { return nil }
+        return space
+    }
+
+    /// 把这些窗口挪进该 Space，同时从它们原有的全部 Space（掩码 0x7）里移出。
+    ///
+    /// 必须是这个符号。`SLSAddWindowsToSpaces` 返回 0 却什么也没做，
+    /// `SLSSetWindowListWorkspace` 返回 1006（kCGErrorNotImplemented）——两条都试过。
+    public static func attach(_ wids: [CGWindowID], to space: UInt32) -> Bool {
+        guard let cid = SkyLight.connection, let fn = addWindowsAndRemove,
+              let list = numbers32(wids)
+        else { return false }
+        return fn(cid, space, list, 0x7) == 0
+    }
 }

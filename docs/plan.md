@@ -48,7 +48,7 @@ macOS 窗口检索与 Dock 重构 · v1.12 · 2026-08-25
 
 **规避 Spaces 写操作。** 任务切换语义由「批量显示 / 隐藏窗口」实现，全部窗口留在同一 Space。这一决定使项目完全避开了最脆弱的私有 API 层（详见第 5 节）。
 
-**这条原则收窄过两次，收窄的是范围，不是它本身。** 它真正在防的是「把 Spaces 的创建、销毁、切换当成任务切换的实现手段」——那套东西脆，而批量显示隐藏已经把它整个绕开了。**把一个具体窗口的归属从这个 Space 改到那个 Space**，不属于这一类：它是一次性的、由用户显式的一次手势触发、失败可以当场降级的操作，作用面窄得多。原文的前提也变了——那条禁令立在「跨 Space 移动窗口必须关 SIP」上，而 macOS 26.4 起系统重新开了一条 SIP 开着也能走的路（第 5 节、第 9 节）。第二次收窄在「自己的 Space、自己的窗口」上：为把条钉在屏幕坐标上，自建一个 private Space 把自己的面板挂进去（第 4 节 spike）。它同样不关 SIP、不碰任何别人的窗口，作用面比上一条还窄。
+**这条原则收窄过两次，收窄的是范围，不是它本身。** 它真正在防的是「把 Spaces 的创建、销毁、切换当成任务切换的实现手段」——那套东西脆，而批量显示隐藏已经把它整个绕开了。**把一个具体窗口的归属从这个 Space 改到那个 Space**，不属于这一类：它是一次性的、由用户显式的一次手势触发、失败可以当场降级的操作，作用面窄得多。原文的前提也变了——那条禁令立在「跨 Space 移动窗口必须关 SIP」上，而 macOS 26.4 起系统重新开了一条 SIP 开着也能走的路（第 5 节、第 9 节）。第二次收窄在「自己的 Space、自己的窗口」上：为把条钉在屏幕坐标上，自建一个 private Space 把自己的面板挂进去（第 4 节）。它同样不关 SIP、不碰任何别人的窗口，作用面比上一条还窄。
 
 因此改为：**Spaces 写操作不得进入任何常驻路径，也不得承担任何核心语义；单次、用户显式触发、可降级的窗口迁移是唯一的例外。** 例外自带两条硬约束。其一，**能力判定按符号在不在，不按系统版本号**——版本号只是符号存在与否的代理，代理会错，而这个项目已经有 `missingSymbols` 那套自检的先例。其二，**不支持时必须降级到「这件事做不了」，不是降级到「换个方式做」**：拿不到迁移能力，跨 Space 的窗口就不参与分屏手势，而不是退回「把用户甩到那个 Space 去再摆」。降级要在启动自检里报一行原因，不静默。
 
@@ -263,22 +263,28 @@ Liquid Glass 自带这套能力，但**只对高度 ≤64pt 的玻璃开**——
 
 ## 4. 技术架构
 
-**选型：Swift + AppKit，内容视图 SwiftUI。** bar 为 NSPanel（.nonactivatingPanel，点击不抢焦点），collection behavior 设 .canJoinAllSpaces + .fullScreenAuxiliary 并抬高 window level，使其可浮于原生全屏之上（全屏场景默认自动隐藏、触底唤出）。Electron / Tauri 因 AX 调用密度与延迟要求被排除。
+**选型：Swift + AppKit，内容视图 SwiftUI。** bar 为 NSPanel（.nonactivatingPanel，点击不抢焦点），collection behavior 设 .fullScreenAuxiliary 并抬高 window level，使其可浮于原生全屏之上（全屏场景默认自动隐藏、触底唤出）。**刻意不设 .canJoinAllSpaces**——跨 Space 靠下面那条私有 Space 的路，那条路才让条钉得住。Electron / Tauri 因 AX 调用密度与延迟要求被排除。
 
-**Spike · 让条在 Space 切换时钉住（已完成，结论是做得到）。** `.canJoinAllSpaces` 的窗口是所在 Space 的一部分，三指切换桌面时它跟着桌面横向滑走；系统程序坞不会。做法不是给窗口打什么「超级粘滞」标记——**自建一个 WindowServer 的 private Space，把面板挂进去**，它就此站在 managed Space 体系之外，任何转场都不参与：
+**让条在 Space 切换时钉住（已落地）。** `.canJoinAllSpaces` 的窗口是所在 Space 的一部分，三指切换桌面时它跟着桌面横向滑走；系统程序坞不会。做法不是给窗口打什么「超级粘滞」标记——**自建一个 WindowServer 的 private Space，把面板挂进去**，它就此站在 managed Space 体系之外，任何转场都不参与：
 
 ```c
 space = SLSSpaceCreate(cid, 1, 0);                              // 得到一个 type=3 的 Space
-SLSSpaceSetAbsoluteLevel(cid, space, 0);
+SLSSpaceSetAbsoluteLevel(cid, space, 0);                        // 返回 0，但生效与否无证据
 SLSShowSpaces(cid, [space]);                                    // CFArray 里是 32 位 CFNumber
 SLSSpaceAddWindowsAndRemoveFromSpaces(cid, space, [wid], 0x7);
 ```
 
 四关都实测过（本机 26.5.2、SIP 开着）：桌面切换时肉眼确认钉住不动；归属稳，`orderOut → orderFront` 之后不被 AppKit 拉回 managed Space；输入与普通窗口逐项一致（悬停、左键、右键菜单可弹可点、拖放全链路含 `draggingUpdated`）；**全透明像素照样不参与命中测试**——直接问 `SLSFindWindowByGeometry`，条上的点命中面板自己，透明处命中它下面的窗口，与普通窗口的对照组一致，满宽面板的前提不受影响。sketchybar 用同一套配方多年，只是它的窗口由 `SLSNewWindow` 自建；实测 AppKit 的 NSPanel 一样进得去，SwiftUI 那一整层不必动。
 
-两个坑记在这里。**`SLSAddWindowsToSpaces` 返回 0 但静默无效**——挂到非当前 Space 的请求被忽略，能真正改归属的是 `SLSSpaceAddWindowsAndRemoveFromSpaces`。**`SLSSpaceGetTransform` 按值返回 `CGAffineTransform`，且第三个参数 `int *options` 不能省**，省掉它会拿 x2 里的残留值当出参写、当场崩在 `SLSWindowServerClientSpaceGetTransform` 里。
+三个坑记在这里。**`SLSAddWindowsToSpaces` 返回 0 但静默无效**——挂到非当前 Space 的请求被忽略，能真正改归属的是 `SLSSpaceAddWindowsAndRemoveFromSpaces`。**`SLSSpaceGetTransform` 按值返回 `CGAffineTransform`，且第三个参数 `int *options` 不能省**，省掉它会拿 x2 里的残留值当出参写、当场崩在 `SLSWindowServerClientSpaceGetTransform` 里。**`SLSCopySpacesForWindows` 的掩码要用 0xF 才照得到 private Space**：常用的 0x7 只覆盖受管 Space，问一个已挂进去的窗口会得到空数组；掩码是被校验的，`0xFFFFFFFF` 反而什么都读不到。
 
-待验证：多显示器要不要各建一个 private Space；原生全屏与调度中心下的表现（现有的按屏隐藏与让位逻辑是否照旧适用）；睡眠唤醒、切换用户、显示器插拔之后要不要重挂；Liquid Glass 材质与强制活跃外观在其中是否照常；截屏工具的窗口候选框。落地时必须带降级：`SLSSpaceCreate` 失败或挂载后面板不可见，退回 `.canJoinAllSpaces`——否则一次系统更新就可能让整条 bar 不显示。
+**落地形态。** 全部 bar 共用一个 private Space，第一条 bar 上线时建出来；没有销毁路径，因为退出时销毁挡不住任何东西——崩溃与被 kill 时那条路根本不跑。挂载紧跟在 `orderFrontRegardless()` 之后同步做，成没成一律以回读为准：0xF 掩码必须正好读到我们那个 space。四个失败分支（符号缺失 / 建不出 / 挂载被拒 / 回读不符）各自打一行点名的日志，然后把 `.canJoinAllSpaces` 加回该条 bar——降级是单向的，直到那块屏的面板被重建。
+
+落地后实测：满宽面板上命中穿透照旧（玻璃处命中面板自己，两侧透明区穿透到壁纸，两块屏一致）；一块屏掉线又回来，重建的面板自动挂进原来那个 Space，无需另建也无需重挂已有的那条。
+
+**不要拿「窗口已属于某个受管 Space」当挂载的前提。** 刚上屏的窗口有一段时间 `ordered-in` 已经为真、0x7 归属却还是空，长短不定（实测 0.68s 时仍为空，同一次启动里两条 bar 一条空一条不空），**而从这个状态挂载照样成立**。拿它当门槛只会误判成「钉不住」。
+
+待验证（都要肉眼）：两块屏各自滑桌面时是否真钉住；原生全屏与调度中心下的表现（现有的按屏隐藏与让位逻辑是否照旧适用）；切换用户之后要不要重挂；Liquid Glass 材质与强制活跃外观是否照常；截屏工具的窗口候选框。
 
 **窗口索引（核心数据结构）。** 每条记录含：CGWindowID、AX 引用（可空）、pid、App 标识、标题、区分性短标签（动态计算）、最小化状态、Space 归属（**数组**——窗口可同时属于多个 Space）、全屏标志、簇归属、活动状态。索引是 bar、搜索层、时光机的唯一数据源。
 
@@ -325,7 +331,7 @@ SLSSpaceAddWindowsAndRemoveFromSpaces(cid, space, [wid], 0x7);
 | 第 0 层 | `_AXUIElementGetWindow` | AX 元素 ↔ CGWindowID 桥接 | 极低。AltTab / yabai / Ice 长期使用，十余年未变 |
 | 第 1 层 | SkyLight 只读族：`SLSMainConnectionID`、`SLSCopyWindowsWithOptionsAndTags` 及窗口迭代器、`SLSCopySpacesForWindows`、`SLSGetActiveSpace`、`SLSWindowIsOrderedIn`、`SLSSpaceGetType`、`SLSSetWindowAlpha`、`CGSGetWindowLevel` | 快速全局枚举（含其他 Space）、Space 归属读取、**真窗口判别（ordered-in）**、**全屏 Space 判定**、逐窗口透明度（透镜压暗） | 中低。无需关 SIP，社区大项目常年在用，跨大版本偶有签名调整。逐项封装 + 启动自检，失败时降级公开 API |
 | 第 1.5 层 | `SLSBridgedMoveWindowsToManagedSpaceOperation` + 基类的 `performWithWMBridgeDelegate` | 把一个窗口迁到当前 Space，供拖格子分屏对跨 Space 的窗口成立 | **可用（实测 13–19ms，SIP 开启，见第 6 节 M6），尚未引入。** 风险高于第 1 层：一个私有 ObjC 类加一个私有方法，随点版本更新可能变。但**判定得起也降级得了**——类与选择子都能在运行时探，缺了就整条能力不可用。这是第 2 节例外条款**唯一**允许的写操作 |
-| 第 1.6 层 | `SLSSpaceCreate` / `SLSSpaceSetAbsoluteLevel` / `SLSShowSpaces` / `SLSSpaceAddWindowsAndRemoveFromSpaces` / `SLSSpaceDestroy` | 自建 private Space 并把**自己的**面板挂进去，使条在 Space 切换时钉住不动（第 4 节 spike） | 中。不需要关 SIP，作用面只有自己进程的窗口与自己建的 Space，sketchybar 长期在用。失败即降级回 `.canJoinAllSpaces` |
+| 第 1.6 层 | `SLSSpaceCreate` / `SLSSpaceSetAbsoluteLevel` / `SLSShowSpaces` / `SLSSpaceAddWindowsAndRemoveFromSpaces` | 自建 private Space 并把**自己的**面板挂进去，使条在 Space 切换时钉住不动（第 4 节） | 中。不需要关 SIP，作用面只有自己进程的窗口与自己建的 Space，sketchybar 长期在用。**已引入。** 每次挂载都正面回读验证，四个失败分支各自降级回 `.canJoinAllSpaces` 并报出是哪一步 |
 | 第 2 层 | 对**别人家窗口**的 Space 写操作（切换 / 注入式跨 Space 移动），yabai 式 Dock 注入 scripting addition | —— | **永不进入。** 需关 SIP，且硬编码系统版本号与十六进制指令模式；Tahoe 26.1 / 26.2 点版本更新均出现静默失效实例。与第 1.5 / 1.6 层的区别在**作用面与手段**：动自己的窗口、自己的 Space 不在此列，注入式的那条永不进入 |
 | 边缘 hack | CGSHWCaptureWindowList（缩略图备胎）；AltTab 式「短暂拉取其他 Space 窗口获 AX 引用」 | 未读数、截图备选、存量窗口引用 | 第三项有闪屏与 1 秒预算的已知缺陷，仅在懒获取策略不足时评估 |
 
@@ -333,7 +339,7 @@ SLSSpaceAddWindowsAndRemoveFromSpaces(cid, space, [wid], 0x7);
 
 暴露面控制目标：第 0 层 1 个 + 第 1 层 7 个（`SLSMainConnectionID` / `SLSGetActiveSpace` / `SLSCopySpacesForWindows` / `SLSWindowIsOrderedIn` / `SLSSpaceGetType` / `CGSCopyManagedDisplaySpaces` / `SLSRegisterNotifyProc`）。其中 ordered-in 判别式是对账通道的前提；`SLSSpaceGetType` 用于判定 Space 是否为原生全屏（type == 4，实测确认），替代「visibleFrame == frame」——后者会被「自动隐藏菜单栏」设置误判，且失效方式是静默的；`CGSCopyManagedDisplaySpaces` 把这个判定细到每块屏；`SLSRegisterNotifyProc` 订阅窗口服务器事件，是调度中心进出的唯一事件源（见第 4 节）。后两个是本轮新增，仍属只读观察，缺失时各自的功能关闭并在启动自检里报出来。
 
-长期仍只进入第 1 层只读区，不引入任何写操作：M0 已验证协作式激活可用，`_SLPSSetFrontProcessWithOptions` 一类强制夺焦符号无须引入。一切私有调用集中于单一封装模块，带启动自检与降级路径。App Store 分发已放弃，不构成约束。
+写操作只在第 1.5 / 1.6 两层，各自的作用面已写在表里：迁一个用户点名的窗口，和把自己的面板挂进自己建的 Space。此外不再引入——M0 已验证协作式激活可用，`_SLPSSetFrontProcessWithOptions` 一类强制夺焦符号无须引入。一切私有调用集中于单一封装模块，带自检与降级路径。App Store 分发已放弃，不构成约束。
 
 ## 6. 里程碑
 

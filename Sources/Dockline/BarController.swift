@@ -11,6 +11,13 @@ final class BarController {
     private let world: World
     private var panels: [CGDirectDisplayID: BarPanel] = [:]
 
+    /// 全部 bar 共用一个自建的 private Space，第一条 bar 上线时建出来。
+    ///
+    /// 没有销毁路径，`SLSSpaceDestroy` 也就没有封装。退出时销毁挡不住任何东西——
+    /// 崩溃与被 kill 时那条路根本不跑。所以只有两种可能：窗口服务器随连接断开自己回收，
+    /// 那就不必调；或者它不回收，那要解决的也不是「正常退出」这一种情形。
+    private var privateSpace: UInt32?
+
     init(world: World) {
         self.world = world
         NotificationCenter.default.addObserver(
@@ -47,6 +54,7 @@ final class BarController {
             panels[id] = panel
             panel.orderFrontRegardless()
             Timeline.log("屏 \(id) 上线，建一条 bar")
+            pin(panel)
         }
 
         for (id, panel) in panels where !live.contains(id) {
@@ -58,5 +66,53 @@ final class BarController {
 
         // 屏数变了，指针监听的需要也可能变了
         world.updateMouseMonitor()
+    }
+
+    /// 把这条 bar 挂进自建的 private Space，让它在桌面之间切换时钉住不动（计划书 §4）。
+    ///
+    /// 挂载后归属不需要维护——实测它扛得住 orderOut→orderFront 与长时间静置，
+    /// 所以 `update(screen:)` 那条路不必重挂。
+    private func pin(_ panel: BarPanel) {
+        let wid = CGWindowID(panel.windowNumber)
+        guard PrivateSpace.available else {
+            unpinned(panel, "私有 Space 符号缺失：\(PrivateSpace.missingSymbols)")
+            return
+        }
+        // 只是留给失败信息用。刚上屏的窗口有一段时间 ordered-in 已经为真、受管 Space
+        // 归属却还是空的，长短不定——所以这里不拿它当门槛，成没成一律以回读为准。
+        let before = SkyLight.spaces(for: wid)
+        let space: UInt32
+        if let existing = privateSpace {
+            space = existing
+        } else {
+            guard let created = PrivateSpace.create() else {
+                unpinned(panel, "建不出 private Space")
+                return
+            }
+            privateSpace = created
+            space = created
+            Timeline.log("建出 private Space \(created)，bar 挂在它上面")
+        }
+        guard PrivateSpace.attach([wid], to: space) else {
+            unpinned(panel, "窗口 \(wid) 挂进 private Space \(space) 被拒")
+            return
+        }
+        // 写完立刻回读，且要正面读到我们那个 space——0x7 掩码看不见私有 Space，
+        // 得用把第 3 位算上的 0xF（见 `SkyLight.spaces(for:mask:)`）。
+        let after = SkyLight.spaces(for: wid, mask: SkyLight.allSpacesIncludingPrivateMask)
+        guard after == [UInt64(space)] else {
+            let read = after?.description ?? "读不到"
+            let was = before?.description ?? "读不到"
+            let ordered = SkyLight.isOrderedIn(wid)?.description ?? "读不到"
+            unpinned(panel, "窗口 \(wid) 挂进 private Space \(space) 后回读是 \(read)，"
+                            + "这次写没生效（挂载前 \(was)，ordered-in=\(ordered)）")
+            return
+        }
+    }
+
+    /// 挂载没成。条退回 `.canJoinAllSpaces`：会跟着桌面滑走，但每个 Space 上都还有。
+    private func unpinned(_ panel: BarPanel, _ reason: String) {
+        panel.fallBackToAllSpaces()
+        Timeline.log("⚠️ bar 钉不住，退回跟随桌面：\(reason)")
     }
 }
