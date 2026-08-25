@@ -10,8 +10,12 @@ import Foundation
 /// 决策事件——hook 的返回值能左右这次授权准不准，而这里是个报状态的东西，不该有
 /// 影响授权结果的机会，哪怕只是因为写错了。后者纯是通知。
 enum HookAdapter {
-    /// 摘要在胶囊上只占一行，长了会把胶囊拉成一条横幅。
+    /// 格子第二行与会话名只放得下一句。
     private static let summaryLimit = 40
+    /// 终态面板贴出的那一段。够读出结论，又不至于把面板拉成一堵墙。
+    private static let responseLimit = 600
+    /// 命令全文。再长的命令，读完前两百个字符也判断得出它要干什么。
+    private static let detailLimit = 200
 
     /// nil = 这个事件不表达任何状态，静默略过。
     ///
@@ -40,6 +44,8 @@ enum HookAdapter {
                 var payload: [String: Any] = ["command": "push", "state": "working",
                                               "tool": tool]
                 if let object = object(json) { payload["object"] = object }
+                if let detail = detail(json) { payload["detail"] = detail }
+                if let metric = metric(json) { payload["metric"] = metric }
                 return payload
             case nil:
                 return nil
@@ -54,7 +60,13 @@ enum HookAdapter {
             }
 
         case "Stop":
-            return finished("done", label: summary(json["last_assistant_message"]))
+            var payload = finished("done", label: summary(json["last_assistant_message"]))
+            // 终态的面板贴的是这一段，不再列历史：那时要的是结论，不是经过。
+            // 截断有上限，但比格子那一行宽得多——那一行只放得下一句。
+            if let full = json["last_assistant_message"] as? String, !full.isEmpty {
+                payload["response"] = String(full.prefix(responseLimit))
+            }
+            return payload
 
         case "StopFailure":
             return finished("failed", label: json["error_type"] as? String)
@@ -138,6 +150,39 @@ enum HookAdapter {
         default: nil
         }
         return raw.map(clamp)
+    }
+
+    /// 完整的那一份。当前那一行放得下它，历史行只放短的。
+    ///
+    /// 现在只有命令有：命令的全文是「它到底要跑什么」，缩成「git commit」之后那半句
+    /// 恰恰是要判断的东西。文件路径不给——路径长而信息只在末段，面板已经显示末段了。
+    private static func detail(_ json: [String: Any]) -> String? {
+        guard json["tool_name"] as? String == "Bash",
+              let command = (json["tool_input"] as? [String: Any])?["command"] as? String,
+              !command.isEmpty
+        else { return nil }
+        return String(command.prefix(detailLimit))
+    }
+
+    /// 这一步的量化结果。改了多少、写了多少——一行动作后面缀一个数，
+    /// 比只说「编辑了某文件」多回答一个问题：改得大不大。
+    private static func metric(_ json: [String: Any]) -> String? {
+        let input = json["tool_input"] as? [String: Any] ?? [:]
+        func lines(_ key: String) -> Int? {
+            (input[key] as? String).map { $0.isEmpty ? 0 : $0.components(separatedBy: "\n").count }
+        }
+        switch json["tool_name"] as? String {
+        case "Edit", "NotebookEdit":
+            // 一次替换就是「删掉旧的那几行、补上新的那几行」，这两个数正是它做的事
+            guard let removed = lines("old_string"), let added = lines("new_string") else {
+                return nil
+            }
+            return "+\(added) −\(removed)"
+        case "Write":
+            return lines("content").map { "+\($0)" }
+        default:
+            return nil
+        }
     }
 
     /// 命令行里有信息的那一小段：程序名，加上紧随其后的子命令。

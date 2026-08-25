@@ -198,7 +198,7 @@ struct PreviewCard: View {
     /// 有会话时缩略图**让位**：那扇窗口长什么样此刻不重要，重要的是它里面那件事进行到
     /// 哪一步了。让位而不是拿掉，是为了不分成两张卡——分支一旦出现在带 `.frame` 的那一层，
     /// 尺寸就没有起点可以插值，整块只剩淡入淡出（§3.1 那条教训）。
-    let session: Session?
+    let session: Activity?
 
     /// 长出来的那一层。窗口相关的东西全在这里，非窗口的项（固定文件夹、废纸篓、
     /// 启动台）因此天然只有名字那一档。
@@ -209,11 +209,6 @@ struct PreviewCard: View {
         let unavailable: Bool
     }
 
-    struct Session: Equatable {
-        let activity: Activity
-        /// 跑了多久
-        let elapsed: String
-    }
 
     /// 卡片宽度随缩略图的比例变——固定比例的框只会让宽窗口两边留白、窄窗口上下留白。
     static let maxWidth: CGFloat = 252
@@ -231,12 +226,12 @@ struct PreviewCard: View {
     /// 只报名字那一档的高度
     static let nameHeight: CGFloat = 26
     /// 标题那一行占多高。名字那一档一行居中；窗口标题排两行；会话名只有一行。
-    private static func headHeight(detail: Detail?, session: Session?) -> CGFloat {
+    private static func headHeight(detail: Detail?, session: Activity?) -> CGFloat {
         guard detail != nil else { return nameHeight }
         return session == nil ? titleHeight : sessionTitleHeight
     }
 
-    private static func textHeight(showsAppName: Bool, session: Session?) -> CGFloat {
+    private static func textHeight(showsAppName: Bool, session: Activity?) -> CGFloat {
         textInset * 2 + (session == nil ? titleHeight : sessionTitleHeight)
             + (showsAppName ? 2 + appNameHeight : 0)
     }
@@ -263,18 +258,45 @@ struct PreviewCard: View {
     /// 动作名那一栏的宽度。固定住，三行的动作名才竖直对齐——对齐是这张卡读起来
     /// 像一张表而不是三句话的全部原因。
     private static let verbWidth: CGFloat = 46
-    private static let dotWidth: CGFloat = 5
+    /// 图标那一栏。定宽，几行的动作名才从同一个横坐标起头。
+    private static let symbolWidth: CGFloat = 14
 
-    private static func sessionHeight(_ session: Session) -> CGFloat {
-        let prompt = session.activity.prompt == nil ? 0 : rowHeight + rowGap
-        // 近期动作，外加当前状况那一行
-        let rows = CGFloat(session.activity.steps.count + 1) * rowHeight
-        return prompt + rowGap + rows + textInset
+    /// 卡片里能排字的宽度
+    private static var innerWidth: CGFloat { sessionWidth - textPad * 2 }
+    private static let bodyFont = NSFont.systemFont(ofSize: 11)
+    /// 提示词与回复各自最多占几行。再多就不是「一眼看清」，而是要读的东西了。
+    private static let promptLines = 3
+    private static let responseLines = 7
+
+    private static func sessionHeight(_ session: Activity) -> CGFloat {
+        var height = textInset
+        if let prompt = session.prompt {
+            height += wrapped(prompt, lines: promptLines) + rowGap
+        }
+        if let response = session.response, session.isUnread {
+            // 停了就贴结论，不再列经过（经过还在终端里）。
+            // 量的是**解析之后**的文字：渲染出来的没有 `**` 这些记号，比原文短，
+            // 拿原文去量会多算出几行，卡片底下就空一块（实测）。
+            height += wrapped(String(styled(response).characters), lines: responseLines)
+        } else {
+            height += CGFloat(session.steps.count + 1) * rowHeight
+        }
+        return height
+    }
+
+    /// 一段文字折行之后占多高，最多几行封顶。尺寸由浮层驱动，必须算得准。
+    private static func wrapped(_ text: String, lines: Int) -> CGFloat {
+        let line = ceil(bodyFont.ascender - bodyFont.descender + bodyFont.leading)
+        let rect = (text as NSString).boundingRect(
+            with: CGSize(width: innerWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: bodyFont])
+        return min(ceil(rect.height), line * CGFloat(lines))
     }
 
     /// 画面能占的最大范围。各档只差这一个框——尺寸算法与视图树都是同一套。
     private static func imageBox(_ peek: CGSize?, showsAppName: Bool,
-                                 session: Session?) -> CGSize {
+                                 session: Activity?) -> CGSize {
         guard let peek else {
             return CGSize(width: maxWidth - pad * 2, height: imageHeight)
         }
@@ -288,7 +310,7 @@ struct PreviewCard: View {
     /// **平时不画。** 那扇窗口长什么样，此刻不是问题；而一张小图浮在卡片中央、两边留着
     /// 大片空白，比不画难看得多。按住空格要大预览时才画——那时用户是明确要看窗口的，
     /// 而且那一档照旧铺满，会话区跟在下面。
-    private static func showsImage(_ session: Session?, _ peek: CGSize?) -> Bool {
+    private static func showsImage(_ session: Activity?, _ peek: CGSize?) -> Bool {
         session == nil || peek != nil
     }
 
@@ -304,7 +326,7 @@ struct PreviewCard: View {
 
     /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
     static func size(title: String, detail: Detail?, peek: CGSize?,
-                     session: Session?) -> CGSize {
+                     session: Activity?) -> CGSize {
         guard let detail else {
             let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
             return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
@@ -330,22 +352,25 @@ struct PreviewCard: View {
         VStack(alignment: .leading, spacing: 0) {
             if let detail, Self.showsImage(session, peek) { thumbnail(detail) }
             VStack(alignment: .leading, spacing: 2) {
-                // 间距按有没有会话给：没有会话时那个元信息是空串，仍会占掉一份间距，
+                // 间距按有没有会话给：没有会话时那些附加元素不存在，仍会占掉一份间距，
                 // 而名字那一档的宽度是照标题量出来的，少几个点就要截断（实测「Claude」
                 // 变成「Cla…」）。间距是取值，不是分支，identity 不受影响。
-                HStack(alignment: .top, spacing: session == nil ? 0 : 6) {
+                HStack(alignment: .firstTextBaseline, spacing: session == nil ? 0 : 7) {
+                    if let session {
+                        Image(systemName: session.symbol)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(session.tint)
+                            .frame(width: Self.symbolWidth)
+                    }
                     // 各档共用这一个 Text。换成两个，它们之间就只剩淡入淡出可做了。
                     Text(title)
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(detail == nil ? 1 : 2)
                         .truncationMode(.tail)
-                    // 无条件挂着，没有会话时是空串：加条件就是加分支，分支一换 identity 就断
-                    Text(session.map { [$0.activity.agent, $0.elapsed].compactMap { $0 }
-                            .joined(separator: " · ") } ?? "")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .fixedSize()
+                    if let session {
+                        Spacer(minLength: 8)
+                        LiveElapsed(start: session.started, agent: session.agent)
+                    }
                 }
                 .frame(height: Self.headHeight(detail: detail, session: session),
                        alignment: detail == nil ? .center : .topLeading)
@@ -363,42 +388,57 @@ struct PreviewCard: View {
         }
     }
 
-    private func sessionBlock(_ session: Session) -> some View {
-        let activity = session.activity
-        let state = activity.stateParts
-        return VStack(alignment: .leading, spacing: 0) {
-            if let prompt = activity.prompt {
+    @ViewBuilder
+    private func sessionBlock(_ session: Activity) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let prompt = session.prompt {
                 Text(prompt)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(Self.promptLines)
                     .truncationMode(.tail)
-                    .frame(height: Self.rowHeight, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.bottom, Self.rowGap)
             }
-            Divider().padding(.bottom, Self.rowGap - 1)
-            // 旧的在上、当前在下：读起来是一条往下走的时间线，最新的那一行贴着卡片底边，
-            // 也就是离条最近的地方。
-            ForEach(activity.steps) { step in
-                row(dot: .tertiary, verb: step.verb, object: step.object, current: false)
+            // 停了就贴结论，不再列经过。那一刻要的是「结果是什么」，
+            // 而经过想看的时候还在终端里。
+            if let response = session.response, session.isUnread {
+                Text(Self.styled(response))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.primary)
+                    .lineLimit(Self.responseLines)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else {
+                // 旧的在上、当前在下：读起来是一条往下走的时间线，最新的那一行贴着
+                // 卡片底边，也就是离条最近的地方。
+                ForEach(session.steps) { step in
+                    row(symbol: step.symbol, verb: step.verb, object: step.object,
+                        metric: step.metric, tint: .tertiary, current: false)
+                }
+                let current = session.stateDetail
+                row(symbol: session.symbol, verb: session.stateParts.verb,
+                    object: current.object, metric: current.metric,
+                    tint: session.tint, current: true)
             }
-            row(dot: activity.tint, verb: state.verb, object: state.object, current: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Self.textPad)
         .padding(.bottom, Self.textInset)
     }
 
-    /// 时间线上的一行：点、动作名、对象。
+    /// 时间线上的一行：图标、动作名、对象、量化结果。
     ///
     /// 对象走等宽字：文件名与命令是代码，正文字体里的 `l` 和 `1` 分不开，
-    /// 而且换一种字本身就把它和左边那一栏拉开了层次。
-    private func row(dot: some ShapeStyle, verb: String, object: String?,
-                     current: Bool) -> some View {
+    /// 而且换一种字本身就把它和左边那一栏拉开层次，不必再画一条竖线。
+    private func row(symbol: String, verb: String, object: String?, metric: String?,
+                     tint: some ShapeStyle, current: Bool) -> some View {
         HStack(spacing: 7) {
-            Circle()
-                .fill(dot)
-                .frame(width: Self.dotWidth, height: Self.dotWidth)
+            Image(systemName: symbol)
+                .font(.system(size: 9.5))
+                .foregroundStyle(tint)
+                .frame(width: Self.symbolWidth)
             Text(verb)
                 .font(.system(size: 11, weight: current ? .medium : .regular))
                 .foregroundStyle(current ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
@@ -409,9 +449,31 @@ struct PreviewCard: View {
                 .foregroundStyle(current ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tertiary))
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
+            // 量化结果右对齐成一栏：几行动作的数值竖直对齐，一眼比得出哪一步改得大
+            Text(metric ?? "")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .fixedSize()
         }
         .frame(height: Self.rowHeight)
+    }
+
+    /// 回复里的 Markdown。
+    ///
+    /// 只认行内语法：`.full` 认得块结构，却把字符流里的换行全吃掉，直接渲染会连成一行
+    /// （实测）。行内这一档保留换行，粗体、斜体、行内代码都在。行内代码要自己换字体——
+    /// 它是这段文字里唯一需要与正文区分的东西。
+    private static func styled(_ markdown: String) -> AttributedString {
+        guard var text = try? AttributedString(
+            markdown: markdown,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+        else { return AttributedString(markdown) }
+        for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            text[run.range].font = .system(size: 11, design: .monospaced)
+        }
+        return text
     }
 
     private func thumbnail(_ detail: Detail) -> some View {
@@ -442,6 +504,35 @@ struct PreviewCard: View {
                     in: RoundedRectangle(cornerRadius: Self.innerRadius, style: .continuous))
         .padding(Self.pad)
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// 会话跑了多久，每秒走一格。
+///
+/// 只在面板存在的那几秒里跑：条上不添第二样会动的东西——条的动效只有格子边缘那一处，
+/// 那是身份层唯一允许的偏离。数字走等宽：不然每跳一秒，右边那一栏就横着挪一下。
+private struct LiveElapsed: View {
+    let start: Date
+    let agent: String?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text([agent, Self.text(start, context.date)].compactMap { $0 }
+                .joined(separator: " · "))
+                .font(.system(size: 10.5))
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .fixedSize()
+        }
+    }
+
+    /// 一小时以内报分秒，超过就报时分——秒在那个尺度上已经没有信息了。
+    private static func text(_ start: Date, _ now: Date) -> String {
+        let total = Int(max(0, now.timeIntervalSince(start)))
+        let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60)
+        return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+                         : String(format: "%d:%02d", minutes, seconds)
     }
 }
 

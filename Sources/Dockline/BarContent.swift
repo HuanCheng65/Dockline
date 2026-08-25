@@ -1011,28 +1011,10 @@ struct BarContent: View {
     }
 
     /// 这一档预览的窗口上有没有 agent 会话。有就让卡片让位给它。
-    private func cardSession(_ stage: FloatStage) -> PreviewCard.Session? {
-        guard case .preview(let target) = stage.kind,
-              let activity = model.world.activities[.window(target.window.id)]
-                  ?? model.world.activities[.app(target.window.pid)]
-        else { return nil }
-        return PreviewCard.Session(activity: activity,
-                                   elapsed: Self.elapsed(activity.started))
-    }
-
-    /// 跑了多久。交给 `DateComponentsFormatter`，单位的说法由系统按当前语言给，
-    /// 不必自己往本地化资源里塞一套时间单位。
-    private static let duration: DateComponentsFormatter = {
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute]
-        formatter.unitsStyle = .abbreviated
-        formatter.maximumUnitCount = 2
-        return formatter
-    }()
-
-    private static func elapsed(_ start: Date) -> String {
-        // 不足一分钟时它会交回空串，那时说「刚开始」比留白准确
-        duration.string(from: max(60, Date().timeIntervalSince(start))) ?? ""
+    private func cardSession(_ stage: FloatStage) -> Activity? {
+        guard case .preview(let target) = stage.kind else { return nil }
+        return model.world.activities[.window(target.window.id)]
+            ?? model.world.activities[.app(target.window.pid)]
     }
 
     /// nil = 还只是名字那一档

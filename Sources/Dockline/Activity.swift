@@ -78,8 +78,50 @@ struct Activity: Equatable {
         let id: Int
         let tool: String
         let object: String?
+        /// 完整的那一份（命令全文一类）。当前那一行给它，历史行给短的。
+        let detail: String?
+        /// 量化的结果：`+12 −5` 一类。缀在行尾右对齐。
+        let metric: String?
 
         var verb: String { localized("activity.tool.\(tool)", fallback: tool) }
+        var symbol: String { Activity.symbol(tool: tool) }
+    }
+
+    /// 工具的图标。SF Symbols，不进本地化资源——图标不是文案。
+    static func symbol(tool: String) -> String {
+        switch tool {
+        case "Read": return "doc.text"
+        case "Edit", "NotebookEdit": return "pencil.line"
+        case "Write": return "square.and.pencil"
+        case "Bash": return "terminal"
+        case "Grep", "Glob": return "magnifyingglass"
+        case "WebFetch", "WebSearch": return "globe"
+        case "Task", "Agent": return "person.2"
+        case "TodoWrite": return "checklist"
+        default: return "circle.dashed"
+        }
+    }
+
+    /// 当前状况那一行的图标。等待的四档各给各的：那一眼要读出「在等什么」，
+    /// 而不只是「在等」。
+    var symbol: String {
+        switch salience {
+        case .working:
+            return tool.map(Activity.symbol(tool:)) ?? "ellipsis"
+        case .waiting(let waiting):
+            switch waiting {
+            case .question: return "questionmark.bubble"
+            case .permission: return "lock"
+            case .plan: return "doc.text.magnifyingglass"
+            case .input: return "keyboard"
+            }
+        case .finished(let outcome):
+            switch outcome {
+            case .done: return "checkmark.circle.fill"
+            case .failed: return "xmark.circle.fill"
+            case .quota: return "clock.badge.exclamationmark"
+            }
+        }
     }
 
     /// 当前这一行的两栏，与历史那几行用同一套排布。
@@ -93,6 +135,17 @@ struct Activity: Equatable {
         case .finished(let outcome):
             return (outcome.text, label)
         }
+    }
+
+    /// 当前那一行的对象与量化结果。
+    ///
+    /// 在跑、且这一步带着工具时给**完整的那一份**——命令全文正是此刻要判断的东西。
+    /// 正在生成时它没有对象：那时把上一步残留的命令摆在这里，等于说它还在跑那条命令。
+    var stateDetail: (object: String?, metric: String?) {
+        guard case .working = salience, tool != nil, let last = steps.last else {
+            return (stateParts.object, nil)
+        }
+        return (last.detail ?? stateParts.object, last.metric)
     }
 
     /// 时间线上那个点的颜色。
@@ -124,8 +177,11 @@ struct Activity: Equatable {
     var label: String?
     /// 只在 hover 里出现的细节：耗时、ETA、任务 n/m。**永远不进格子**（进度口径见设计文档 §3）。
     var detail: String?
-    /// 用户这一轮说的话。面板里给一行——任务名是这件事叫什么，它是这件事怎么被交代的。
+    /// 用户这一轮说的话。任务名是这件事叫什么，它是这件事怎么被交代的。
     var prompt: String?
+    /// 最后一段回复。**终态时面板贴出它，并且不再列历史**——那时你要的是结论，
+    /// 不是经过；经过在你想看的时候还在终端里。
+    var response: String?
     /// 哪个 agent。多个 agent 同时在跑时，光看格子分不出是谁。
     var agent: String?
     /// 近期走过的几步，旧的在前。只留末尾几条：面板要的是「刚才发生了什么」，
@@ -279,6 +335,11 @@ final class ActivityCenter {
             // 等待队列按它排序，重置一次就等于插了一次队。
             let tool = userInfo["tool"] as? String
             let object = userInfo["object"] as? String
+            let step = tool.map {
+                Activity.Step(id: (previous?.steps.last?.id ?? 0) + 1, tool: $0, object: object,
+                              detail: userInfo["detail"] as? String,
+                              metric: userInfo["metric"] as? String)
+            }
             let activity = Activity(salience: salience,
                                     task: userInfo["task"] as? String ?? previous?.task,
                                     tool: tool,
@@ -287,8 +348,9 @@ final class ActivityCenter {
                                     label: userInfo["label"] as? String,
                                     detail: userInfo["detail"] as? String,
                                     prompt: userInfo["prompt"] as? String ?? previous?.prompt,
+                                    response: userInfo["response"] as? String,
                                     agent: userInfo["agent"] as? String ?? previous?.agent,
-                                    steps: Self.appending(tool, object, to: previous?.steps ?? []),
+                                    steps: Self.appending(step, to: previous?.steps ?? []),
                                     started: previous?.started ?? Date(),
                                     since: previous?.salience.rank == salience.rank
                                         ? previous?.since ?? Date() : Date())
@@ -320,12 +382,10 @@ final class ActivityCenter {
 
     /// 记下走过的这一步。没带工具的上报（提交提示词、工具跑完、等待、终态）不是一步，
     /// 原样带过——否则列表里会塞满没有内容的空行。
-    private static func appending(_ tool: String?, _ object: String?,
+    private static func appending(_ step: Activity.Step?,
                                   to steps: [Activity.Step]) -> [Activity.Step] {
-        guard let tool else { return steps }
-        var result = steps
-        result.append(Activity.Step(id: (steps.last?.id ?? 0) + 1, tool: tool, object: object))
-        return result.suffix(stepLimit)
+        guard let step else { return steps }
+        return Array((steps + [step]).suffix(stepLimit))
     }
 
     /// 上报方的身份。会话标识最准，其次是指名的窗口，都没有就整个 App 一条——
