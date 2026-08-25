@@ -66,7 +66,10 @@ extension BarModel {
         case .window(let cell):
             addWindow(cell.window, to: menu)
         case .dormant(let app):
-            menu.addItem(ActionItem("打开") { [weak self] in self?.world.launch(app) })
+            menu.addItem(ActionItem("打开") { [weak self] in
+                guard let self else { return }
+                world.launch(app, on: display)
+            })
             menu.addItem(.separator())
             addApp(pid: app.pid, bundleID: app.bundleID, url: app.url, to: menu)
         case .overflow:

@@ -199,20 +199,36 @@ final class World: ObservableObject {
 
     // MARK: 在此显示器打开（计划书 §6 M5）
 
-    /// 按下 App 自己的某一项开窗口之后，等那个窗口出现，再把它挪到指定的屏上。
+    /// 请 App 开一扇窗口之后，等那个窗口出现，再把它挪到指定的屏上。
+    ///
+    /// 认领要按 pid **或** bundle ID：从右键菜单开窗口时 App 一定在运行、pid 是现成的，
+    /// 而点一个没运行的 App 时还没有 pid，只能靠 bundle ID 认。
     private struct PendingOpen {
-        let pid: pid_t
+        let pid: pid_t?
+        let bundleID: String?
         let display: CGDirectDisplayID
         let deadline: Date
+
+        func matches(_ window: IndexedWindow) -> Bool {
+            if let pid { return window.pid == pid }
+            if let bundleID { return window.bundleID == bundleID }
+            return false
+        }
+
+        var label: String { pid.map { "pid \($0)" } ?? (bundleID ?? "?") }
     }
     private var pendingOpens: [PendingOpen] = []
     /// 等新窗口的上限。等不到就作罢并记一笔——不能悄悄丢掉一个用户发起过的动作。
     private static let openTimeout: TimeInterval = 10
 
     func openHere(pid: pid_t, app url: URL, item: DockMenu.Item, on display: CGDirectDisplayID) {
-        pendingOpens.append(PendingOpen(pid: pid, display: display,
-                                        deadline: Date().addingTimeInterval(Self.openTimeout)))
+        expectWindow(pid: pid, bundleID: nil, on: display)
         DockMenu.press(app: url.path, at: item.path)
+    }
+
+    private func expectWindow(pid: pid_t?, bundleID: String?, on display: CGDirectDisplayID) {
+        pendingOpens.append(PendingOpen(pid: pid, bundleID: bundleID, display: display,
+                                        deadline: Date().addingTimeInterval(Self.openTimeout)))
     }
 
     /// - Parameter known: 这一轮之前就在索引里的窗口。新开出来的那个必然不在其中。
@@ -221,10 +237,10 @@ final class World: ObservableObject {
         let now = Date()
         pendingOpens = pendingOpens.filter { request in
             guard let window = fresh.first(where: {
-                $0.pid == request.pid && !known.contains($0.id)
+                request.matches($0) && !known.contains($0.id)
             }) else {
                 guard request.deadline > now else {
-                    Timeline.log("⚠️ 「在此显示器打开」没等到新窗口：pid \(request.pid)，已作罢")
+                    Timeline.log("⚠️ 「在此显示器打开」没等到新窗口：\(request.label)，已作罢")
                     return false
                 }
                 return true
@@ -1070,10 +1086,20 @@ final class World: ObservableObject {
     /// activate 只是把 App 提到前台、不发 reopen 事件，而这个槽位上的 App 恰恰是
     /// 一个窗口都没有的——像系统设置那样关掉窗口后进程还在的，activate 一下什么也不会发生。
     /// openApplication 对运行中的 App 同样发 reopen，这正是 Dock 点击的语义。
-    func launch(_ app: DormantApp) {
+    /// - Parameter display: 从哪块屏的条上点的。它开出来的窗口要落在这块屏上——
+    ///   用户在哪儿点就在哪儿出现（计划书 §6 M5「对象全局，交互就地」）。
+    ///
+    ///   macOS 没有「在这块屏打开」的接口，落点由 App 自己的窗口恢复决定，通常是它上一次
+    ///   出现的那块屏。只能事后搬：等它的第一扇窗口出现，不在这块屏就挪过来。代价是窗口
+    ///   会先在别处冒出来再飞过来——想彻底避免只有「先藏起来摆好再显示」一条路，那要动
+    ///   别人的窗口，不做。
+    func launch(_ app: DormantApp, on display: CGDirectDisplayID?) {
         guard let url = app.url else {
             report("无法打开此 App", "它可能已被移除或重新命名。")
             return
+        }
+        if let display {
+            expectWindow(pid: app.pid, bundleID: app.bundleID, on: display)
         }
         startBounce(app.bundleID)
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())

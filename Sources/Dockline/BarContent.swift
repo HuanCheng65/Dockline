@@ -1066,7 +1066,7 @@ struct BarContent: View {
         guard let cell = slot.cell else {
             // 正在启动的 App 再点没有意义：它还没到达，也就谈不上「已在眼前」
             guard let app = slot.app, !slot.bouncing else { return }
-            model.world.launch(app)
+            model.world.launch(app, on: model.display)
             return
         }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
