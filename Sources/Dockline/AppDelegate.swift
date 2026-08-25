@@ -29,6 +29,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .data(using: .utf8)!)
         }
 
+        // 跨 Space 迁移是私有的类加私有的方法，随时可能在某个点版本消失（计划书 §2 / §5
+        // 第 1.5 层）。缺了它，拖格子分屏对别的 Space 上的窗口会安静地退回「不上膛」——
+        // 那正是最容易被当成「这功能坏了」的一种表现，所以在这里先说一句。
+        if !SpaceMove.available {
+            Timeline.log("⚠️ 跨 Space 迁移不可用，别的 Space 上的窗口不参与分屏与「拿到本屏」："
+                         + SpaceMove.missing.joined(separator: ", "))
+        }
+
         bars.start()
         world.start()
         keyboard.start()
