@@ -137,6 +137,15 @@ struct Activity: Equatable {
         }
     }
 
+    /// 历史那几行。
+    ///
+    /// 在跑、且这一步带着工具时，**最后一步就是当前那一行**——它已经在下面单独占一行了，
+    /// 这里再列一遍就成了两条一模一样的记录（实测撞到过）。
+    var history: [Step] {
+        if case .working = salience, tool != nil { return steps.dropLast() }
+        return steps
+    }
+
     /// 当前那一行的对象与量化结果。
     ///
     /// 在跑、且这一步带着工具时给**完整的那一份**——命令全文正是此刻要判断的东西。

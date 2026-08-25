@@ -271,27 +271,36 @@ struct PreviewCard: View {
     private static func sessionHeight(_ session: Activity) -> CGFloat {
         var height = textInset
         if let prompt = session.prompt {
-            height += wrapped(prompt, lines: promptLines) + rowGap
+            height += wrapped(AttributedString(prompt), lines: promptLines) + rowGap
         }
         if let response = session.response, session.isUnread {
-            // 停了就贴结论，不再列经过（经过还在终端里）。
-            // 量的是**解析之后**的文字：渲染出来的没有 `**` 这些记号，比原文短，
-            // 拿原文去量会多算出几行，卡片底下就空一块（实测）。
-            height += wrapped(String(styled(response).characters), lines: responseLines)
+            // 停了就贴结论，不再列经过（经过还在终端里）
+            height += wrapped(styled(response), lines: responseLines)
         } else {
-            height += CGFloat(session.steps.count + 1) * rowHeight
+            height += CGFloat(session.history.count + 1) * rowHeight
         }
         return height
     }
 
-    /// 一段文字折行之后占多高，最多几行封顶。尺寸由浮层驱动，必须算得准。
-    private static func wrapped(_ text: String, lines: Int) -> CGFloat {
-        let line = ceil(bodyFont.ascender - bodyFont.descender + bodyFont.leading)
-        let rect = (text as NSString).boundingRect(
-            with: CGSize(width: innerWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: bodyFont])
-        return min(ceil(rect.height), line * CGFloat(lines))
+    /// 一段文字折行之后占多高，最多几行封顶。
+    ///
+    /// **交给 SwiftUI 自己量。** `NSString.boundingRect` 与 `Text` 的行高对不上——同一段
+    /// 文字实测 78 对 84，每行差 1pt。而这张卡的尺寸是浮层驱动的、必须提前算准，差一点
+    /// 就是底下空一条或者把最后一行裁掉。量一次缓存住：同一段文字在同一宽度下不会变。
+    private static var measured: [String: CGFloat] = [:]
+
+    private static func wrapped(_ text: AttributedString, lines: Int) -> CGFloat {
+        // 量的必须是**要渲染的那一份**：行内代码是等宽字、比正文宽，折行位置会不一样
+        let key = "\(lines)\u{0}\(String(text.characters))"
+        if let cached = measured[key] { return cached }
+        let view = Text(text)
+            .font(.system(size: 11))
+            .lineLimit(lines)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: innerWidth, alignment: .leading)
+        let height = NSHostingView(rootView: view).fittingSize.height
+        measured[key] = height
+        return height
     }
 
     /// 画面能占的最大范围。各档只差这一个框——尺寸算法与视图树都是同一套。
@@ -413,7 +422,7 @@ struct PreviewCard: View {
             } else {
                 // 旧的在上、当前在下：读起来是一条往下走的时间线，最新的那一行贴着
                 // 卡片底边，也就是离条最近的地方。
-                ForEach(session.steps) { step in
+                ForEach(session.history) { step in
                     row(symbol: step.symbol, verb: step.verb, object: step.object,
                         metric: step.metric, tint: .tertiary, current: false)
                 }
