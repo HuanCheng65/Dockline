@@ -657,6 +657,38 @@ case "roundtrip":
         exit(1)
     }
     commandRoundtrip(p, preferredWID: arguments.dropFirst(2).first.flatMap(CGWindowID.init))
+case "thumbs":
+    var wid: CGWindowID?
+    var hz: Double = 30
+    var seconds: Double = 10
+    var width: CGFloat = 720
+    var reuse = false
+    var rest = Array(arguments.dropFirst())
+    while let flag = rest.first {
+        rest.removeFirst()
+        if flag == "--reuse" { reuse = true; continue }
+        guard let value = rest.first.flatMap(Double.init) else {
+            FileHandle.standardError.write(
+                "用法: docklinespike thumbs --wid n [--hz N] [--seconds S] [--width W] [--reuse]\n"
+                    .data(using: .utf8)!)
+            exit(1)
+        }
+        rest.removeFirst()
+        switch flag {
+        case "--wid": wid = CGWindowID(value)
+        case "--hz": hz = value
+        case "--seconds": seconds = value
+        case "--width": width = CGFloat(value)
+        default:
+            FileHandle.standardError.write("thumbs: 无法识别的选项 \(flag)\n".data(using: .utf8)!)
+            exit(1)
+        }
+    }
+    guard let wid else {
+        FileHandle.standardError.write("thumbs: 要一个 --wid\n".data(using: .utf8)!)
+        exit(1)
+    }
+    commandThumbs(wid: wid, hz: hz, seconds: seconds, width: width, reuse: reuse)
 case "bridge":
     var wid: CGWindowID?
     var space: UInt64?
@@ -707,5 +739,6 @@ default:
     print("用法: docklinespike [list | index | bench | events [起 止 秒] | keytap [秒] [--stall]"
           + " | spaces [--wid n]… [--watch 秒] [--hz N]"
           + " | bridge [--wid n | --self] [--space s] [--via 路线] [--activate]"
+          + " | thumbs --wid n [--hz N] [--seconds S] [--width W] [--reuse]"
           + " | raise <wid> | fill <wid> | hold-raise <wid> | activate <pid> | roundtrip <pid> [wid]]")
 }
