@@ -170,10 +170,13 @@ extension BarModel {
                                windowTitles: Set(world.windows.filter { $0.pid == pid }.map(\.title)))
             }
         } ?? DockMenu.Result()
-        for item in dynamic.own {
-            menu.addItem(entry(item, app: url))
+        for (index, group) in dynamic.own.enumerated() {
+            if index > 0 { menu.addItem(.separator()) }
+            for item in group { menu.addItem(entry(item, app: url)) }
         }
-        if let pid, let url { addOpenHere(pid: pid, app: url, items: dynamic.own, to: menu) }
+        if let pid, let url {
+            addOpenHere(pid: pid, app: url, items: dynamic.own.flatMap { $0 }, to: menu)
+        }
         if !dynamic.own.isEmpty { menu.addItem(.separator()) }
 
         let options = NSMenuItem(title: "选项", action: nil, keyEquivalent: "")
@@ -210,7 +213,10 @@ extension BarModel {
             let parent = NSMenuItem(title: item.title, action: nil, keyEquivalent: "")
             let sub = NSMenu()
             sub.autoenablesItems = false
-            for child in item.children { sub.addItem(entry(child, app: url)) }
+            for (index, group) in item.children.enumerated() {
+                if index > 0 { sub.addItem(.separator()) }
+                for child in group { sub.addItem(entry(child, app: url)) }
+            }
             parent.submenu = sub
             return parent
         }

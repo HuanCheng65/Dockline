@@ -20,7 +20,8 @@ enum DockMenu {
         let checked: Bool
         /// 从根菜单到这一项的标题路径。按下时要重新弹一次菜单，靠它把项找回来。
         let path: [String]
-        let children: [Item]
+        /// 子菜单，同样按分隔线分段。
+        let children: [[Item]]
     }
 
     /// 等菜单元素出现 / 等条目填满的上限。实测各 20ms 与 45ms，这里留一个数量级的余量。
@@ -107,8 +108,9 @@ enum DockMenu {
     // MARK: 取
 
     struct Result {
-        /// App 自己生成的那一段
-        var own: [Item] = []
+        /// App 自己生成的那些项，按菜单里的分隔线分段。分段是 App 对这些项的组织
+        /// （浏览器把「新建窗口」与「新建无痕窗口」放在一起、与其余项隔开），拍平就丢了。
+        var own: [[Item]] = []
         /// 借用项，按键索引
         var borrowed: [Borrowed: Item] = [:]
     }
@@ -116,14 +118,36 @@ enum DockMenu {
     /// - Parameter windowTitles: 该 App 此刻的窗口标题。菜单头部那段窗口列表是程序坞加的，
     ///   与我们的条重复，按标题剔掉——这份数据索引里本来就有。
     static func fetch(app path: String, windowTitles: Set<String>) -> Result {
-        guard available, let item = dockItem(path: path) else { return Result() }
-        guard let menu = show(item) else { return Result() }
+        guard available else { return Result() }
+        let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let began = DispatchTime.now().uptimeNanoseconds
+        guard let item = dockItem(path: path) else {
+            Timeline.log("⚠️ 动态菜单跳过 \(name)：程序坞的项里找不到它")
+            return Result()
+        }
+        guard let menu = show(item, of: name) else { return Result() }
         defer { AXUIElementPerformAction(menu, kAXCancelAction as CFString) }
 
+        let raw = entries(of: menu)
+        guard !raw.isEmpty else {
+            // 菜单元素拿到了，条目却一直没填上。整份程序坞菜单至少有「选项 / 隐藏 / 退出」，
+            // 一条都没有只可能是没读到，不可能是这个 App 真的什么都没有。
+            Timeline.log("⚠️ 动态菜单读空 \(name)：菜单弹出来了，\(timeout) 秒内一个条目都没有")
+            return Result()
+        }
+
         var result = Result()
-        for entry in entries(of: menu) {
+        var group: [Item] = []
+        // 剔掉系统项与窗口列表之后常有整段落空，落空的段直接丢掉，否则会连出两条分隔线。
+        func endGroup() {
+            guard !group.isEmpty else { return }
+            result.own.append(group)
+            group = []
+        }
+        for entry in raw {
             guard let title = copy(entry, kAXTitleAttribute) as? String, !title.isEmpty else {
-                continue        // 分隔线：分段由我们自己重排，原样带过来没有意义
+                endGroup()      // 分隔线
+                continue
             }
             if title == optionsTitle {
                 for option in entries(of: entry).compactMap({ read($0, path: [title]) }) {
@@ -136,14 +160,39 @@ enum DockMenu {
                 continue
             }
             guard !systemTitles.contains(title), !windowTitles.contains(title) else { continue }
-            if let own = read(entry, path: []) { result.own.append(own) }
+            if let own = read(entry, path: []) { group.append(own) }
         }
+        endGroup()
+        // 正常一轮 45–50ms。慢下来要看得见：右键的响应延迟最敏感，而每一项的空子菜单
+        // 都会各自等满 `timeout`，条目一多就是成倍的。计划书 §9 的待验证项之一。
+        let cost = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6
+        if cost > 150 {
+            Timeline.log(String(format: "⚠️ 动态菜单慢 %@：%.0fms，%d 个条目",
+                                name, cost, raw.count))
+        }
+        return result
+    }
+
+    /// 把一份菜单的条目按其中的分隔线切成若干段。
+    private static func groups(of menu: AXUIElement, path: [String]) -> [[Item]] {
+        var result: [[Item]] = []
+        var group: [Item] = []
+        for entry in entries(of: menu) {
+            // 读不出标题的只有分隔线
+            guard let item = read(entry, path: path) else {
+                if !group.isEmpty { result.append(group); group = [] }
+                continue
+            }
+            group.append(item)
+        }
+        if !group.isEmpty { result.append(group) }
         return result
     }
 
     /// 按下某一项。菜单一关，它的 AX 元素就失效了，所以重新弹一次、按标题路径找回去。
     static func press(app path: String, at titles: [String]) {
-        guard let item = dockItem(path: path), let menu = show(item) else {
+        let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        guard let item = dockItem(path: path), let menu = show(item, of: name) else {
             Timeline.log("⚠️ 程序坞菜单按下失败：\(titles.joined(separator: " › "))，菜单弹不出来")
             return
         }
@@ -190,8 +239,10 @@ enum DockMenu {
     }
 
     /// 弹出并等它出现。菜单挂在这一项自己的子树下，不在程序坞根节点上。
-    private static func show(_ item: AXUIElement) -> AXUIElement? {
-        guard AXUIElementPerformAction(item, kAXShowMenuAction as CFString) == .success else {
+    private static func show(_ item: AXUIElement, of app: String) -> AXUIElement? {
+        let status = AXUIElementPerformAction(item, kAXShowMenuAction as CFString)
+        guard status == .success else {
+            Timeline.log("⚠️ 程序坞菜单弹不出来 \(app)：AXShowMenu AXError \(status.rawValue)")
             return nil
         }
         for _ in 0..<Int(timeout / step) {
@@ -202,7 +253,10 @@ enum DockMenu {
             }
         }
         // AXShowMenu 已经成功但属性迟迟没出现时，尽力收掉可能仍留在屏幕上的菜单。
+        // 用户此刻恰恰是**看得见**菜单闪出来的，所以这一条与「弹不出来」必须分开报：
+        // 前者是程序坞不认这一项，后者是菜单已经在屏幕上、我们却读不到它。
         AXUIElementPerformAction(item, kAXCancelAction as CFString)
+        Timeline.log("⚠️ 程序坞菜单读不到 \(app)：菜单已弹出，\(timeout) 秒内取不到它的元素")
         return nil
     }
 
@@ -227,9 +281,7 @@ enum DockMenu {
     private static func read(_ entry: AXUIElement, path: [String]) -> Item? {
         guard let title = copy(entry, kAXTitleAttribute) as? String, !title.isEmpty else { return nil }
         let here = path + [title]
-        let children = submenu(of: entry).map { menu in
-            entries(of: menu).compactMap { read($0, path: here) }
-        } ?? []
+        let children = submenu(of: entry).map { groups(of: $0, path: here) } ?? []
         return Item(title: title,
                     enabled: copy(entry, kAXEnabledAttribute) as? Bool ?? true,
                     checked: copy(entry, "AXMenuItemMarkChar") != nil,
