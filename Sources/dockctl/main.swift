@@ -22,6 +22,9 @@ let usage = """
                     [--progress 0-1] [--label 文本] [--detail 文本] [共用选项]
       dockctl event --kind done|failed|quota [--label 摘要] [--detail 文本] [共用选项]
       dockctl end   [共用选项]
+      dockctl hook  从 stdin 读 Claude Code 的 hook 事件 JSON，自行翻成上报
+      dockctl install-hooks    把上一条登记进 ~/.claude/settings.json
+      dockctl uninstall-hooks  撤销登记
 
 共用选项：
   --session 标识   上报方的会话标识。同一个 App 里的多个会话靠它区分；
@@ -59,9 +62,47 @@ func hostApp() -> pid_t {
     fail("无法确定上报目标：当前进程的祖先进程中没有 App。请以 --pid 指定。")
 }
 
+func post(_ payload: [String: Any]) {
+    DistributedNotificationCenter.default().postNotificationName(
+        Notification.Name(channel), object: nil, userInfo: payload, deliverImmediately: true)
+}
+
+/// Claude Code 的 hook 入口：事件 JSON 从 stdin 来，翻译见 `HookAdapter`。
+///
+/// **不许往 stdout 写任何东西**——hook 的 stdout 是它与 Claude Code 之间的通道，
+/// 状态上报没有资格在那上面说话。出错走 stderr 加非零退出：那是非阻塞的错误，
+/// 看得见，又不会把用户的 agent 拦下来。
+func runHook() -> Never {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    guard let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
+        fail("hook 的输入不是 JSON 对象")
+    }
+    guard var payload = HookAdapter.payload(json) else { exit(0) }
+    guard let session = json["session_id"] as? String, !session.isEmpty else {
+        fail("hook 事件缺少 session_id")
+    }
+    payload["session"] = session
+    payload["pid"] = Int(hostApp())
+    // cwd 以事件里那份为准：hook 进程的工作目录未必是会话的。
+    if let cwd = json["cwd"] as? String { payload["cwd"] = cwd }
+    post(payload)
+    exit(0)
+}
+
 var arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first,
-      ["push", "event", "end"].contains(command) else { fail(usage) }
+      ["push", "event", "end", "hook", "install-hooks", "uninstall-hooks"].contains(command)
+else { fail(usage) }
+if command == "hook" { runHook() }
+if command == "install-hooks" || command == "uninstall-hooks" {
+    var settings: String?
+    if let index = arguments.firstIndex(of: "--settings") {
+        guard index + 1 < arguments.count else { fail("--settings 缺少路径") }
+        settings = arguments[index + 1]
+    }
+    print(HookInstaller.run(uninstall: command == "uninstall-hooks", settings: settings))
+    exit(0)
+}
 arguments.removeFirst()
 
 var state: String?
@@ -149,5 +190,4 @@ if let progress { payload["progress"] = progress }
 if let label { payload["label"] = label }
 if let detail { payload["detail"] = detail }
 
-DistributedNotificationCenter.default().postNotificationName(
-    Notification.Name(channel), object: nil, userInfo: payload, deliverImmediately: true)
+post(payload)
