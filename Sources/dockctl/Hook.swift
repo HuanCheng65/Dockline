@@ -131,16 +131,27 @@ enum HookAdapter {
         }
         let raw: String? = switch json["tool_name"] as? String {
         case "Read", "Edit", "NotebookEdit", "Write": path("file_path")
-        // 命令往往很长，取第一个词的末段——那是在执行哪个程序。带路径调用时整条路径
-        // 会把这一行占满，而路径里唯一有信息的就是最后那一节。
-        case "Bash": (input["command"] as? String)?.split(separator: " ").first
-            .map { ($0 as NSString).lastPathComponent }
+        case "Bash": command(input["command"] as? String)
         case "Grep", "Glob": input["pattern"] as? String
         case "WebFetch", "WebSearch": input["url"] as? String ?? input["query"] as? String
         case "Task", "Agent": input["description"] as? String
         default: nil
         }
         return raw.map(clamp)
+    }
+
+    /// 命令行里有信息的那一小段：程序名，加上紧随其后的子命令。
+    ///
+    /// 整条命令太长，占满一行也读不出重点；只取程序名又常常等于没说——`git`、`swift`、
+    /// `npm` 本身不区分任何东西，`git commit` 与 `git log` 才是两件事。程序名取末段：
+    /// 带路径调用时那条路径里唯一有信息的就是最后一节。子命令以 `-` 开头的不取，
+    /// 那是选项不是子命令。
+    private static func command(_ raw: String?) -> String? {
+        let words = raw?.split(separator: " ").map(String.init) ?? []
+        guard let program = words.first.map({ ($0 as NSString).lastPathComponent })
+        else { return nil }
+        guard let next = words.dropFirst().first, !next.hasPrefix("-") else { return program }
+        return "\(program) \(next)"
     }
 
     private static func clamp(_ text: String) -> String {

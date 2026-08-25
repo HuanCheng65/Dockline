@@ -1,5 +1,6 @@
 import AppKit
 import DocklineCore
+import SwiftUI
 
 /// 活动挂在条上的哪一格。
 ///
@@ -39,6 +40,15 @@ struct Activity: Equatable {
 
         /// 上报方没给摘要时用它。只留一个记号的话，看得见结果却读不出是什么结果。
         var text: String { localized("activity.outcome.\(rawValue)") }
+
+        var tint: Color {
+            switch self {
+            case .done: return .green
+            case .failed: return .red
+            // 被限额与「完成」含义相反，也不是失败，给它自己的颜色（设计文档 §3）
+            case .quota: return .orange
+            }
+        }
     }
 
     enum Salience: Equatable {
@@ -61,16 +71,36 @@ struct Activity: Equatable {
     }
 
     /// 走过的一步。面板上那份近期动作，就是这些。
+    ///
+    /// **动作名与对象分开存，不拼成一句。** 面板把它们排成两栏，动作名竖直对齐——
+    /// 三行读起来是一张表，而不是三句碰巧开头相似的话。拼好了就再也拆不开。
     struct Step: Equatable, Identifiable {
         let id: Int
         let tool: String
         let object: String?
 
-        /// 与格子第二行同一套说法，同一份本地化资源。
-        var text: String {
-            let verb = localized("activity.tool.\(tool)", fallback: tool)
-            guard let object, !object.isEmpty else { return verb }
-            return localized("activity.action.format", verb, object)
+        var verb: String { localized("activity.tool.\(tool)", fallback: tool) }
+    }
+
+    /// 当前这一行的两栏，与历史那几行用同一套排布。
+    var stateParts: (verb: String, object: String?) {
+        switch salience {
+        case .working:
+            guard let tool else { return (localized("activity.thinking"), nil) }
+            return (localized("activity.tool.\(tool)", fallback: tool), object)
+        case .waiting(let waiting):
+            return (waiting.text, nil)
+        case .finished(let outcome):
+            return (outcome.text, label)
+        }
+    }
+
+    /// 时间线上那个点的颜色。
+    var tint: Color {
+        switch salience {
+        case .working: return .secondary
+        case .waiting: return .accentColor
+        case .finished(let outcome): return outcome.tint
         }
     }
 

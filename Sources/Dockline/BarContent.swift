@@ -1016,11 +1016,8 @@ struct BarContent: View {
               let activity = model.world.activities[.window(target.window.id)]
                   ?? model.world.activities[.app(target.window.pid)]
         else { return nil }
-        return PreviewCard.Session(agent: activity.agent,
-                                   elapsed: Self.elapsed(activity.started),
-                                   prompt: activity.prompt,
-                                   state: activity.stateLine,
-                                   steps: activity.steps)
+        return PreviewCard.Session(activity: activity,
+                                   elapsed: Self.elapsed(activity.started))
     }
 
     /// 跑了多久。交给 `DateComponentsFormatter`，单位的说法由系统按当前语言给，
@@ -1642,8 +1639,6 @@ private struct ActivityEdge: View {
     let activity: Activity
     let radius: CGFloat
 
-    @State private var breathing = false
-
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         Group {
@@ -1656,10 +1651,13 @@ private struct ActivityEdge: View {
             } else {
                 switch activity.salience {
                 case .working:
-                    shape.stroke(.primary.opacity(breathing ? 0.7 : 0.16), lineWidth: 2)
-                        .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true),
-                                   value: breathing)
-                        .onAppear { breathing = true }
+                    // 相位不放在视图的 `@State` 里。格子现在每收到一次上报就重建一遍，
+                    // `onAppear` 不会再来，靠 `value:` 触发的 `repeatForever` 于是只跑
+                    // 第一轮就冻住（实测：呼吸一会儿就停了）。`phaseAnimator` 自己循环，
+                    // 不依赖任何一次状态翻转，视图重建顶多闪一帧。
+                    shape.stroke(.primary, lineWidth: 2)
+                        .phaseAnimator([0.16, 0.7]) { view, phase in view.opacity(phase) }
+                            animation: { _ in .easeInOut(duration: 1.1) }
                 case .waiting:
                     shape.stroke(.tint, lineWidth: 2)
                 case .finished(let outcome):
