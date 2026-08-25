@@ -100,11 +100,15 @@ final class BarModel: ObservableObject {
         overflowing = layout.overflow.count
         foldedTabs = layout.foldsTabs
         // 降级档位变了记一笔。阈值与迟滞的余量都是 §9 的待调参项，要靠实机读数来定。
+        // 宽度也算进 key：这行日志的用处正是「多宽的内容落到哪一档」，只按档位去重的话，
+        // 宽度变了而档位没变就不重记，读到的那对宽度会停在第一帧，成为误导。
         let tier = "\(layout.metrics.icon)/\(layout.metrics.labelCap)/\(layout.overflow.count)"
             + (layout.foldsTabs ? "T" : "")
+            + "/\(Int(availableWidth))/\(Int(layout.barWidth))"
         if tier != loggedTier {
             loggedTier = tier
-            Timeline.log(String(format: "降级  可用 %.0f  内容 %.0f  图标 %.1f  标题上限 %.0f  溢出 %d  标签%@",
+            Timeline.log(String(format: "降级  屏 %@  可用 %.0f  内容 %.0f  图标 %.1f  标题上限 %.0f  溢出 %d  标签%@",
+                                display.map(String.init) ?? "—",
                                 availableWidth, layout.barWidth, layout.metrics.icon,
                                 layout.metrics.labelCap, layout.overflow.count,
                                 layout.foldsTabs ? "收拢" : "展开"))
