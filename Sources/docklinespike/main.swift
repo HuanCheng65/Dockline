@@ -665,6 +665,7 @@ case "thumbs":
     var reuse = false
     var trace = false
     var live = false
+    var legacy = false
     var save: String?
     var rest = Array(arguments.dropFirst())
     while let flag = rest.first {
@@ -672,6 +673,7 @@ case "thumbs":
         if flag == "--reuse" { reuse = true; continue }
         if flag == "--trace" { trace = true; continue }
         if flag == "--live" { live = true; continue }
+        if flag == "--legacy" { legacy = true; continue }
         if flag == "--save", let path = rest.first { save = path; rest.removeFirst(); continue }
         guard let value = rest.first.flatMap(Double.init) else {
             FileHandle.standardError.write(
@@ -695,7 +697,7 @@ case "thumbs":
         exit(1)
     }
     commandThumbs(wid: wid, hz: hz, seconds: seconds, width: width,
-                  reuse: reuse, trace: trace, live: live, save: save)
+                  reuse: reuse, trace: trace, live: live, legacy: legacy, save: save)
 case "bridge":
     var wid: CGWindowID?
     var space: UInt64?

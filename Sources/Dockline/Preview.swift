@@ -26,6 +26,13 @@ final class Thumbnails: ObservableObject {
     /// 让它们等同一次枚举，而不是一格枚举一遍。
     private var listing: Task<Void, Never>?
 
+    /// SCK 抓不到、只能走老路的窗口。Space 不在前台的全屏窗口就是这一类。
+    ///
+    /// 记住它们是为了不在每一帧上白付一次 SCK 的失败（实测 39ms）——大预览一秒二十几帧，
+    /// 每帧先失败一次就把帧率砍掉一半。老路对普通窗口同样有效（只是更贵），
+    /// 所以一个窗口留在这份名单里不会出错，最多是没走上更省的那条。
+    private var legacyOnly: Set<CGWindowID> = []
+
     func capture(_ id: CGWindowID) {
         guard !inFlight.contains(id) else { return }
         inFlight.insert(id)
@@ -78,6 +85,16 @@ final class Thumbnails: ObservableObject {
     }
 
     private func grab(_ id: CGWindowID, width: CGFloat = Thumbnails.thumbWidth) async -> NSImage? {
+        if legacyOnly.contains(id) { return Self.legacyShot(id, width: width) }
+        if let image = await sck(id, width: width) { return image }
+        // SCK 合成的是「当前正在显示的一帧」，Space 不在前台的全屏窗口它给不出来。
+        // 那类窗口正是最该看一眼的一批，所以换一条路再问一次，见 `WindowShot`。
+        guard let image = Self.legacyShot(id, width: width) else { return nil }
+        legacyOnly.insert(id)
+        return image
+    }
+
+    private func sck(_ id: CGWindowID, width: CGFloat) async -> NSImage? {
         let cached = handles[id]
         if cached == nil { await list() }
         guard let handle = handles[id] else { return nil }
@@ -91,6 +108,12 @@ final class Thumbnails: ObservableObject {
         return await Self.shoot(fresh, id: id, width: width)
     }
 
+    private nonisolated static func legacyShot(_ id: CGWindowID, width: CGFloat) -> NSImage? {
+        guard let image = WindowShot.grab(id, width: width) else { return nil }
+        return NSImage(cgImage: image, size: NSSize(width: image.width / 2,
+                                                    height: image.height / 2))
+    }
+
     private func list() async {
         if let listing { return await listing.value }
         let task = Task { @MainActor in
@@ -99,6 +122,8 @@ final class Thumbnails: ObservableObject {
             var fresh: [CGWindowID: SCWindow] = [:]
             for window in content.windows { fresh[window.windowID] = window }
             handles = fresh
+            // 走老路的那份名单跟着一起收：键都是同一批窗口，关掉的自然掉出去
+            legacyOnly.formIntersection(fresh.keys)
         }
         listing = task
         await task.value

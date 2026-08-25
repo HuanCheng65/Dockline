@@ -118,6 +118,25 @@ private func grab(_ window: SCWindow, width: CGFloat, geometry: CGRect? = nil, s
     }
 }
 
+/// 老路：`WindowShot`（`CGWindowListCreateImage`）。走的是窗口服务器手里那份后备存储，
+/// 与 SCK「合成一帧当前画面」不是同一件事——Space 不在前台的全屏窗口 SCK 报 -3811，
+/// 这条路抓得到。量的是与 SCK 同口径的一轮：抓 + 缩到目标宽度。
+private func grabLegacy(_ wid: CGWindowID, width: CGFloat, save: String? = nil)
+    -> (ms: Double?, size: CGSize?, error: String?) {
+    guard WindowShot.available else {
+        return (nil, nil, "CGWindowListCreateImage 这个符号取不到")
+    }
+    let began = DispatchTime.now().uptimeNanoseconds
+    guard let image = WindowShot.grab(wid, width: width) else { return (nil, nil, "抓不到") }
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6
+    if let save {
+        let rep = NSBitmapImageRep(cgImage: image)
+        try? rep.representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: save))
+    }
+    return (ms, CGSize(width: image.width, height: image.height), nil)
+}
+
 /// 窗口此刻的几何，直接问窗口服务器要——微秒级，与枚举整份可共享内容不是一回事。
 private func liveBounds(_ wid: CGWindowID) -> CGRect? {
     guard let raw = CGWindowListCopyWindowInfo([.optionIncludingWindow], wid)
@@ -137,7 +156,7 @@ private func percentile(_ values: [Double], _ p: Double) -> Double {
 // MARK: - 命令
 
 func commandThumbs(wid: CGWindowID, hz: Double, seconds: Double, width: CGFloat,
-                   reuse: Bool, trace: Bool, live: Bool, save: String?) {
+                   reuse: Bool, trace: Bool, live: Bool, legacy: Bool, save: String?) {
     let group = DispatchGroup()
     group.enter()
     Task {
@@ -154,6 +173,16 @@ func commandThumbs(wid: CGWindowID, hz: Double, seconds: Double, width: CGFloat,
         // 分清「命令写错了」和「跑它的那个终端没有屏幕录制权限」。
         print("屏幕录制权限：\(CGPreflightScreenCaptureAccess() ? "有" : "没有")")
         guard let window = await shareableWindow(wid) else {
+            // 老路根本不经过 SCShareableContent。枚举里没有这个窗口，恰恰是要问的情况
+            // 之一——SCK 列不出来的窗口，老路是不是还抓得到。
+            if legacy {
+                print("SCShareableContent 里没有 wid \(wid)，只走老路\n")
+                let shot = grabLegacy(wid, width: width)
+                let out = shot.size.map { "\(Int($0.width))×\(Int($0.height))" }
+                    ?? "失败 —— \(shot.error ?? "")"
+                print("老路：\(out)")
+                exit(shot.size == nil ? 1 : 0)
+            }
             FileHandle.standardError.write("thumbs: 找不到窗口 \(wid)\n".data(using: .utf8)!)
             let content = try? await SCShareableContent.excludingDesktopWindows(
                 true, onScreenWindowsOnly: true)
@@ -196,8 +225,10 @@ func commandThumbs(wid: CGWindowID, hz: Double, seconds: Double, width: CGFloat,
                     enumerate.append(Double(DispatchTime.now().uptimeNanoseconds - began) / 1e6)
                     target = fresh
                 }
-                let shot = await grab(target, width: width,
-                                      geometry: live ? liveBounds(wid) : nil, save: save)
+                let shot = legacy
+                    ? grabLegacy(wid, width: width, save: save)
+                    : await grab(target, width: width,
+                                 geometry: live ? liveBounds(wid) : nil, save: save)
                 if let ms = shot.ms { capture.append(ms) } else { failure = shot.error }
                 if trace {
                     let live = liveBounds(wid).map { "\(Int($0.width))×\(Int($0.height))" } ?? "没了"
