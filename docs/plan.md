@@ -50,7 +50,7 @@ macOS 窗口检索与 Dock 重构 · v1.11 · 2026-08-25
 
 **规避 Spaces 写操作。** 任务切换语义由「批量显示 / 隐藏窗口」实现，全部窗口留在同一 Space。这一决定使项目完全避开了最脆弱的私有 API 层（详见第 5 节）。
 
-**这条原则收窄了一次，收窄的是范围，不是它本身。** 它真正在防的是「把 Spaces 的创建、销毁、切换当成任务切换的实现手段」——那套东西脆，而批量显示隐藏已经把它整个绕开了。**把一个具体窗口的归属从这个 Space 改到那个 Space**，不属于这一类：它是一次性的、由用户显式的一次手势触发、失败可以当场降级的操作，作用面窄得多。原文的前提也变了——那条禁令立在「跨 Space 移动窗口必须关 SIP」上，而 macOS 26.4 起系统重新开了一条 SIP 开着也能走的路（第 5 节、第 9 节）。
+**这条原则收窄过两次，收窄的是范围，不是它本身。** 它真正在防的是「把 Spaces 的创建、销毁、切换当成任务切换的实现手段」——那套东西脆，而批量显示隐藏已经把它整个绕开了。**把一个具体窗口的归属从这个 Space 改到那个 Space**，不属于这一类：它是一次性的、由用户显式的一次手势触发、失败可以当场降级的操作，作用面窄得多。原文的前提也变了——那条禁令立在「跨 Space 移动窗口必须关 SIP」上，而 macOS 26.4 起系统重新开了一条 SIP 开着也能走的路（第 5 节、第 9 节）。第二次收窄在「自己的 Space、自己的窗口」上：为把条钉在屏幕坐标上，自建一个 private Space 把自己的面板挂进去（第 4 节 spike）。它同样不关 SIP、不碰任何别人的窗口，作用面比上一条还窄。
 
 因此改为：**Spaces 写操作不得进入任何常驻路径，也不得承担任何核心语义；单次、用户显式触发、可降级的窗口迁移是唯一的例外。** 例外自带两条硬约束。其一，**能力判定按符号在不在，不按系统版本号**——版本号只是符号存在与否的代理，代理会错，而这个项目已经有 `missingSymbols` 那套自检的先例。其二，**不支持时必须降级到「这件事做不了」，不是降级到「换个方式做」**：拿不到迁移能力，跨 Space 的窗口就不参与分屏手势，而不是退回「把用户甩到那个 Space 去再摆」。降级要在启动自检里报一行原因，不静默。
 
@@ -267,6 +267,21 @@ Liquid Glass 自带这套能力，但**只对高度 ≤64pt 的玻璃开**——
 
 **选型：Swift + AppKit，内容视图 SwiftUI。** bar 为 NSPanel（.nonactivatingPanel，点击不抢焦点），collection behavior 设 .canJoinAllSpaces + .fullScreenAuxiliary 并抬高 window level，使其可浮于原生全屏之上（全屏场景默认自动隐藏、触底唤出）。Electron / Tauri 因 AX 调用密度与延迟要求被排除。
 
+**Spike · 让条在 Space 切换时钉住（已完成，结论是做得到）。** `.canJoinAllSpaces` 的窗口是所在 Space 的一部分，三指切换桌面时它跟着桌面横向滑走；系统程序坞不会。做法不是给窗口打什么「超级粘滞」标记——**自建一个 WindowServer 的 private Space，把面板挂进去**，它就此站在 managed Space 体系之外，任何转场都不参与：
+
+```c
+space = SLSSpaceCreate(cid, 1, 0);                              // 得到一个 type=3 的 Space
+SLSSpaceSetAbsoluteLevel(cid, space, 0);
+SLSShowSpaces(cid, [space]);                                    // CFArray 里是 32 位 CFNumber
+SLSSpaceAddWindowsAndRemoveFromSpaces(cid, space, [wid], 0x7);
+```
+
+四关都实测过（本机 26.5.2、SIP 开着）：桌面切换时肉眼确认钉住不动；归属稳，`orderOut → orderFront` 之后不被 AppKit 拉回 managed Space；输入与普通窗口逐项一致（悬停、左键、右键菜单可弹可点、拖放全链路含 `draggingUpdated`）；**全透明像素照样不参与命中测试**——直接问 `SLSFindWindowByGeometry`，条上的点命中面板自己，透明处命中它下面的窗口，与普通窗口的对照组一致，满宽面板的前提不受影响。sketchybar 用同一套配方多年，只是它的窗口由 `SLSNewWindow` 自建；实测 AppKit 的 NSPanel 一样进得去，SwiftUI 那一整层不必动。
+
+两个坑记在这里。**`SLSAddWindowsToSpaces` 返回 0 但静默无效**——挂到非当前 Space 的请求被忽略，能真正改归属的是 `SLSSpaceAddWindowsAndRemoveFromSpaces`。**`SLSSpaceGetTransform` 按值返回 `CGAffineTransform`，且第三个参数 `int *options` 不能省**，省掉它会拿 x2 里的残留值当出参写、当场崩在 `SLSWindowServerClientSpaceGetTransform` 里。
+
+待验证：多显示器要不要各建一个 private Space；原生全屏与调度中心下的表现（现有的按屏隐藏与让位逻辑是否照旧适用）；睡眠唤醒、切换用户、显示器插拔之后要不要重挂；Liquid Glass 材质与强制活跃外观在其中是否照常；截屏工具的窗口候选框。落地时必须带降级：`SLSSpaceCreate` 失败或挂载后面板不可见，退回 `.canJoinAllSpaces`——否则一次系统更新就可能让整条 bar 不显示。
+
 **窗口索引（核心数据结构）。** 每条记录含：CGWindowID、AX 引用（可空）、pid、App 标识、标题、区分性短标签（动态计算）、最小化状态、Space 归属（**数组**——窗口可同时属于多个 Space）、全屏标志、簇归属、活动状态。索引是 bar、搜索层、时光机的唯一数据源。
 
 **数据流三通道。** 其一，NSWorkspace 通知流：App 启动 / 退出 / 激活。其二，AXObserver 流：对每个运行中 App 订阅窗口创建 / 销毁 / 标题变更 / 最小化 / 取消最小化通知，这是低延迟主通道。其三，CGWindowList（或 SLS 迭代器）轮询兜底：1–2 秒周期对账存在性与 z-order——AX 通知在 Electron 系 App 上确有漏报（Tahoe 上 Teams 窗口时隐时现的社区报告再次确认），兜底不可省略。AX 元素与 CGWindowID 的对应经 `_AXUIElementGetWindow` 建立。
@@ -312,7 +327,8 @@ Liquid Glass 自带这套能力，但**只对高度 ≤64pt 的玻璃开**——
 | 第 0 层 | `_AXUIElementGetWindow` | AX 元素 ↔ CGWindowID 桥接 | 极低。AltTab / yabai / Ice 长期使用，十余年未变 |
 | 第 1 层 | SkyLight 只读族：`SLSMainConnectionID`、`SLSCopyWindowsWithOptionsAndTags` 及窗口迭代器、`SLSCopySpacesForWindows`、`SLSGetActiveSpace`、`SLSWindowIsOrderedIn`、`SLSSpaceGetType`、`SLSSetWindowAlpha`、`CGSGetWindowLevel` | 快速全局枚举（含其他 Space）、Space 归属读取、**真窗口判别（ordered-in）**、**全屏 Space 判定**、逐窗口透明度（透镜压暗） | 中低。无需关 SIP，社区大项目常年在用，跨大版本偶有签名调整。逐项封装 + 启动自检，失败时降级公开 API |
 | 第 1.5 层 | `SLSBridgedMoveWindowsToManagedSpaceOperation` 及其提交路径 | 把一个窗口迁到当前 Space，供拖格子分屏对跨 Space 的窗口成立 | **当前不可用，未引入。** spike 已判定：提交函数在本机不存在，经典写函数对别人家的窗口无效（第 6 节 M6）。这一层是第 2 节例外条款**唯一**允许的写操作，先占位；真出现了再按那条款的两项硬约束接入 |
-| 第 2 层 | Space 写操作族（切换 / 创建销毁 / 注入式跨 Space 移动），yabai 式 Dock 注入 scripting addition | —— | **永不进入。** 需关 SIP，且硬编码系统版本号与十六进制指令模式；Tahoe 26.1 / 26.2 点版本更新均出现静默失效实例。本设计以「批量显示隐藏」替代 Space 语义，结构性规避。注意与第 1.5 层的区别在**手段**不在目的：注入式的那条永不进入，系统自己开的那条按第 2 节的例外条款走 |
+| 第 1.6 层 | `SLSSpaceCreate` / `SLSSpaceSetAbsoluteLevel` / `SLSShowSpaces` / `SLSSpaceAddWindowsAndRemoveFromSpaces` / `SLSSpaceDestroy` | 自建 private Space 并把**自己的**面板挂进去，使条在 Space 切换时钉住不动（第 4 节 spike） | 中。不需要关 SIP，作用面只有自己进程的窗口与自己建的 Space，sketchybar 长期在用。失败即降级回 `.canJoinAllSpaces` |
+| 第 2 层 | 对**别人家窗口**的 Space 写操作（切换 / 注入式跨 Space 移动），yabai 式 Dock 注入 scripting addition | —— | **永不进入。** 需关 SIP，且硬编码系统版本号与十六进制指令模式；Tahoe 26.1 / 26.2 点版本更新均出现静默失效实例。与第 1.5 / 1.6 层的区别在**作用面与手段**：动自己的窗口、自己的 Space 不在此列，注入式的那条永不进入 |
 | 边缘 hack | CGSHWCaptureWindowList（缩略图备胎）；AltTab 式「短暂拉取其他 Space 窗口获 AX 引用」 | 未读数、截图备选、存量窗口引用 | 第三项有闪屏与 1 秒预算的已知缺陷，仅在懒获取策略不足时评估 |
 
 **另有一处私有面，不在上表的分层里：AppKit 的内部实现。** 用途是材质——`NSGlassEffectView` 的内部材质档位（程序坞档），以及 `NSWindow` 的 `_hasActiveAppearance` / `_hasActiveAppearanceIgnoringKeyFocus`（强制活跃外观，否则 nonactivating 面板上的玻璃永远按非活跃外观压暗）。它不需要关 SIP，风险面是「系统更新后内部名字变了」，因此逐个 `responds(to:)` 自检，缺失即跳过并报出来。失效的后果只是材质偏厚，不影响任何功能——这是它与第 2 层的本质区别，也是允许它存在的理由。
@@ -518,6 +534,8 @@ MVP 阶段以自身行为变化为准：Mission Control 使用频率是否显著
 **已否决：用光标钳制压住全屏下的程序坞唤出。** 方案是在全屏 Space 里挂一个拦截式 event tap，光标压到底边最后一两像素时改写事件坐标，让程序坞的唤出条件永远够不着。实测不成立：tap 挂在 HID 层最前面（`.cghidEventTap` + `headInsertEventTap`），改写确实发生了（日志里坐标一路被改成挡板值），程序坞照样滑出来；而且改写之后**下一条事件的坐标继续往下增长**——光标的真实位置在 tap 之前就已经算好，我们改的只是下游看到的值。进一步把越界事件整条丢弃，同样无效。结论是全屏下的程序坞唤出与全屏下的菜单栏同源，由窗口服务器判定，客户端没有入口，没有参数可调。相应地，触底唤出的判定带不需要为钳制让路，维持贴边的 2pt。本节原有的「event tap 仅保留观察用途」在指针路径上因此依然成立；键盘路径是另一回事，见本节下方的推翻。
 
 **已推翻：把系统程序坞挪到侧边这条路的否决。** 原否决理由是「问题只是换了位置，还要用户改系统配置」。前半句在别处成立，在这里不成立——我们要解决的就是**位置**冲突：程序坞的唤出跟着它自己所在的边走，挪到左边，底部就干净了。后半句也不构成额外代价：接管程序坞本来就在改它的偏好并带快照恢复，多一个方向键是同一套机制。
+
+**已推翻：条跟着桌面横向滑走只能忍。** 原文默认 `.canJoinAllSpaces` 是让条出现在每个 Space 上的唯一办法，代价是它成为所在 Space 的一部分、三指切换时跟着滑。中途还两次判错：先以为系统程序坞靠某个「超级粘滞」标记钉住（它身上根本没有 all-workspaces 那一位），后以为「不属于任何 Space」这个状态对 AppKit 窗口够不着（试遍了清标记、移出全部 Space、先关窗再摘、改 window level 四种写法，归属一律停在「当前那一个」）。真正的答案是**它属于一个自建的 private Space**，只是 `SLSCopySpacesForWindows` 的 0x7 掩码照不到那类 Space，读出来才像「无归属」。做法与实测见第 4 节。
 
 **已推翻：全局只有一条 bar、跟指针走。** 原方案是指针压到某块屏的底边并停 0.2 秒，条就滑下去、搬到那块屏、再滑上来。它有一个不成立的前提：一条 bar 能同时代表所有屏上的窗口。实际上窗口区的内容是「哪些窗口在这块屏上」，条一搬家，格子的集合就整个换掉了——用户看到的不是同一条 bar 移动过来，而是一条陌生的条。更直接的代价是固定入口：本屏要用启动台或垃圾桶，得先把指针压到本屏底边把条召唤过来，而这两样东西与显示器毫无关系。现改为每屏一条，规则是「对象全局，交互就地」（见第 3.1 节与第 6 节 M5）。被推翻的是「它作为唯一的多屏方案」，不是「它永远不能作为一个可选模式」——后者记在第 6 节的待验证后再排期里，附重开条件。
 
