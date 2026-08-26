@@ -24,8 +24,22 @@ final class Diagnostics: ObservableObject {
 /// 是每条 bar 各自的。前者留在这里，后者归 `BarModel`——**对象全局，交互就地**。
 final class World: ObservableObject {
     @Published private(set) var windows: [IndexedWindow] = []
-    @Published var accessibility = false { didSet { rebuild() } }
-    @Published var screenRecording = false { didSet { rebuild() } }
+    /// 两项权限有没有到手。它们**没有通知可订阅**，只能跟着对账每两秒复查一次，
+    /// 因此写入必须走 `note`：同一个值再写一遍要什么都不发生。
+    ///
+    /// 先前是可直接赋值的 `@Published`，`didSet` 里无条件重排。而赋同一个值照样触发
+    /// `didSet` 与 `objectWillChange`，于是每两秒白重排两次，每次都要向 LaunchServices
+    /// 逐个 App 同步问一遍 activationPolicy（见 `retainedApps`）——实测这两下空转
+    /// 占掉主线程 3% 的 CPU，而它们什么都没做。
+    @Published private(set) var accessibility = false
+    @Published private(set) var screenRecording = false
+
+    func note(accessibility granted: Bool, screenRecording recording: Bool) {
+        guard granted != accessibility || recording != screenRecording else { return }
+        accessibility = granted
+        screenRecording = recording
+        rebuild()
+    }
     /// 当前前台窗口——底色「亮底」档的唯一依据
     @Published private(set) var frontWindow: CGWindowID? { didSet { noteFrontSeen() } }
     /// 正在启动的 App。系统 Dock 用图标弹跳表示「点到了，正在开」——

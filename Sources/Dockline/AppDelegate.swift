@@ -56,8 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func tick() {
-        world.accessibility = AXIsProcessTrusted()
-        world.screenRecording = CGPreflightScreenCaptureAccess()
+        world.note(accessibility: AXIsProcessTrusted(),
+                   screenRecording: CGPreflightScreenCaptureAccess())
         // 无辅助功能权限时 AX 枚举全线失败，跑对账只是白烧 CPU
         if world.accessibility { world.reconcile() }
         // 废纸篓状态没有通知可订阅，跟着对账 tick 顺带读一次（一次 CFPreferences 读，可忽略）
