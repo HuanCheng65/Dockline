@@ -1081,11 +1081,20 @@ struct BarContent: View {
         case .name(let text):
             return text
         case .preview(let target):
-            // 有会话时卡片的标题是这件事叫什么，不是这扇窗口叫什么：窗口的身份由图标与
-            // 位置已经给过了，而你打开这张卡是为了看那件事进行到哪一步。
             let status = model.world.status(window: target.window.id,
                                             of: target.window.pid, leads: target.leads)
-            return status?.lines.first ?? target.window.title
+            switch status {
+            // 有会话时卡片的标题是这件事叫什么，不是这扇窗口叫什么：窗口的身份由图标与
+            // 位置已经给过了，而你打开这张卡是为了看那件事进行到哪一步。
+            case .session(let session):
+                return session.task ?? target.window.title
+            // 在放歌时这一行说的是**哪个播放器在放**。歌名归到封面旁边去了，那才是它该待
+            // 的地方；两处都写，同一行字就在一张卡上出现两次。
+            case .media:
+                return target.appName
+            case nil:
+                return target.window.title
+            }
         case .list:
             return ""
         }

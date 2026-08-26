@@ -621,21 +621,32 @@ struct PreviewCard: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 artwork(playing)
+                // 歌名、歌手、专辑，从重到轻，整栏对着封面居中。
+                // 三行都靠在封面顶上、下面空一截，是这张卡先前看着别扭的地方。
                 VStack(alignment: .leading, spacing: 3) {
-                    if let artist = playing.artist {
-                        Text(artist)
-                            .font(.system(size: 11.5, weight: .medium))
+                    if let title = playing.title {
+                        Text(title)
+                            .font(.system(size: 13, weight: .semibold))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
-                    if let album = playing.album, album != playing.artist {
-                        Text(album)
-                            .font(.system(size: 10.5))
+                    if let artist = playing.artist {
+                        Text(artist)
+                            .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
-                    Spacer(minLength: 0)
+                    // 单曲的专辑名常常就是歌名，歌手的精选集则常常就是歌手名。
+                    // 重复的那一行不占位置——它没有第三样东西可说。
+                    if let album = playing.album,
+                       album != playing.title, album != playing.artist {
+                        Text(album)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
                 Spacer(minLength: 0)
             }
