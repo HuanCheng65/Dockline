@@ -23,6 +23,24 @@ public final class AXObserverHub {
     /// 重试用尽仍未订阅成功的进程。这些 App 的窗口变化只能靠通道三兜底。
     public private(set) var failedProcesses = Set<pid_t>()
 
+    /// 某个进程不应答辅助功能，已经交给通道三。带上它耗掉的时长，因为「不应答」
+    /// 与「还没就绪」在返回码上分不开，是靠耗时认出来的。
+    public var onUnresponsive: ((pid_t, TimeInterval) -> Void)?
+
+    /// 注册通知是**同步 IPC**：对面不应答就一路等到超时。默认超时是 3 秒，
+    /// 而本仓库其余九处 AX 调用都设了 0.2~1.0 秒——这里先前是唯一一处没设的。
+    private static let timeout: TimeInterval = 0.5
+
+    /// 跑 AX 注册的那条串行队列。**注册必须离开主线程**：实测一个不应答的
+    /// 网页内容子进程每次订阅卡满 3 秒，而重试阶梯会再试七次——启动头十秒的
+    /// 主线程有三分之二耗在这一件事上，条画出来了却一直是空的。
+    ///
+    /// 队列里只跑 IPC。观察者的 runloop source 要挂在主 runloop 上，
+    /// 而这个类的几个字典没有任何保护——两样都留在主线程。
+    private let wire = DispatchQueue(label: "dev.starrydream.Dockline.ax-subscribe")
+    /// 已经派出去、还没回来的。不挡的话同一个进程会被排队好几遍。
+    private var subscribing = Set<pid_t>()
+
     private static let appNotifications = [
         kAXWindowCreatedNotification,
         kAXFocusedWindowChangedNotification,
@@ -52,34 +70,69 @@ public final class AXObserverHub {
     /// 重试节奏：前几次要密，App 启动到 AX 就绪通常在数百毫秒内。
     private static let retryDelays: [TimeInterval] = [0.08, 0.15, 0.25, 0.4, 0.6, 0.9, 1.4]
 
-    /// 订阅一个 App。刚启动的 App 其 AX 树尚未就绪，注册会返回 cannotComplete，
-    /// 此时按上表重试；重试用尽则记入 failedProcesses 并交由通道三兜底（不静默假装成功）。
+    /// 一次注册尝试的结果。
+    ///
+    /// 「还没就绪」与「不应答」在返回码上是同一个 `cannotComplete`，**分开靠的是耗时**：
+    /// AX 树没建好会立刻回错，进程不应答则要耗满超时。这个区分是必须的——重试阶梯
+    /// 是按前者设计的（失败免费，所以敢 80 毫秒就再试一次），拿它去重试后者，
+    /// 那串延迟会被超时整个淹没，八次尝试变成八个超时。
+    private enum Attempt {
+        case ready(AXObserver)
+        case notReadyYet
+        case unresponsive(TimeInterval)
+    }
+
+    /// 订阅一个 App。注册本身在后台队列上跑，回到主线程才动这个类的状态。
+    ///
+    /// 刚启动的 App 其 AX 树尚未就绪，注册会返回 cannotComplete，此时按上表重试；
+    /// 重试用尽、或者对面压根不应答，都记入 failedProcesses 交由通道三兜底
+    /// （不静默假装成功）。不应答的那些不再走阶梯：等它八遍没有意义，而用户激活它
+    /// 的时候本来就会重试一次（见 `World.start` 里的 didActivateApplication）。
     public func observe(pid: pid_t, attempt: Int = 0) {
-        guard observers[pid] == nil else { return }
-        var observer: AXObserver?
+        guard observers[pid] == nil, !subscribing.contains(pid) else { return }
+        subscribing.insert(pid)
         let context = Unmanaged.passUnretained(self).toOpaque()
-        let created = AXObserverCreate(pid, axObserverCallback, &observer)
-        guard created == .success, let observer else {
-            retry(pid: pid, attempt: attempt)
-            return
+        wire.async { [weak self] in
+            let outcome = Self.register(pid: pid, context: context)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.subscribing.remove(pid)
+                switch outcome {
+                case .ready(let observer):
+                    CFRunLoopAddSource(CFRunLoopGetMain(),
+                                       AXObserverGetRunLoopSource(observer), .defaultMode)
+                    self.observers[pid] = observer
+                    self.failedProcesses.remove(pid)
+                    self.onReady?(pid)
+                case .notReadyYet:
+                    self.retry(pid: pid, attempt: attempt)
+                case .unresponsive(let cost):
+                    self.failedProcesses.insert(pid)
+                    self.onUnresponsive?(pid, cost)
+                }
+            }
         }
+    }
+
+    /// 纯 IPC，不碰这个类的任何状态——它跑在 `wire` 上。
+    private static func register(pid: pid_t, context: UnsafeMutableRawPointer) -> Attempt {
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, axObserverCallback, &observer) == .success,
+              let observer else { return .notReadyYet }
 
         let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, Float(timeout))
+        let began = Date()
         var anyRegistered = false
-        for name in Self.appNotifications {
+        for name in appNotifications {
             if AXObserverAddNotification(observer, appElement, name as CFString, context) == .success {
                 anyRegistered = true
             }
         }
-        guard anyRegistered else {
-            retry(pid: pid, attempt: attempt)
-            return
-        }
-
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        observers[pid] = observer
-        failedProcesses.remove(pid)
-        onReady?(pid)
+        if anyRegistered { return .ready(observer) }
+        let cost = Date().timeIntervalSince(began)
+        // 耗满了超时就是对面不应答；立刻回错则是 AX 树还没建好，值得再等一下
+        return cost >= timeout ? .unresponsive(cost) : .notReadyYet
     }
 
     private func retry(pid: pid_t, attempt: Int) {
@@ -93,10 +146,15 @@ public final class AXObserverHub {
     }
 
     /// 为已知窗口注册窗口级通知。重复调用安全。
+    ///
+    /// 这一路仍在主线程上：能走到这里的窗口，其 App 已经答过 AX 了——没拿到 AX 引用
+    /// 的窗口在上游就被跳过（见 `World.subscribeToKnownWindows`）。所以这里遇不上
+    /// `observe` 那种彻底不应答的进程，补一道超时封住上限即可。
     public func watch(window: AXUIElement, pid: pid_t) {
         guard let observer = observers[pid] else { return }
         let wrapper = AXUIElementWrapper(window)
         guard watchedWindows[pid]?.contains(wrapper) != true else { return }
+        AXUIElementSetMessagingTimeout(window, Float(Self.timeout))
         let context = Unmanaged.passUnretained(self).toOpaque()
         for name in Self.windowNotifications {
             AXObserverAddNotification(observer, window, name as CFString, context)

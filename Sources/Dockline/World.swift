@@ -106,7 +106,14 @@ final class World: ObservableObject {
     private var coalesceScheduled = false
     /// 上一次报过的「不应答 App」名单，用来去重
     private var lastStalledReport: [String] = []
-    private var suppressReadySync = false
+    /// 启动时那一批订阅。它们的窗口由启动那一遍完整对账认全，订阅就绪不必再回补——
+    /// 否则几十个 App 各触发一次定向刷新，等于把冷启动全量 AX 扫描从后门放回来
+    /// （计划书 §2 明令禁止）。
+    ///
+    /// 先前是一个「此刻正在批量注册」的开关：`suppressReadySync = true` 包住那一遍。
+    /// 注册改成异步之后开关就不成立了——就绪回调全都落在开关关掉之后。名单跟着 pid 走，
+    /// 与它什么时候回来无关。
+    private var initialSubscriptions = Set<pid_t>()
     private let fullscreenWatch = FullscreenWatch()
     private let missionControl = MissionControlWatch()
     private let sessionCenter = SessionCenter()
@@ -399,13 +406,22 @@ final class World: ObservableObject {
         observers.onReady = { [weak self] pid in
             guard let self else { return }
             diagnostics.watchedProcesses = observers.watchedProcessCount
-            guard !suppressReadySync else { return }
+            guard initialSubscriptions.remove(pid) == nil else { return }
             Timeline.log("订阅就绪  pid \(pid) \(Self.appName(pid))")
             enqueue(pid)
         }
-        suppressReadySync = true
+        // 一个进程不应答辅助功能，代价是实打实的：它会把注册那条队列占满一个超时，
+        // 排在后面的 App 全都跟着晚。不出声的话，症状只会以「刚启动那会儿条是空的」
+        // 的样子出现，而那个样子指不到原因。
+        observers.onUnresponsive = { [weak self] pid, cost in
+            guard let self else { return }
+            initialSubscriptions.remove(pid)
+            diagnostics.unobservedProcesses = observers.failedProcesses.count
+            Timeline.log(String(format: "⚠️ %@（pid %d）不应答辅助功能（等了 %.0fms），",
+                                Self.appName(pid), pid, cost * 1000)
+                         + "它的窗口改由对账兜底；下次激活它时再试")
+        }
         observeAllRunningApps()
-        suppressReadySync = false
         let center = NSWorkspace.shared.notificationCenter
         // 弹跳不区分是谁发起的启动：从聚焦搜索、访达、终端里打开的 App，
         // 只要它在条上有位置，也该弹。
@@ -549,6 +565,7 @@ final class World: ObservableObject {
     private func observeAllRunningApps() {
         for app in NSWorkspace.shared.runningApplications
         where app.activationPolicy != .prohibited && app.processIdentifier != getpid() {
+            initialSubscriptions.insert(app.processIdentifier)
             observers.observe(pid: app.processIdentifier)
         }
         diagnostics.watchedProcesses = observers.watchedProcessCount
