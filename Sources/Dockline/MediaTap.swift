@@ -152,6 +152,10 @@ final class MediaTap {
     private var device = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
     private var listening = false
+    /// 此刻这个播放源在不在放。IO 跑不跑只看它。
+    private var playing = false
+    /// 聚合设备的 IO 此刻在不在跑。
+    private var running = false
     private let meter = Meter()
 
     init(levels: MediaLevels) {
@@ -159,8 +163,13 @@ final class MediaTap {
     }
 
     /// 跟住这个 App。`nil` 表示此刻没有播放源。
-    func follow(_ bundleID: String?) {
+    ///
+    /// **停着的时候 tap 照挂，但 IO 停掉。** 挂着是为了起播不必等一轮重挂——重挂要建 tap、
+    /// 建聚合设备、重新扫进程列表。而让 IO 继续跑毫无意义：那边送来的是一串零，却要为此
+    /// 每秒做九十四次 FFT。实测那是 2% 的 CPU，一个开着没在放的播放器就够了。
+    func follow(_ bundleID: String?, playing: Bool) {
         self.bundleID = bundleID
+        self.playing = playing
         rebuild()
     }
 
@@ -176,18 +185,18 @@ final class MediaTap {
         installListener()
         let wanted = matching(bundleID)
         Timeline.log("电平  跟随 \(bundleID ?? "—")，命中 \(wanted.count) 个音频进程")
-        guard wanted != followed else { return }
-        teardown()
-        followed = wanted
-        guard !wanted.isEmpty else {
-            levels.silence()
-            return
+        if wanted != followed {
+            teardown()
+            followed = wanted
+            guard !wanted.isEmpty, build(for: wanted) else {
+                followed = []
+                levels.silence()
+                return
+            }
         }
-        guard build(for: wanted) else {
-            followed = []
-            levels.silence()
-            return
-        }
+        // 起停放在这里而不是 `follow` 里：进程列表变动也会走到这条路上来，
+        // 新建起来的那台设备同样要按此刻在不在放决定跑不跑。
+        setRunning(playing)
     }
 
     private func build(for processes: [AudioObjectID]) -> Bool {
@@ -235,8 +244,8 @@ final class MediaTap {
             guard let result = meter.consume(input) else { return }
             levels.receive(flux: result.flux, level: result.level, at: CACurrentMediaTime())
         }
-        guard status == noErr, let procID, AudioDeviceStart(device, procID) == noErr else {
-            Timeline.log("⚠️ 均衡器取不到电平：IOProc 起不来，退回相位动画")
+        guard status == noErr, procID != nil else {
+            Timeline.log("⚠️ 均衡器取不到电平：IOProc 建不起来，退回相位动画")
             teardown()
             return false
         }
@@ -244,7 +253,33 @@ final class MediaTap {
         return true
     }
 
+    /// 起停聚合设备的 IO。设备与 tap 都留着，起停的只是这一路数据。
+    private func setRunning(_ wanted: Bool) {
+        guard let procID, device != AudioObjectID(kAudioObjectUnknown) else {
+            running = false
+            return
+        }
+        guard wanted != running else { return }
+        guard wanted else {
+            AudioDeviceStop(device, procID)
+            running = false
+            Timeline.log("电平  停着，IO 停下（tap 留着）")
+            // 停了这段时间没有帧进来，而先前那条路是一路收零。两者要落在同一个状态上，
+            // 否则恢复播放的头一帧差分出来的不是同一个东西（见 `Meter.hush`）。
+            meter.hush()
+            return
+        }
+        guard AudioDeviceStart(device, procID) == noErr else {
+            Timeline.log("⚠️ 均衡器取不到电平：聚合设备起不来，退回相位动画")
+            levels.silence()
+            return
+        }
+        running = true
+        Timeline.log("电平  在放，IO 起来")
+    }
+
     private func teardown() {
+        running = false
         if let procID, device != AudioObjectID(kAudioObjectUnknown) {
             AudioDeviceStop(device, procID)
             AudioDeviceDestroyIOProcID(device, procID)
@@ -403,14 +438,32 @@ final class MediaTap {
         }
 
         func reset() {
-            ring = [Float](repeating: 0, count: Meter.size)
-            head = 0
-            pending = 0
-            previous = [Double](repeating: MediaTap.binFloor, count: Meter.half)
-            primed = false
+            hush()
             fluxSmooth = [0, 0, 0]
             slowMean = [0, 0, 0]
             warm = [0, 0, 0]
+        }
+
+        /// 静下来了：手里这一段音频与谱基线作废，**慢均值与冷启动计数原样留着**。
+        ///
+        /// 后半句是关键。静音期继续更新慢均值的话，它会衰到零，恢复播放头几帧的比值
+        /// 就是天文数字；而把冷启动计数清掉，每次暂停恢复都要再压 0.25 秒才有反应。
+        /// 谱基线归到下限，是因为一路收零的分析算出来的正是这个值——这条路要与它一致。
+        func hush() {
+            ring = [Float](repeating: 0, count: Meter.size)
+            head = 0
+            pending = 0
+            forgetBaseline()
+        }
+
+        /// 谱基线作废。再有声音时的头一帧因此不出数：它没有可差分的对象，
+        /// 拿下限去差，差出来的是一整个满量程的假音头。
+        ///
+        /// **不动环形缓冲。** 它由 `consume` 按 hop 严格推进，从分析里把它拨回原点，
+        /// 相邻两帧的重叠量就不再是一跳（音头是相邻帧的差分，重叠一抖就是噪声）。
+        private func forgetBaseline() {
+            previous = [Double](repeating: MediaTap.binFloor, count: Meter.half)
+            primed = false
         }
 
         /// 吃掉这一批样本，攒够一跳就分析一次。返回这一批里产生的最后一帧结果。
@@ -460,6 +513,14 @@ final class MediaTap {
             var mean: Float = 0
             vDSP_measqv(frame, 1, &mean, vDSP_Length(Meter.size))
             let loudness = 10 * log10(max(Double(mean), 1e-12))
+            // **静音就到此为止，不做频谱。** 这一门原先设在带内映射那一步之前，而那时
+            // 变换已经做完了：一段静音的谱本来就是每一格都落在下限上，算出来的东西
+            // 与直接归到下限完全一样，只是白花了一次 FFT。播放器报着在放却不出声的
+            // 段落（换曲的间隙、没有声轨的视频）会一直落在这里。
+            guard loudness >= MediaTap.silence else {
+                forgetBaseline()
+                return nil
+            }
 
             vDSP.multiply(frame, window, result: &frame)
             frame.withUnsafeBytes { raw in
@@ -489,7 +550,6 @@ final class MediaTap {
 
             var flux = [0.0, 0.0, 0.0]
             var level = [0.0, 0.0, 0.0]
-            let quiet = loudness < MediaTap.silence
             for band in 0..<3 {
                 let (low, high) = edges[band]
                 var sum = 0.0
@@ -504,9 +564,9 @@ final class MediaTap {
                     previous[bin] = decibels
                 }
                 let bins = Double(high - low + 1)
-                // 静音期把基线冻住：继续更新的话，暂停几秒后慢均值衰到零，
-                // 恢复播放头几帧的比值就是天文数字。
-                guard primed, !quiet else { continue }
+                // 头一帧没有可差分的对象。静音之后的第一帧同样落在这里：那时的谱基线
+                // 是下限，差出来的是一整个满量程的假音头。
+                guard primed else { continue }
                 // 取每格的平均，不取整段之和：段宽差着几十倍，取和等于给宽的那一段
                 // 白送一个跟带宽成正比的增益。
                 let (floor, ceiling) = MediaTap.range

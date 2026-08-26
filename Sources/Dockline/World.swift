@@ -486,9 +486,9 @@ final class World: ObservableObject {
             guard next != nowPlaying else { return }
             mediaPID = pid
             nowPlaying = next
-            // 换了播放源就把 tap 挪过去。停着的时候也照挂——那边只是给一串零，
-            // 而下一次起播就不必等一轮重挂。
-            mediaTap.follow(next?.bundleID)
+            // 换了播放源就把 tap 挪过去。停着的时候也照挂——重挂要建 tap、建聚合设备，
+            // 起播不该等这一轮；但那台设备的 IO 会停下来（见 `MediaTap.follow`）。
+            mediaTap.follow(next?.bundleID, playing: next?.playing == true)
             guard let next else {
                 Timeline.log("播放  没有播放源")
                 return
