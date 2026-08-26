@@ -1503,8 +1503,27 @@ private struct DockCell: View {
             label
         }
         .padding(metrics.cellInset)
-        .background { BackingFill(backing: slot.isFront ? .bright : backing,
-                                  radius: metrics.cellRadius) }
+        .background {
+            ZStack {
+                BackingFill(backing: slot.isFront ? .bright : backing,
+                            radius: metrics.cellRadius)
+                // 在放歌的那一格整格取一层封面的颜色。
+                //
+                // 先前它只铺在标签区底下，于是成了一块凭空的圆角色块——底色在这条上是
+                // 「盒」的语汇（见 `Backing`），画半格就既不是盒也不是别的什么。整格铺，
+                // 并且与底色共用同一个圆角与内缩：两套几何一旦对不齐，格子一悬停就露馅。
+                //
+                // 自下而上、渐隐到透明，与面板卡上那一层同一个手势。底色那几档是平铺的
+                // 实色，渐变因此不会被读成「这一格被悬停了」。
+                if let tint = slot.status?.media?.tint {
+                    RoundedRectangle(cornerRadius: metrics.cellRadius, style: .continuous)
+                        .fill(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
+                                             startPoint: .bottom, endPoint: .top))
+                        .padding(BarMetrics.backingInset)
+                        .animation(.easeInOut(duration: 0.5), value: tint)
+                }
+            }
+        }
         // 活动状态画在格子边缘上，不额外占一行——那会破坏统一盒模型（§3.1）
         .overlay { edge }
         // 计划书 §3：最小化的格子原地变灰，绝不挪位
@@ -1530,12 +1549,18 @@ private struct DockCell: View {
             .overlay(alignment: .topLeading) {
                 if slot.tabs > 0 { CountBadge(text: "\(slot.tabs)", scheme: scheme) }
             }
-            // 在放歌就摆一个均衡器。左下角是图标上唯一还空着的角——右上是未读角标、
-            // 左上是标签页数、正下方是运行点。
-            .overlay(alignment: .bottomLeading) {
+            // 在放歌就在右下角挂一枚封面，均衡器压在它上面。
+            //
+            // 右下角一直是空的：运行点落在图标**下沿之外**那条带里（见 `dotDrop`），
+            // 它从来没占过一个角。先前「四个角已经占满」的说法把它算成了一个角，并且
+            // 据此否掉了封面角标——那是一条不存在的限制，而封面正是那层颜色的出处：
+            // 面板上颜色成立是因为封面就在旁边，格子上没有它，同一层颜色就无处可依。
+            //
+            // 挂右下而不是左下：标签在图标右边，右下角朝着它所说明的那段文字，左下角
+            // 朝着的是上一格。与 `labelTrailing` 是同一条邻近性规则。
+            .overlay(alignment: .bottomTrailing) {
                 if let playing = slot.status?.media {
-                    Equalizer(playing: playing.playing, tint: playing.tint ?? .primary)
-                        .padding(1)
+                    MediaBadge(playing: playing, size: metrics.icon * 0.38)
                 }
             }
             .modifier(LaunchBounce(bouncing: slot.bouncing, height: metrics.icon * 0.36))
@@ -1557,23 +1582,6 @@ private struct DockCell: View {
                 .frame(width: metrics.label(slot.labelWidth), alignment: .leading)
                 // 标题靠紧自己的图标，与下一格拉开——归属只剩邻近性可依据
                 .padding(.trailing, metrics.labelTrailing - metrics.cellInset)
-                // 在放歌的那一格，标签区底上铺一层取自封面的颜色。
-                //
-                // 这一个元素同时回答三件事：**哪一格在发声**、**换没换歌**（颜色交叉淡入，
-                // 不动宽度也不动位置）、以及**这首歌长什么样**。比声波动效加封面角标加
-                // 歌名三样各干一件要省，而且那三样在这里都摆不下——图标四个角已经被
-                // 未读角标、标签页数、运行点和状态环占满了。
-                .background(alignment: .leading) {
-                    if let tint = slot.status?.media?.tint {
-                        LinearGradient(colors: [tint.opacity(0.30), tint.opacity(0)],
-                                       startPoint: .leading, endPoint: .trailing)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .padding(.vertical, -1)
-                            .padding(.trailing, metrics.labelTrailing)
-                            .animation(.easeInOut(duration: 0.5), value: tint)
-                            .allowsHitTesting(false)
-                    }
-                }
                 // App 开出第二个窗口时，这一格是原地长出标题区的：格子沿用 App 的
                 // 身份（见 BarItem.id），SwiftUI 因此走过渡而不是拆掉重建。
                 .transition(.scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
@@ -1733,10 +1741,53 @@ private struct ClusterLine: View {
 /// 三档的强度差别在这里只表达一半，另一半是胶囊——**高显著度只归 waiting**，
 /// 所以这里 waiting 与 finished 都只常亮、不呼吸：边缘再闪一遍，会与它头顶的胶囊
 /// 争抢同一份注意力。呼吸留给 working，它唯一要传达的就是任务仍在运行。
+/// 图标右下角那枚封面，均衡器压在上面。
+///
+/// **一枚记号答三件事**：哪一格在发声、在放的是什么（换歌时封面交叉淡入）、以及此刻
+/// 是在放还是停着（柱子跳不跳）。拆成封面加一个播放态图标是两枚记号说一件半的事，
+/// 而这个角只放得下一枚。
+///
+/// 封面同时是整格那层颜色的**出处**。颜色本身在面板上一直成立，因为封面就在它旁边；
+/// 格子上没有封面，同一层颜色便读作一块凭空的高亮——这是它先前看着别扭的根。
+///
+/// 柱子与封面之间压一层暗底：封面是任意一张图，浅色的那些会把白柱子吃掉。
+private struct MediaBadge: View {
+    let playing: NowPlaying
+    let size: CGFloat
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+    }
+
+    var body: some View {
+        shape
+            .fill(.black.opacity(0.55))
+            .overlay {
+                if let image = playing.artwork {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        // `id` 一变 SwiftUI 才当它是换了一个东西，否则同一个 Image
+                        // 只是内容变了，没有过渡可做。
+                        .id(playing.artworkID ?? playing.title ?? "")
+                        .transition(.opacity)
+                }
+            }
+            .overlay { shape.fill(.black.opacity(0.34)) }
+            .clipShape(shape)
+            .overlay { Equalizer(playing: playing.playing, height: size * 0.46) }
+            // 描一圈才与图标分得开：封面撞上同色系的图标时，两者会糊成一块
+            .overlay { shape.strokeBorder(.white.opacity(0.35), lineWidth: 0.5) }
+            .frame(width: size, height: size)
+            .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
+            .animation(.easeInOut(duration: 0.35), value: playing.artworkID)
+    }
+}
+
 /// 均衡器。
 ///
-/// **动效本身就是状态**：在放就跳，暂停就冻住。因此格子上不需要再画一个 ▶ 或 ⏸——
-/// 一个元素说清了两件事，而图标周围本来也没有第二个位置可用了。
+/// **动效本身就是状态**：在放就跳，暂停就冻住。因此不需要再画一个 ▶ 或 ⏸——
+/// 一个元素说清了两件事，而它待的那枚角标本来也放不下第二样东西。
 ///
 /// 关于「条上不许有动效」那条规矩：它针对的是**抢注意力的动效**——会话那圈呼吸的边框
 /// 是在喊「看我」。这个不是。它小、恒定、不闪，而且放的是用户自己开的歌，他知道它在那儿。
@@ -1745,10 +1796,11 @@ private struct ClusterLine: View {
 /// （`LaunchBounce` 与 `SessionEdge` 各记过一次这条教训）。`phaseAnimator` 自己循环。
 private struct Equalizer: View {
     let playing: Bool
-    let tint: Color
+    /// 柱子的高度。宽度与间距按它派生，整枚记号因此随图标一起缩放。
+    let height: CGFloat
 
-    private static let size: CGFloat = 9
-    private static let bar: CGFloat = 2
+    private var bar: CGFloat { height * 0.22 }
+    private var gap: CGFloat { height * 0.17 }
     /// 三根柱子各走各的一串高度，长度还互不相同——同步跳三根看起来像一个整体在缩放，
     /// 错开才像在跳。
     private static let steps: [[CGFloat]] = [
@@ -1760,11 +1812,13 @@ private struct Equalizer: View {
     private static let resting: CGFloat = 0.42
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 1.5) {
+        HStack(alignment: .bottom, spacing: gap) {
             ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, phases in
                 Capsule()
-                    .fill(tint)
-                    .frame(width: Self.bar, height: Self.size)
+                    // 白色，不取封面的颜色：底下压着的就是那张封面，
+                    // 同色的柱子在它自己身上认不出来
+                    .fill(.white)
+                    .frame(width: bar, height: height)
                     .phaseAnimator(phases) { view, scale in
                         view.scaleEffect(y: playing ? scale : Self.resting, anchor: .bottom)
                     } animation: { _ in
@@ -1773,7 +1827,7 @@ private struct Equalizer: View {
                     }
             }
         }
-        .frame(height: Self.size, alignment: .bottom)
+        .frame(height: height, alignment: .bottom)
     }
 }
 
