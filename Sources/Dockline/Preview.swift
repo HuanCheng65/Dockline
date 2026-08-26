@@ -198,7 +198,7 @@ struct PreviewCard: View {
     /// 有会话时缩略图**让位**：那扇窗口长什么样此刻不重要，重要的是它里面那件事进行到
     /// 哪一步了。让位而不是拿掉，是为了不分成两张卡——分支一旦出现在带 `.frame` 的那一层，
     /// 尺寸就没有起点可以插值，整块只剩淡入淡出（§3.1 那条教训）。
-    let session: Activity?
+    let session: Session?
 
     /// 用户在这张卡上批了或驳了一次授权。
     let onAnswer: (UUID, Bool) -> Void
@@ -229,12 +229,12 @@ struct PreviewCard: View {
     /// 只报名字那一档的高度
     static let nameHeight: CGFloat = 26
     /// 标题那一行占多高。名字那一档一行居中；窗口标题排两行；会话名只有一行。
-    private static func headHeight(detail: Detail?, session: Activity?) -> CGFloat {
+    private static func headHeight(detail: Detail?, session: Session?) -> CGFloat {
         guard detail != nil else { return nameHeight }
         return session == nil ? titleHeight : sessionTitleHeight
     }
 
-    private static func textHeight(showsAppName: Bool, session: Activity?) -> CGFloat {
+    private static func textHeight(showsAppName: Bool, session: Session?) -> CGFloat {
         textInset * 2 + (session == nil ? titleHeight : sessionTitleHeight)
             + (showsAppName ? 2 + appNameHeight : 0)
     }
@@ -282,7 +282,7 @@ struct PreviewCard: View {
     private static let askBoxPad: CGFloat = 5
     private static let buttonHeight: CGFloat = 24
 
-    private static func askHeight(_ ask: Activity.Ask) -> CGFloat {
+    private static func askHeight(_ ask: Session.Ask) -> CGFloat {
         var height = rowHeight
         if !ask.lines.isEmpty {
             height += rowGap / 2 + askBoxPad * 2 + CGFloat(ask.lines.count) * askLineHeight
@@ -291,7 +291,7 @@ struct PreviewCard: View {
         return height + rowGap + buttonHeight
     }
 
-    private static func sessionHeight(_ session: Activity) -> CGFloat {
+    private static func sessionHeight(_ session: Session) -> CGFloat {
         var height = textInset
         if let prompt = session.prompt {
             height += wrapped(AttributedString(prompt), lines: promptLines) + rowGap
@@ -334,7 +334,7 @@ struct PreviewCard: View {
 
     /// 画面能占的最大范围。各档只差这一个框——尺寸算法与视图树都是同一套。
     private static func imageBox(_ peek: CGSize?, showsAppName: Bool,
-                                 session: Activity?) -> CGSize {
+                                 session: Session?) -> CGSize {
         guard let peek else {
             return CGSize(width: maxWidth - pad * 2, height: imageHeight)
         }
@@ -348,7 +348,7 @@ struct PreviewCard: View {
     /// **平时不画。** 那扇窗口长什么样，此刻不是问题；而一张小图浮在卡片中央、两边留着
     /// 大片空白，比不画难看得多。按住空格要大预览时才画——那时用户是明确要看窗口的，
     /// 而且那一档照旧铺满，会话区跟在下面。
-    private static func showsImage(_ session: Activity?, _ peek: CGSize?) -> Bool {
+    private static func showsImage(_ session: Session?, _ peek: CGSize?) -> Bool {
         session == nil || peek != nil
     }
 
@@ -364,7 +364,7 @@ struct PreviewCard: View {
 
     /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
     static func size(title: String, detail: Detail?, peek: CGSize?,
-                     session: Activity?) -> CGSize {
+                     session: Session?) -> CGSize {
         guard let detail else {
             let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
             return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
@@ -431,7 +431,7 @@ struct PreviewCard: View {
     }
 
     @ViewBuilder
-    private func sessionBlock(_ session: Activity) -> some View {
+    private func sessionBlock(_ session: Session) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if let prompt = session.prompt {
                 Text(prompt)
@@ -484,7 +484,7 @@ struct PreviewCard: View {
     /// 它答的是一个是非题，所以版面只有三样：**要做什么**、**做在什么上**、**批不批**。
     /// 近期动作那几行让位给它——这一刻卡片的用途不是让你读进度，是让你按下去。
     @ViewBuilder
-    private func askBlock(_ ask: Activity.Ask) -> some View {
+    private func askBlock(_ ask: Session.Ask) -> some View {
         row(symbol: ask.symbol, verb: ask.verb, object: ask.object, metric: nil,
             tint: Color.accentColor, current: true)
         if !ask.lines.isEmpty {
@@ -534,7 +534,7 @@ struct PreviewCard: View {
     }
 
     /// 增删两色。同一个色也用在那一行的底色上，浅一档。
-    private static func askTint(_ sign: Activity.Ask.Line.Sign) -> Color {
+    private static func askTint(_ sign: Session.Ask.Line.Sign) -> Color {
         switch sign {
         case .added: return .green
         case .removed: return .red

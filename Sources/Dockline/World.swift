@@ -43,7 +43,7 @@ final class World: ObservableObject {
     @Published private(set) var badges: [String: String] = [:]
     /// 活动状态。计划书 §3。挂点见 `StatusTarget`：来源现在只产出 App 级，
     /// 窗口级要等会话与窗口的绑定做出来。
-    @Published private(set) var activities: [StatusTarget: Activity] = [:]
+    @Published private(set) var sessions: [StatusTarget: Session] = [:]
 
     let pins = PinStore()
     let clusters = ClusterStore()
@@ -83,19 +83,19 @@ final class World: ObservableObject {
     private var suppressReadySync = false
     private let fullscreenWatch = FullscreenWatch()
     private let missionControl = MissionControlWatch()
-    private let activityCenter = ActivityCenter()
+    private let sessionCenter = SessionCenter()
     private let askServer = AskServer()
     private var mouseMonitor: Any?
 
     /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
     /// 就消失的通知等于没有发出过。只撤终态，运行中与等待中的不动。
     func markStatusSeen(_ target: StatusTarget) {
-        activityCenter.markSeen(target)
+        sessionCenter.markSeen(target)
     }
 
     /// 用户在面板上批了或驳了一次授权（实时状态设计 §4.7）。
     func answerAsk(_ id: UUID, allow: Bool) {
-        activityCenter.answer(id, allow: allow)
+        sessionCenter.answer(id, allow: allow)
     }
 
     // MARK: 每块屏的 bar
@@ -340,7 +340,7 @@ final class World: ObservableObject {
             guard let self, let pid = Self.pid(from: note) else { return }
             observers.stop(pid: pid)
             store.removeApp(pid: pid)
-            activityCenter.remove(pid: pid)
+            sessionCenter.remove(pid: pid)
             publish()
         }
         center.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
@@ -383,13 +383,13 @@ final class World: ObservableObject {
             for bar in bars { bar.setYielding(active) }
         }
         missionControl.start()
-        activityCenter.onChange = { [weak self] in
+        sessionCenter.onChange = { [weak self] in
             guard let self else { return }
-            activities = activityCenter.display
+            sessions = sessionCenter.display
         }
         // 上次绑的那扇窗口还在，就原样沿用、不重新判断。复核只发生在会话头一次上报、
         // cwd 变了、或那扇窗口没了这三种时候——任务结束那一刻的焦点已经不是它了。
-        activityCenter.bind = { [weak self] host, cwd, keeping in
+        sessionCenter.bind = { [weak self] host, cwd, keeping in
             guard let self else { return SessionBinding.Outcome(target: .app(host), why: nil) }
             if case .window(let id) = keeping, windows.contains(where: { $0.id == id }) {
                 return SessionBinding.Outcome(target: .window(id), why: nil)
@@ -397,14 +397,14 @@ final class World: ObservableObject {
             return SessionBinding.resolve(host: host, cwd: cwd,
                                           windows: windows, front: frontWindow)
         }
-        activityCenter.start()
+        sessionCenter.start()
         // 就地授权走自己的一条通道：状态上报是单向的，授权要一问一答（见 `AskServer`）
-        activityCenter.onAnswer = { [weak self] id, allow, message in
+        sessionCenter.onAnswer = { [weak self] id, allow, message in
             self?.askServer.answer(id, allow: allow, message: message)
         }
-        activityCenter.onDecline = { [weak self] id in self?.askServer.decline(id) }
-        askServer.onAsk = { [weak self] id, payload in self?.activityCenter.receiveAsk(id, payload) }
-        askServer.onGone = { [weak self] id in self?.activityCenter.dropAsk(id) }
+        sessionCenter.onDecline = { [weak self] id in self?.askServer.decline(id) }
+        askServer.onAsk = { [weak self] id, payload in self?.sessionCenter.receiveAsk(id, payload) }
+        askServer.onGone = { [weak self] id in self?.sessionCenter.dropAsk(id) }
         askServer.start()
         placer.onPlaced = { [weak self] wid, kind in self?.corrector.noteWrite(wid, kind) }
         corrector.enabled = pins.correctsTiling

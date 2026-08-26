@@ -286,13 +286,13 @@ func alignBarOrder(windows: [IndexedWindow], pins: PinStore, retained: Set<AppKe
 /// 标题歧义要按 App 全局算，簇也可能有成员在别的屏上。
 /// - Parameter onThisDisplay: 归本屏的窗口。
 /// - Parameter dormantHere: 一个此刻没有窗口的 App，它的占位槽该不该出现在本屏。
-/// - Parameter activity: 挂在某个目标上的活动状态。文本层要用它（见下面的优先级栈），
+/// - Parameter session: 挂在某个目标上的活动状态。文本层要用它（见下面的优先级栈），
 ///   所以必须在这里问——宽度是按最终要显示的那行字算的。
 func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
                   dormantHere: (AppKey) -> Bool, pins: PinStore, notice: String?,
                   clusters: ClusterStore, order: WindowOrder,
                   labels: LabelWidths, recency: (CGWindowID) -> Int,
-                  activity: (StatusTarget) -> Activity?) -> [BarItem] {
+                  session: (StatusTarget) -> Session?) -> [BarItem] {
     // 三、标题只在同 App 有兄弟时出现。按 App 全局算——同 App 的两个窗口
     // 即使被拖散了，也还是要能区分。
     let byID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -316,12 +316,12 @@ func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
         let key = "w\(window.id)"
         let title = hasSiblings.contains(window.id) ? window.title : nil
         // App 级的东西只挂在该 App 的第一格上，与未读角标同一条规则
-        guard let activity = activity(.window(window.id))
-                ?? (leads ? activity(.app(window.pid)) : nil) else {
+        guard let session = session(.window(window.id))
+                ?? (leads ? session(.app(window.pid)) : nil) else {
             return (title, title.map { labels.width(of: key, $0) } ?? 0)
         }
         let width = BarMetrics.labelMaxWidth
-        let lines = [activity.task ?? title, activity.stateLine].compactMap { $0 }
+        let lines = [session.task ?? title, session.stateLine].compactMap { $0 }
             .map { LabelWidths.fit($0, to: width) }
         return (lines.joined(separator: "\n"), width)
     }

@@ -407,9 +407,9 @@ struct BarContent: View {
     private var askableCard: Bool {
         guard let preview else { return false }
         let target = preview.window
-        let activity = model.world.activities[.window(target.id)]
-            ?? model.world.activities[.app(target.pid)]
-        return activity?.ask != nil
+        let session = model.world.sessions[.window(target.id)]
+            ?? model.world.sessions[.app(target.pid)]
+        return session?.ask != nil
     }
 
     private func keepPreview() {
@@ -1074,19 +1074,19 @@ struct BarContent: View {
         case .preview(let target):
             // 有会话时卡片的标题是这件事叫什么，不是这扇窗口叫什么：窗口的身份由图标与
             // 位置已经给过了，而你打开这张卡是为了看那件事进行到哪一步。
-            let activity = model.world.activities[.window(target.window.id)]
-                ?? model.world.activities[.app(target.window.pid)]
-            return activity?.task ?? target.window.title
+            let session = model.world.sessions[.window(target.window.id)]
+                ?? model.world.sessions[.app(target.window.pid)]
+            return session?.task ?? target.window.title
         case .list:
             return ""
         }
     }
 
     /// 这一档预览的窗口上有没有 agent 会话。有就让卡片让位给它。
-    private func cardSession(_ stage: FloatStage) -> Activity? {
+    private func cardSession(_ stage: FloatStage) -> Session? {
         guard case .preview(let target) = stage.kind else { return nil }
-        return model.world.activities[.window(target.window.id)]
-            ?? model.world.activities[.app(target.window.pid)]
+        return model.world.sessions[.window(target.window.id)]
+            ?? model.world.sessions[.app(target.window.pid)]
     }
 
     /// nil = 还只是名字那一档
@@ -1327,8 +1327,8 @@ struct BarContent: View {
         }
         // 未读语义的出口：点过这一格就算看见了，终态退场。放在召回之前，
         // 因为召回本身可能改变这一格是谁。
-        if slot.activity?.isUnread == true {
-            model.world.markStatusSeen(model.world.activities[.window(cell.id)] != nil
+        if slot.session?.isUnread == true {
+            model.world.markStatusSeen(model.world.sessions[.window(cell.id)] != nil
                                        ? .window(cell.id) : .app(cell.pid))
         }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
@@ -1397,7 +1397,7 @@ struct Slot {
     let mark: WindowMark
     let tabs: Int
     let badge: String?
-    let activity: Activity?
+    let session: Session?
     let minimized: Bool
     let isFront: Bool
     /// 正在启动：图标弹跳，与系统程序坞同义
@@ -1418,7 +1418,7 @@ struct Slot {
             self.tabs = cell.tabs.count
             // App 级的东西只挂在该 App 的第一格上，不逐格重复
             self.badge = cell.leadsApp ? model.world.badges[cell.bundleID ?? ""] : nil
-            self.activity = Slot.activity(of: cell, in: model)
+            self.session = Slot.session(of: cell, in: model)
             self.minimized = cell.window.minimized
             // 会话显形期间不再标注前台。此刻条回答的是「松手会去哪儿」，不是「现在在哪儿」，
             // 前台那一格的亮底留着只会和选中底色抢读。
@@ -1436,7 +1436,7 @@ struct Slot {
             self.mark = model.world.hasWindows(app) ? .elsewhere : .none
             self.tabs = 0
             self.badge = model.world.badges[app.bundleID]
-            self.activity = nil
+            self.session = nil
             self.minimized = false
             self.isFront = false
             self.bouncing = model.world.launching.contains(app.bundleID)
@@ -1452,7 +1452,7 @@ struct Slot {
             self.mark = .none
             self.tabs = 0
             self.badge = nil
-            self.activity = nil
+            self.session = nil
             self.minimized = false
             self.isFront = false
             self.bouncing = false
@@ -1464,9 +1464,9 @@ struct Slot {
 
     /// 这一格该显示谁的活动状态。窗口级的先问——它更精确；问不到再退回 App 级，
     /// 而 App 级的东西只挂在该 App 在条上的第一格，与未读角标同一条规则。
-    static func activity(of cell: BarWindow, in model: BarModel) -> Activity? {
-        if let own = model.world.activities[.window(cell.id)] { return own }
-        return cell.leadsApp ? model.world.activities[.app(cell.pid)] : nil
+    static func session(of cell: BarWindow, in model: BarModel) -> Session? {
+        if let own = model.world.sessions[.window(cell.id)] { return own }
+        return cell.leadsApp ? model.world.sessions[.app(cell.pid)] : nil
     }
 }
 
@@ -1540,9 +1540,9 @@ private struct DockCell: View {
 
     @ViewBuilder
     private var edge: some View {
-        if let activity = slot.activity {
-            ActivityEdge(activity: activity, radius: metrics.cellRadius, isFront: slot.isFront)
-                .help(activity.summary ?? "")
+        if let session = slot.session {
+            SessionEdge(session: session, radius: metrics.cellRadius, isFront: slot.isFront)
+                .help(session.summary ?? "")
         }
     }
 }
@@ -1690,8 +1690,8 @@ private struct ClusterLine: View {
 /// 三档的强度差别在这里只表达一半，另一半是胶囊——**高显著度只归 waiting**，
 /// 所以这里 waiting 与 finished 都只常亮、不呼吸：边缘再闪一遍，会与它头顶的胶囊
 /// 争抢同一份注意力。呼吸留给 working，它唯一要传达的就是任务仍在运行。
-private struct ActivityEdge: View {
-    let activity: Activity
+private struct SessionEdge: View {
+    let session: Session
     let radius: CGFloat
     /// 这一格是不是前台窗口。前台格子自己已经带着亮底与一圈描边，终态再叠一圈彩色的
     /// 上去，两条边挤在同一个圆角上，读起来就是一格画了两遍。
@@ -1700,14 +1700,14 @@ private struct ActivityEdge: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         Group {
-            if let progress = activity.progress {
+            if let progress = session.progress {
                 // 有确定进度就走进度环。它属于点缀层、显著度本来就低，不构成打断；
                 // 文字型的进度（n/m、耗时、ETA）只在 hover 里出现（设计文档 §3）。
                 shape.trim(from: 0, to: progress)
                     .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .animation(.easeOut(duration: 0.3), value: progress)
             } else {
-                switch activity.salience {
+                switch session.salience {
                 case .working:
                     // 相位不放在视图的 `@State` 里。格子现在每收到一次上报就重建一遍，
                     // `onAppear` 不会再来，靠 `value:` 触发的 `repeatForever` 于是只跑
@@ -1730,7 +1730,7 @@ private struct ActivityEdge: View {
         .padding(BarMetrics.backingInset)
     }
 
-    static func color(_ outcome: Activity.Outcome) -> Color {
+    static func color(_ outcome: Session.Outcome) -> Color {
         switch outcome {
         case .done: return .green
         case .failed: return .red
