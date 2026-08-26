@@ -12,7 +12,7 @@ final class BarModel: ObservableObject {
     /// makeBarItems 会更新顺序记忆并落盘，那不该是渲染的副作用。
     @Published private(set) var barItems: [BarItem] = []
     /// 条背后的背景是偏亮还是偏暗。手绘层与文字据此取色——玻璃自己不管这件事
-    /// （只对 ≤64pt 的玻璃管，见 `DockGlass`），所以由 `BackdropSensor` 自己采。
+    /// （只对 ≤64pt 的玻璃管，见 `DockGlass`），由 `BackdropProbe` 垫一块玻璃量出来。
     @Published private(set) var backdropScheme: ColorScheme = .light
     /// 浮层（簇面板、预览卡）背后的明暗。它们浮在条的上方，底下压的常常不是
     /// 同一块东西，所以单独采一次。
@@ -28,14 +28,8 @@ final class BarModel: ObservableObject {
     /// 屏幕可见宽度，宽度降级阶梯的分母
     var availableWidth: CGFloat = 1440
 
-    private let backdrop = BackdropSensor(name: "条")
-    private let floatBackdrop = BackdropSensor(name: "浮层")
-    /// 玻璃条在根坐标系里的位置，由视图报上来
+    /// 玻璃条在根坐标系里的位置，由视图报上来。只用来定条的命中区。
     private var barFrame: CGRect = .zero
-    /// 当前浮层在根坐标系里的位置。nil = 没有浮层。
-    private var floatFrame: CGRect?
-    /// 根坐标系 → 所在屏幕左上原点坐标 的平移量，由 `BarPanel` 报上来
-    private var rootOffset: CGPoint = .zero
     /// 这条 bar 所在的屏。
     private(set) var display: CGDirectDisplayID?
 
@@ -177,7 +171,6 @@ final class BarModel: ObservableObject {
             dwell?.cancel()
             dwell = nil
             hidden = false
-            sampleBackdrop()
         } else {
             hidden = shouldHide
         }
@@ -216,13 +209,6 @@ final class BarModel: ObservableObject {
 
     init(world: World) {
         self.world = world
-        // 明暗翻转要过渡，不能一帧切过去——整条 bar 的文字同时换色，硬切很扎眼
-        backdrop.onChange = { [weak self] scheme in
-            withAnimation(.easeInOut(duration: 0.15)) { self?.backdropScheme = scheme }
-        }
-        floatBackdrop.onChange = { [weak self] scheme in
-            withAnimation(.easeInOut(duration: 0.15)) { self?.floatScheme = scheme }
-        }
         world.register(self)
     }
 
@@ -344,7 +330,6 @@ final class BarModel: ObservableObject {
         // 自动隐藏的条不占位——铺满不该为一条平时不在的条扣掉底部那一条
         world.refreshBarDisplays()
         world.updateMouseMonitor()
-        if !hidden { sampleBackdrop() }
     }
 
     func refreshFullscreenState(reconcilePrediction: Bool = false) {
@@ -365,8 +350,6 @@ final class BarModel: ObservableObject {
             dwell = nil
         }
         world.updateMouseMonitor()
-        // 切了 Space，条底下就是另一套窗口了
-        sampleBackdrop()
     }
 
     /// 盯着指针只为触底唤出。条常驻的时候一次监听都不必挂。
@@ -395,7 +378,6 @@ final class BarModel: ObservableObject {
                 guard let self else { return }
                 dwell = nil
                 hidden = false
-                sampleBackdrop()
             }
             dwell = work
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.dwellDuration, execute: work)
@@ -408,28 +390,11 @@ final class BarModel: ObservableObject {
 
     // MARK: 几何与背景亮度
 
-    /// 视图量出玻璃条的位置后报上来，供背景亮度采样定位
+    /// 视图量出玻璃条的位置后报上来，用来定条的命中区
     func setBarFrame(_ rect: CGRect) {
         guard rect != barFrame else { return }
         barFrame = rect
         barHitFrame = anchored(rect)
-        sampleBackdrop()
-    }
-
-    func setRootOffset(_ offset: CGPoint) {
-        guard offset != rootOffset else { return }
-        rootOffset = offset
-        // 条与浮层的矩形都是根坐标系里的量，根一挪它们当场过期。留着的话下一次采样会把
-        // 新的平移量加到旧的矩形上，采到屏幕上的另一块地方——面板按需改高度时每次都会撞上。
-        barFrame = .zero
-        floatFrame = nil
-    }
-
-    /// 浮层出现 / 移动时报上来，消失时报 nil
-    func setFloatFrame(_ rect: CGRect?) {
-        guard rect != floatFrame else { return }
-        floatFrame = rect
-        sampleBackdrop()
     }
 
     /// 条上有悬停或浮层，条以上那块空间就要用起来了。
@@ -458,27 +423,14 @@ final class BarModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.roomReleaseDelay, execute: work)
     }
 
-    /// 采一次条与浮层玻璃板的亮度。单次约 35ms，异步；`BackdropSensor` 内部有 1 秒去抖。
-    /// 采的是容器内侧那条纯玻璃，位置由 `BackdropSensor.band` 从容器矩形算出。
-    func sampleBackdrop() {
-        // 屏幕黑着的时候 ScreenCaptureKit 的显示器列表是空的，抓图必然失败；而失败会
-        // 扔掉过滤器（见 `BackdropSensor.run` 的 catch），下一次 2 秒后又要重抓一份
-        // 快照——一份快照要为屏上每个窗口问一次 LaunchServices。于是屏幕黑着的时候
-        // 反而比亮着的时候更费：亮着是三十秒抓一份，黑着是两秒抓一份，而且全是白抓。
-        guard !hidden, !yielding, !world.screenDark, let display else { return }
-        if barFrame != .zero {
-            backdrop.sample(probe: probe(barFrame), on: display)
-        }
-        if let floatFrame {
-            floatBackdrop.sample(probe: probe(floatFrame), on: display)
-        }
+    /// 条与浮层各自的探针报上来的明暗。翻转要过渡，不能一帧切过去——整条 bar 的文字
+    /// 同时换色，硬切很扎眼。
+    func noteBackdrop(_ scheme: ColorScheme) {
+        withAnimation(.easeInOut(duration: 0.15)) { backdropScheme = scheme }
     }
 
-    /// 视图报上来的是根坐标系里的容器矩形，先平移到屏幕坐标，再交给采样器。
-    /// 条、预览卡、簇面板三块玻璃用的是同一个圆角。
-    private func probe(_ rect: CGRect) -> CGRect {
-        BackdropSensor.probe(in: rect.offsetBy(dx: rootOffset.x, dy: rootOffset.y),
-                             cornerRadius: BarMetrics.barRadius)
+    func noteFloatBackdrop(_ scheme: ColorScheme) {
+        withAnimation(.easeInOut(duration: 0.15)) { floatScheme = scheme }
     }
 
     /// bar 所在的屏。铺满与纠正只在这块屏上扣除 bar 的高度。
@@ -494,16 +446,12 @@ final class BarModel: ObservableObject {
         rebuildItems()
         // 每块显示器有自己当前的 Space，全屏状态要立刻切到那块屏的
         refreshFullscreenState()
-        // 换了屏，条底下就是另一块桌面了
-        sampleBackdrop()
     }
 
     func setYielding(_ value: Bool) {
         guard yielding != value else { return }
         yielding = value
         Timeline.log(value ? "调度中心打开，条让位" : "调度中心关闭，条回位")
-        // 让回来的时候条底下压的常常已经不是原来那块东西了
-        if !value { sampleBackdrop() }
     }
 
     // MARK: 命中区

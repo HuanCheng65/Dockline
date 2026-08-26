@@ -25,7 +25,7 @@ struct BarContent: View {
     /// 只观察 `model` 的话它们变了这里不会重画。
     @ObservedObject var world: World
     /// 手绘层与文字的明暗跟条背后的背景走，不跟窗口外观走。玻璃自己不管这件事
-    /// （只对 ≤64pt 的玻璃管，见 `DockGlass`），由 `BackdropSensor` 采出来。
+    /// （只对 ≤64pt 的玻璃管，见 `DockGlass`），由 `BackdropProbe` 垫一块玻璃量出来。
     private var scheme: ColorScheme { model.backdropScheme }
     /// 悬停的那一项。底色只在这一格与前台那一格上出现（计划书 §3.1）。
     @State private var hoveredItem: String?
@@ -167,7 +167,11 @@ struct BarContent: View {
                         .frame(width: size.width, height: size.height, alignment: .bottom)
                         .environment(\.colorScheme, model.floatScheme)
                         .background {
-                            DockGlass(cornerRadius: BarMetrics.barRadius).allowsHitTesting(false)
+                            ZStack {
+                                BackdropProbe(name: "浮层") { model.noteFloatBackdrop($0) }
+                                DockGlass(cornerRadius: BarMetrics.barRadius)
+                            }
+                            .allowsHitTesting(false)
                         }
                         .clipShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
                                                     style: .continuous))
@@ -176,11 +180,9 @@ struct BarContent: View {
                         // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有
                         // 要动手的东西（见 `interactive`）
                         .allowsHitTesting(stage.isList || interactive(stage))
-                        // 量尺寸与悬停判定都必须挂在 .position 之前。`.position` 交回来的是
-                        // 一个铺满可用空间的容器，挂在它后面，量到的是整块根视图、
-                        // 悬停判定也变成整块根视图（面板因此收不回去，采样也采到半屏）。
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
-                            action: { model.setFloatFrame($0) }
+                        // 悬停判定必须挂在 .position 之前。`.position` 交回来的是一个
+                        // 铺满可用空间的容器，挂在它后面，判定就变成了整块根视图，
+                        // 面板因此收不回去。
                         .onHover { inside in
                             if inside {
                                 keepPanel()
@@ -192,7 +194,6 @@ struct BarContent: View {
                                 if let hoveredItem { holdItem(hoveredItem) }
                             }
                         }
-                        .onDisappear { model.setFloatFrame(nil) }
                         // 从那一格的位置长出来，收回时缩回同一个点
                         .transition(.scale(scale: 0.28,
                                            anchor: panelAnchor(stage.anchorX, in: geometry.size))
@@ -490,7 +491,15 @@ struct BarContent: View {
             .fixedSize(horizontal: true, vertical: false)
             .frame(height: BarMetrics.barHeight)
         .environment(\.colorScheme, scheme)
-        .background { DockGlass(cornerRadius: BarMetrics.barRadius).allowsHitTesting(false) }
+        // 探针垫在玻璃底下量背景明暗。它看不见，量的也不是这块玻璃，而是窗口背后的
+        // 桌面——玻璃在它上面，不在它背后。见 `BackdropProbe`。
+        .background {
+            ZStack {
+                BackdropProbe(name: "条") { model.noteBackdrop($0) }
+                DockGlass(cornerRadius: BarMetrics.barRadius)
+            }
+            .allowsHitTesting(false)
+        }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
             action: { model.setBarFrame($0) }
         // 背板不参与命中测试，条的空白处要自己给出可右键的形状

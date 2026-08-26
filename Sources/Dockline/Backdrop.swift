@@ -1,252 +1,111 @@
 import AppKit
-import ScreenCaptureKit
 import SwiftUI
 
-/// 玻璃板的明暗（计划书 §3.1）。
+/// 玻璃板的明暗（计划书 §3.1）。**由合成器推送，本进程既不抓图也不轮询。**
 ///
-/// Liquid Glass 自己有这套能力，但只对高度 ≤64pt 的玻璃开——一根 77pt 的条够不着，
-/// 绕不过去，只能自己采。整条实测记录与试过的绕法见 `DockGlass`。
+/// Liquid Glass 自己就会算背景亮度、把明暗施加到内容上，但只对高 ≤64pt 的玻璃开；
+/// 一根 77pt 的条够不着那道闸。**可闸门管的是那块玻璃自己的内容，不管谁来读这个读数**
+/// ——于是在条底下垫一块 ≤64pt 的玻璃当探针：它在闸门之内，窗口服务器照常给它算，
+/// 我们只取读数，画面上并不要它。
 ///
-/// 口径是「文字真正压着的那些像素」：抓**系统合成之后**的画面，不排除任何窗口，
-/// 因此拿到的是桌面经 Liquid Glass 渲染出来的那块板，不必自己估算模糊、着色与折射。
-/// 采的位置是容器内侧那条纯玻璃（`band`）——那里没有图标也没有文字，所以画面里
-/// 有我们自己，也不会把自己的前景色采进来。条与浮层各用一个实例。
+/// 探针 alpha 压到 0.01：仍然跟得准，而肉眼看不见（逐像素比过）。恰好为 0 就不跟了。
+/// 整条实测记录、试过并否掉的绕法、两个容易把这条路误判成死路的坑，都在 `DockGlass` 里。
 ///
-/// 采样有两条来路。一条挂在事件上：索引变了、前台窗口变了、切了 Space、条从隐藏中
-/// 唤出。另一条跟着对账 tick 每 2 秒来一次——这一条是必需的，条底下那个窗口自己换了
-/// 内容（切页、播视频、换主题）不触发我们的任何事件，而那正是最常见的情况。
-/// 单次约 35ms，异步进行，内部再加 0.5 秒去抖。
-final class BackdropSensor {
-    /// 只用于日志：条与浮层各有一个实例，读数要能分辨是谁的。
-    private let name: String
-    var onChange: ((ColorScheme) -> Void)?
+/// 它取代的是先前那套 ScreenCaptureKit 取色：每 2 秒抓一次屏，而每次抓屏都会点亮系统的
+/// 录屏指示灯——那盏灯本身又搅动窗口名单，逼出我们自己的完整对账（见 `WindowListWatch`）。
+/// 整套东西连同那个自激回路一起没有了。
+struct BackdropProbe: NSViewRepresentable {
+    /// 只用于日志：条与浮层各有一个，两条 bar 又各有一份，读数要能分辨是谁的。
+    let name: String
+    let onChange: (ColorScheme) -> Void
 
-    init(name: String) { self.name = name }
-
-    /// 翻转阈值。实测这块玻璃对背景几乎是线性的，压根没把量程压掉多少
-    /// （背景 0 / 0.3 / 0.6 / 1.0 → 板 0.07 / 0.30 / 0.52 / 0.78）。
-    /// 白字与黑字对比度相等的点按 WCAG 算在 0.46，band 就骑在它两侧；
-    /// 留出迟滞是因为只有一个阈值的话，亮度在临界点抖一下，整条 bar 的文字就会来回翻。
-    private static let darkBelow = 0.42
-    private static let lightAbove = 0.52
-    /// 去抖。拖一个窗口经过条底下时，AX 会连着发一串移动事件，这个值决定跟色跟得多紧；
-    /// 单次抓图实测 36.9ms（中位数），0.5 秒一次即拖动期间约占一核的 7%，拖完即止。
-    private static let minInterval: TimeInterval = 0.5
-    /// 上下两条纯玻璃各有多高。条的净高是「图标 + 20」而格子是「图标 + 4」，
-    /// 上下各余 8pt；预览卡与簇面板的内边距是 8 / 9pt。再减去避开玻璃边缘的 2pt。
-    private static let bandHeight: CGFloat = 6
-    /// 上下边缘各让开这么多，避开玻璃自己的高光边。
-    private static let edgeInset: CGFloat = 2
-
-    /// 过滤器要定期重建。它是按一次快照建的，用久了抓回来的会是旧画面——
-    /// 亮度从此冻住，条上的明暗就再也不动了（实测过，当时的过滤器带排除表；
-    /// 换成不排除任何窗口之后是否还会冻，没有复现条件，先照旧重建）。
-    ///
-    /// 原先按「本取色器采样 15 次」计龄。采样周期 2 秒，也就是 30 秒一次，但**每个
-    /// 取色器各算各的**——两块屏就是两份，一次也不便宜（见 `Snapshot`）。改成按时间计龄
-    /// 之后含义不变，还能让所有取色器共用同一份快照。
-    private static let snapshotLifetime: TimeInterval = 30
-
-    private var scheme: ColorScheme = .light
-    private var filter: SCContentFilter?
-    private var filterDisplay: CGDirectDisplayID?
-    /// 建出当前这个过滤器的那份快照。快照换了就重建过滤器。
-    private var filterGeneration = 0
-    private var sampling = false
-    private var lastSample = Date.distantPast
-    private var pending: (probe: CGRect, display: CGDirectDisplayID)?
-    private var scheduled = false
-    /// 上一次报过的失败。同一个原因只报一次，换了原因或恢复后再报——
-    /// 失败不设停手开关：拔插显示器会让 ScreenCaptureKit 的显示器列表短暂变空，
-    /// 一旦就此停手，插回来也不会自己恢复。
-    private var reportedFailure: String?
-    /// 上一次记进日志的亮度。阈值是 §9 的待调参项，要靠实机取值来定。
-    private var logged: Double?
-
-    /// 要抓的矩形：容器整块，横向内缩一个圆角半径（避开圆角之外的桌面），
-    /// 上下各内缩 2pt。抓回来按 `bandHeight` 切成若干行，只用最上和最下那两行——
-    /// 它们正好各是一条纯玻璃，中间的行全是图标与文字，不看。
-    static func probe(in rect: CGRect, cornerRadius: CGFloat) -> CGRect {
-        // 条排完版之前会短于两个圆角，这时没有可采的玻璃，交给调用方跳过
-        guard rect.width > cornerRadius * 2, rect.height > edgeInset * 2 else { return .null }
-        return CGRect(x: rect.minX + cornerRadius, y: rect.minY + edgeInset,
-                      width: rect.width - cornerRadius * 2, height: rect.height - edgeInset * 2)
+    func makeNSView(context: Context) -> ProbeView {
+        let view = ProbeView(name: name)
+        view.onChange = onChange
+        return view
     }
 
-    func sample(probe: CGRect, on display: CGDirectDisplayID) {
-        guard probe.width > 1, probe.height > Self.bandHeight * 2 else { return }
-        pending = (probe, display)
-        drain()
+    func updateNSView(_ view: ProbeView, context: Context) {
+        view.onChange = onChange
     }
 
-    /// 去抖是限流，不是丢弃。丢掉的那次往往正是最要紧的一次——簇面板紧接着预览卡弹出来，
-    /// 它那次采样落在去抖窗口里被丢掉，面板就一直顶着上一层浮层留下的明暗，
-    /// 直到两秒后的兜底采样才转过来（实测）。
-    private func drain() {
-        guard !sampling, let next = pending else { return }
-        let wait = Self.minInterval - Date().timeIntervalSince(lastSample)
-        guard wait <= 0 else {
-            guard !scheduled else { return }
-            scheduled = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
-                self?.scheduled = false
-                self?.drain()
-            }
-            return
+    // MARK: -
+
+    final class ProbeView: NSView {
+        /// 探针高度上限。玻璃高到 66pt 那道闸就关了（见 `DockGlass`），留出余量。
+        private static let ceiling: CGFloat = 60
+        /// 看不见，但不能是 0——实测 alpha 恰好为 0 时合成器就不给它算了。
+        private static let opacity: CGFloat = 0.01
+
+        /// 构造时就要有：头一次读数在 `init` 里就发生了，等外面赋值来不及。
+        private let name: String
+        var onChange: ((ColorScheme) -> Void)?
+
+        private let glass = NSGlassEffectView()
+        /// 自适应的结果作用在内容视图的 `effectiveAppearance` 上，所以读数口就是它。
+        /// 内容视图必须**是** `NSTextField`，玻璃才走内容明暗自适应那一档（见 `DockGlass`）。
+        private let readout = Readout(labelWithString: " ")
+        private var widthConstraint: NSLayoutConstraint!
+        private var heightConstraint: NSLayoutConstraint!
+        private var reported: ColorScheme?
+        private var warnedAboutHeight = false
+
+        init(name: String) {
+            self.name = name
+            super.init(frame: .zero)
+            // **外观钉死。** 条的内容套着 `.environment(\.colorScheme, backdropScheme)`，
+            // 而探针垫在同一个 `.background` 里，会连这个环境一起继承——于是探针的读数
+            // 成了自己上一次读数的函数，明暗在两档之间自己抖起来（实测三秒翻三次）。
+            // 钉住之后玻璃的自适应照常盖在它上面，环是断的。
+            appearance = NSAppearance(named: .aqua)
+            readout.textColor = .clear
+            readout.translatesAutoresizingMaskIntoConstraints = false
+            widthConstraint = readout.widthAnchor.constraint(equalToConstant: 1)
+            heightConstraint = readout.heightAnchor.constraint(equalToConstant: 1)
+            NSLayoutConstraint.activate([widthConstraint, heightConstraint])
+            readout.onAppearanceChange = { [weak self] in self?.publish() }
+
+            glass.contentView = readout
+            glass.alphaValue = Self.opacity
+            addSubview(glass)
         }
-        pending = nil
-        sampling = true
-        lastSample = Date()
-        Task { @MainActor [weak self] in
-            await self?.run(probe: next.probe, display: next.display)
-            self?.sampling = false
-            self?.drain()
-        }
-    }
 
-    @MainActor private func run(probe: CGRect, display: CGDirectDisplayID) async {
-        do {
-            let snapshot = try await Snapshot.current()
-            let active: SCContentFilter
-            if let filter, filterDisplay == display, filterGeneration == snapshot.generation {
-                active = filter
-            } else {
-                active = try Self.makeFilter(display, from: snapshot)
-                filter = active
-                filterDisplay = display
-                filterGeneration = snapshot.generation
-            }
-            // ScreenCaptureKit 会保持源矩形的宽高比，比例对不上就在边上补黑，而补出来的
-            // 黑边会被当成「背景很暗」——实测把一条 802×73 抓成 16×12，只有最上面两行
-            // 有内容，其余十行全黑。所以先按行高定行数，再让宽度去迁就比例。
-            let rows = max(2, Int((probe.height / Self.bandHeight).rounded()))
-            let columns = max(2, Int((CGFloat(rows) * probe.width / probe.height).rounded()))
-            let width = probe.height * CGFloat(columns) / CGFloat(rows)
-            let config = SCStreamConfiguration()
-            config.sourceRect = CGRect(x: probe.midX - width / 2, y: probe.minY,
-                                       width: width, height: probe.height)
-            config.width = columns
-            config.height = rows
-            config.showsCursor = false
-            config.captureResolution = .nominal
-            let image = try await SCScreenshotManager.captureImage(contentFilter: active,
-                                                                   configuration: config)
-            reportedFailure = nil
-            guard let luminance = Self.luminance(image) else { return }
-            if logged.map({ abs($0 - luminance) >= 0.05 }) ?? true {
-                logged = luminance
-                Timeline.log(String(format: "玻璃板亮度  %@ %.3f", name, luminance))
-            }
-            let next: ColorScheme
-            if luminance < Self.darkBelow { next = .dark }
-            else if luminance > Self.lightAbove { next = .light }
-            else { return }   // 落在迟滞带里，保持不动
-            guard next != scheme else { return }
-            scheme = next
-            onChange?(next)
-        } catch {
-            // 扔掉过滤器，下一次重建
-            filter = nil
-            // 快照里没有这块屏，重建过滤器也还是没有——那份共用的快照本身要扔
-            if error is MissingDisplay { Snapshot.invalidate() }
-            let reason = "\(probe)（屏 \(display)）：\(error)"
-            if reportedFailure != reason {
-                reportedFailure = reason
-                Timeline.log("⚠️ \(name)的玻璃板亮度采不到，文字明暗暂时固定跟随系统外观：\(reason)")
+        required init?(coder: NSCoder) { fatalError("不从 nib 加载") }
+
+        override func layout() {
+            super.layout()
+            let width = max(bounds.width, 1)
+            let height = max(min(bounds.height, Self.ceiling), 1)
+            widthConstraint.constant = width
+            heightConstraint.constant = height
+            // 玻璃走 autoresizing，不吃上面那两条约束，尺寸必须明写——不写它就是 0×0，
+            // 而 0×0 的玻璃什么都不报也不报错，症状是「明暗从此不动」，指不到原因。
+            glass.frame = NSRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
+                                 width: width, height: height)
+            layoutSubtreeIfNeeded()
+            // 越过那道闸同样是静悄悄地失效，必须说出来
+            if glass.frame.height > 64, !warnedAboutHeight {
+                warnedAboutHeight = true
+                Timeline.log("⚠️ 亮度探针长到了 \(Int(glass.frame.height))pt，越过 64pt 那道闸，"
+                             + "文字明暗将不再跟随背景")
             }
         }
-    }
 
-    /// 不排除任何窗口：要的就是含我们自己那块玻璃在内的合成结果。
-    private static func makeFilter(_ display: CGDirectDisplayID,
-                                   from snapshot: Snapshot) throws -> SCContentFilter {
-        guard let target = snapshot.displays.first(where: { $0.displayID == display }) else {
-            throw MissingDisplay(id: display, listed: snapshot.displays.map(\.displayID))
+        private func publish() {
+            let dark = readout.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let scheme: ColorScheme = dark ? .dark : .light
+            guard scheme != reported else { return }
+            reported = scheme
+            Timeline.log("玻璃板明暗  \(name) \(scheme == .dark ? "暗底" : "亮底")")
+            onChange?(scheme)
         }
-        return SCContentFilter(display: target, excludingWindows: [])
-    }
 
-    /// 全部取色器共用的那份 `SCShareableContent`。
-    ///
-    /// 抓一次快照，ScreenCaptureKit 会为列出的**每一个窗口**构造一个
-    /// `SCRunningApplication`，而那个构造函数要读 `localizedName`，也就是向
-    /// LaunchServices 同步问一次。本机 321 个窗口，一次快照就是三百多次 XPC 往返，
-    /// 实测约 300ms、其中一半在等 LaunchServices——这是本进程空置时最大的一笔开销。
-    /// 而我们从这份快照里只取 `.displays`，窗口列表一个都不看。
-    ///
-    /// 收窄枚举范围这条路走不通：`onScreenWindowsOnly: true` 会**连显示器列表一起返空**
-    /// （实测于 macOS 26.5，两块屏都取不到，取色整个失效），所以只能照旧全量抓。
-    /// 能省的是次数：原先每个取色器各抓各的，两块屏就抓两遍，而它们要的是同一个东西。
-    private struct Snapshot {
-        let displays: [SCDisplay]
-        /// 每抓一次加一。取色器拿它和自己手上那个比，判断过滤器要不要重建。
-        let generation: Int
-        let takenAt: Date
-
-        @MainActor private static var latest: Snapshot?
-        @MainActor private static var counter = 0
-        /// 正在进行的那次抓取。**必须共用它，光共用结果不够**：一次抓取要几十毫秒，
-        /// 而每块屏的取色器是同一拍触发的——第二个进来时第一个还停在 `await` 里，
-        /// `latest` 还没写上，于是照样自己抓一遍。实测两次抓取相隔 20~40 毫秒成对出现。
-        @MainActor private static var inFlight: Task<Snapshot, Error>?
-
-        @MainActor static func current() async throws -> Snapshot {
-            if let latest,
-               Date().timeIntervalSince(latest.takenAt) < BackdropSensor.snapshotLifetime {
-                return latest
+        private final class Readout: NSTextField {
+            var onAppearanceChange: (() -> Void)?
+            override func viewDidChangeEffectiveAppearance() {
+                super.viewDidChangeEffectiveAppearance()
+                onAppearanceChange?()
             }
-            if let inFlight { return try await inFlight.value }
-            let task = Task { @MainActor () throws -> Snapshot in
-                let content = try await SCShareableContent.excludingDesktopWindows(
-                    false, onScreenWindowsOnly: false)
-                counter += 1
-                return Snapshot(displays: content.displays,
-                                generation: counter, takenAt: Date())
-            }
-            inFlight = task
-            defer { inFlight = nil }
-            let fresh = try await task.value
-            latest = fresh
-            return fresh
         }
-
-        /// 快照里没有那块屏时必须扔掉重抓，不能等它自然到期。拔插显示器会让
-        /// ScreenCaptureKit 的显示器列表短暂变空，而共用一份快照意味着这一空要持续
-        /// 到下一次到期为止——插回来的屏最长要三十秒才跟上色。
-        @MainActor static func invalidate() { latest = nil }
-    }
-
-    /// 实测会发生：拔插显示器之后，ScreenCaptureKit 的显示器列表会空一阵子。
-    private struct MissingDisplay: Error, CustomStringConvertible {
-        let id: CGDirectDisplayID
-        let listed: [CGDirectDisplayID]
-        var description: String {
-            "ScreenCaptureKit 没有列出显示器 \(id)，它列出的是 \(listed)"
-        }
-    }
-
-    /// 逐列取「最上一行与最下一行的平均」，再取各列的中位数。
-    ///
-    /// 只取两条边是因为中间全是图标与文字；两条边取平均而不是只用一条，是因为
-    /// 玻璃是透的，条上下 77pt 之内背景常常自己就是渐变的——实测一次窗口下沿正好压在
-    /// 条上，上缘 0.47、下缘 0.76，而文字所在的中间是 0.70。两端取平均就落在中间。
-    /// 取中位数是因为角标与运行指示点会各自探进纯玻璃里一点点，求平均会被它们拉偏。
-    private static func luminance(_ image: CGImage) -> Double? {
-        let w = image.width, h = image.height
-        var pixels = [UInt8](repeating: 0, count: w * h * 4)
-        guard let context = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8,
-                                      bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return nil }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        func value(_ x: Int, _ y: Int) -> Double {
-            let i = (y * w + x) * 4
-            return 0.2126 * Double(pixels[i]) / 255
-                + 0.7152 * Double(pixels[i + 1]) / 255
-                + 0.0722 * Double(pixels[i + 2]) / 255
-        }
-        var columnValues = (0..<w).map { (value($0, 0) + value($0, h - 1)) / 2 }
-        columnValues.sort()
-        return columnValues[columnValues.count / 2]
     }
 }

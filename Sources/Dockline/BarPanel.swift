@@ -195,9 +195,6 @@ final class BarPanel: NSPanel {
         let frame = homeScreen.frame
         model.availableWidth = homeScreen.visibleFrame.width
         model.setBarDisplay(displayID(homeScreen))
-        // 根坐标系（面板左上角起）→ 屏幕左上原点坐标 的平移量。面板贴着屏幕底边、
-        // 占满整宽，所以横向为 0，纵向就是屏幕高减去面板高。
-        model.setRootOffset(CGPoint(x: 0, y: homeScreen.frame.height - height))
         setFrame(NSRect(x: frame.minX, y: frame.minY,
                         width: frame.width, height: height),
                  display: true)

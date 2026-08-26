@@ -383,11 +383,6 @@ final class World: ObservableObject {
         observers.onEvent = { [weak self] pid, notification, element in
             guard let self else { return }
             Timeline.log("AX 事件  pid \(pid) \(Self.appName(pid))  \(notification)")
-            // 窗口挪动 / 改大小不会改索引，走不到 publish 里那次采样，但条底下的颜色
-            // 恰恰就是这么变的——单独接一下
-            if notification == kAXWindowMovedNotification || notification == kAXWindowResizedNotification {
-                sampleBackdrop()
-            }
             if notification == kAXUIElementDestroyedNotification {
                 if store.removeWindow(matching: element) {
                     Timeline.log("✕ 移出索引  [窗口销毁事件]")
@@ -543,7 +538,6 @@ final class World: ObservableObject {
         if fillHotKey == nil {
             Timeline.log("⚠️ 铺满快捷键 ⌃⌥⌘F 注册失败，该组合已被其他程序占用")
         }
-        watchScreenPower()
         for bar in bars { bar.refreshFullscreenState() }
         refreshFrontWindow()
         refreshTrash()
@@ -600,10 +594,6 @@ final class World: ObservableObject {
     }
 
     func reconcile() {
-        // 跟着对账 tick 采一次背景亮度。这里必须是周期性的，不能只挂在事件上：
-        // 条底下那个窗口自己换了内容（切页、播视频、换主题）不触发我们的任何事件，
-        // 而那正是最常见的情况。单次约 35ms，异步，只在条可见时进行。
-        sampleBackdrop()
         guard accessibility else { return }
         // **先花 0.2 毫秒问一句「名单有没有变」，再决定要不要花二十几毫秒去对账。**
         // 绝大多数轮次它什么都发现不了，而这个进程空置时的开销几乎全在这一遍上。
@@ -692,7 +682,6 @@ final class World: ObservableObject {
             lastDisplay[window.appKey] = display
         }
         rebuild()
-        sampleBackdrop()
     }
 
     /// 这一轮刚换了显示器的窗口 → 它原来在哪块屏。收到它的那条 bar 据此让格子
@@ -725,56 +714,6 @@ final class World: ObservableObject {
         display.map { "屏 \($0)" } ?? "未知"
     }
 
-    /// 屏幕锁上了 / 睡着了。两件事分开记：睡着之后再锁上、锁着的时候屏幕醒过来，
-    /// 这两种交错都真实发生，合成一个开关会卡在错的那一边。
-    ///
-    /// 初值必须在这里当场问，不能等到 `watchScreenPower()`：登录项在解锁之前就启动了，
-    /// 那时屏幕已经锁着，而「锁屏」那条通知早在我们订阅之前就发过。等到 `start()`
-    /// 里再问也来不及——条一量出自己的位置就会请求取色，那比 `world.start()` 还早。
-    private var screenLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])
-        .flatMap { $0["CGSSessionScreenIsLocked"] as? Bool } ?? false
-    private var screenAsleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
-    /// 屏幕上没有画面可采。取色的总闸在 `BarModel.sampleBackdrop()` 上——
-    /// 那里是所有取色请求唯一的漏斗，这个属性是它的判据之一。
-    var screenDark: Bool { screenLocked || screenAsleep }
-
-    private func sampleBackdrop() {
-        for bar in bars { bar.sampleBackdrop() }
-    }
-
-    /// 锁屏与屏幕睡眠。前者只有分布式通知，后者在 NSWorkspace 上。
-    private func watchScreenPower() {
-        if screenDark {
-            Timeline.log("启动时屏幕是黑的，玻璃板取色暂不进行"
-                         + "（锁屏 \(screenLocked)，睡眠 \(screenAsleep)）")
-        }
-        let distributed = DistributedNotificationCenter.default()
-        for (name, locked) in [("com.apple.screenIsLocked", true),
-                               ("com.apple.screenIsUnlocked", false)] {
-            distributed.addObserver(forName: Notification.Name(name),
-                                    object: nil, queue: .main) { [weak self] _ in
-                self?.noteScreenPower(locked: locked)
-            }
-        }
-        let workspace = NSWorkspace.shared.notificationCenter
-        for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true),
-                               (NSWorkspace.screensDidWakeNotification, false)] {
-            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.noteScreenPower(asleep: asleep)
-            }
-        }
-    }
-
-    private func noteScreenPower(locked: Bool? = nil, asleep: Bool? = nil) {
-        let before = screenDark
-        if let locked { screenLocked = locked }
-        if let asleep { screenAsleep = asleep }
-        guard before != screenDark else { return }
-        Timeline.log("屏幕\(screenDark ? "黑了" : "亮了")，玻璃板取色\(screenDark ? "停下" : "继续")"
-                     + "（锁屏 \(screenLocked)，睡眠 \(screenAsleep)）")
-        if !screenDark { sampleBackdrop() }
-    }
-
     // MARK: 前台窗口
     //
     // 走「前台 App 的 AX 元素 -> kAXFocusedWindow」。不走系统级 kAXFocusedApplication：
@@ -791,10 +730,7 @@ final class World: ObservableObject {
             activationClock += 1
             lastActive[id] = activationClock
         }
-        let changed = frontWindow != id
         frontWindow = id
-        // 前台窗口一换，条底下多半就是另一块颜色了
-        if changed { sampleBackdrop() }
     }
 
     // MARK: 指针
