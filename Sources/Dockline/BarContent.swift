@@ -120,6 +120,9 @@ struct BarContent: View {
     struct PreviewTarget: Equatable {
         let window: IndexedWindow
         let appName: String
+        /// 这一格是不是该 App 在条上的第一格。App 级的状态只挂在那一格上，
+        /// 卡片要照同一条规则问（见 `World.session(window:of:leads:)`）。
+        let leads: Bool
         /// 格子中心在根坐标系里的横坐标
         let anchorX: CGFloat
     }
@@ -407,9 +410,8 @@ struct BarContent: View {
     private var askableCard: Bool {
         guard let preview else { return false }
         let target = preview.window
-        let session = model.world.sessions[.window(target.id)]
-            ?? model.world.sessions[.app(target.pid)]
-        return session?.ask != nil
+        return model.world.session(window: target.id, of: target.pid,
+                                   leads: preview.leads)?.ask != nil
     }
 
     private func keepPreview() {
@@ -1074,8 +1076,8 @@ struct BarContent: View {
         case .preview(let target):
             // 有会话时卡片的标题是这件事叫什么，不是这扇窗口叫什么：窗口的身份由图标与
             // 位置已经给过了，而你打开这张卡是为了看那件事进行到哪一步。
-            let session = model.world.sessions[.window(target.window.id)]
-                ?? model.world.sessions[.app(target.window.pid)]
+            let session = model.world.session(window: target.window.id,
+                                              of: target.window.pid, leads: target.leads)
             return session?.task ?? target.window.title
         case .list:
             return ""
@@ -1085,8 +1087,8 @@ struct BarContent: View {
     /// 这一档预览的窗口上有没有 agent 会话。有就让卡片让位给它。
     private func cardSession(_ stage: FloatStage) -> Session? {
         guard case .preview(let target) = stage.kind else { return nil }
-        return model.world.sessions[.window(target.window.id)]
-            ?? model.world.sessions[.app(target.window.pid)]
+        return model.world.session(window: target.window.id,
+                                   of: target.window.pid, leads: target.leads)
     }
 
     /// nil = 还只是名字那一档
@@ -1199,7 +1201,8 @@ struct BarContent: View {
             schedulePreview(nil, from: hoveredCell ?? 0)
             return
         }
-        schedulePreview(PreviewTarget(window: window, appName: cell.appName, anchorX: anchorX),
+        schedulePreview(PreviewTarget(window: window, appName: cell.appName,
+                                      leads: cell.leadsApp, anchorX: anchorX),
                         from: id)
     }
 
@@ -1305,6 +1308,7 @@ struct BarContent: View {
                             }
                             schedulePreview(PreviewTarget(window: cell.window,
                                                           appName: cell.appName,
+                                                          leads: cell.leadsApp,
                                                           anchorX: anchorX),
                                             from: cell.id)
                         },
@@ -1328,8 +1332,7 @@ struct BarContent: View {
         // 未读语义的出口：点过这一格就算看见了，终态退场。放在召回之前，
         // 因为召回本身可能改变这一格是谁。
         if slot.session?.isUnread == true {
-            model.world.markStatusSeen(model.world.sessions[.window(cell.id)] != nil
-                                       ? .window(cell.id) : .app(cell.pid))
+            model.world.markStatusSeen(window: cell.id, of: cell.pid)
         }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
         // 但它也不可能是前台窗口，走召回。
@@ -1465,8 +1468,7 @@ struct Slot {
     /// 这一格该显示谁的活动状态。窗口级的先问——它更精确；问不到再退回 App 级，
     /// 而 App 级的东西只挂在该 App 在条上的第一格，与未读角标同一条规则。
     static func session(of cell: BarWindow, in model: BarModel) -> Session? {
-        if let own = model.world.sessions[.window(cell.id)] { return own }
-        return cell.leadsApp ? model.world.sessions[.app(cell.pid)] : nil
+        model.world.session(window: cell.id, of: cell.pid, leads: cell.leadsApp)
     }
 }
 

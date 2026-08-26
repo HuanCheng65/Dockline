@@ -89,8 +89,20 @@ final class World: ObservableObject {
 
     /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
     /// 就消失的通知等于没有发出过。只撤终态，运行中与等待中的不动。
-    func markStatusSeen(_ target: StatusTarget) {
-        sessionCenter.markSeen(target)
+    /// 这一格的终态已被用户看见。**目标由这里判**，不由调用方判：窗口级还是 App 级
+    /// 与上面那条查找是同一条规则，让点击那一侧再判一次就是第六份抄写。
+    func markStatusSeen(window id: CGWindowID, of pid: pid_t) {
+        sessionCenter.markSeen(sessions[.window(id)] != nil ? .window(id) : .app(pid))
+    }
+
+    /// 这一格该显示谁的会话。窗口级的先问——它更精确；问不到再退回 App 级，
+    /// 而 **App 级的东西只挂在该 App 在条上的第一格**，与未读角标同一条规则。
+    ///
+    /// **这条规则只写在这里。** 它原先抄在五处，其中三处漏掉了「第一格」那一半，
+    /// 于是同一个 App 的第二扇窗口悬停时也会浮出它的会话。
+    func session(window id: CGWindowID, of pid: pid_t, leads: Bool) -> Session? {
+        if let own = sessions[.window(id)] { return own }
+        return leads ? sessions[.app(pid)] : nil
     }
 
     /// 用户在面板上批了或驳了一次授权（实时状态设计 §4.7）。
