@@ -68,6 +68,8 @@ final class SessionCenter {
         let key: ReportKey
         let host: pid_t
         let ask: Session.Ask
+        /// 这次授权把等待态推上去之前，这一格上是什么。nil = 那时这一格上什么都没有。
+        let restore: Session?
     }
 
     private var pending: [UUID: Pending] = [:]
@@ -105,7 +107,8 @@ final class SessionCenter {
                                                 object: payload["object"] as? String,
                                                 lines: lines,
                                                 more: payload["more"] as? Int ?? 0,
-                                                since: Date()))
+                                                since: Date()),
+                              restore: reports[key]?.session)
         var push: [String: Any] = ["command": "push", "state": "waiting", "reason": "permission",
                                    "pid": Int(host)]
         for field in ["session", "cwd", "task", "agent"] { push[field] = payload[field] }
@@ -114,7 +117,8 @@ final class SessionCenter {
 
     /// 用户在条上按了一下。
     func answer(_ id: UUID, allow: Bool) {
-        guard pending.removeValue(forKey: id) != nil else { return }
+        guard let entry = pending.removeValue(forKey: id) else { return }
+        settle(entry)
         // 拒绝的理由会进模型的上下文。它是给人看的字，所以在这里取本地化资源，
         // 而不是让 dockctl 拼一句话送过来（见设计文档 §4 的界面文字一条）。
         onAnswer?(id, allow, allow ? nil : localized("activity.ask.denied"))
@@ -123,8 +127,27 @@ final class SessionCenter {
 
     /// 对面在拿到答复之前走了：hook 被超时杀掉、会话被中断、终端被关掉。
     func dropAsk(_ id: UUID) {
-        guard pending.removeValue(forKey: id) != nil else { return }
+        guard let entry = pending.removeValue(forKey: id) else { return }
+        settle(entry)
         onChange?()
+    }
+
+    /// 把这次授权顺手推上去的那一层等待态撤回来。
+    ///
+    /// 授权请求同时是一条等待态上报（见 `receiveAsk`），而它没有对应的「撤下」事件：
+    /// 对面拿到答复后继续往下跑，要等下一次上报才把这一格改回去；对面若是在答复之前
+    /// 就走了——hook 被超时杀掉、会话被中断——那就再也没有下一次，这一格于是永远停在
+    /// 「待授权」。**这一层是这次授权推上去的，授权没了它就该跟着走。**
+    ///
+    /// 恢复的是推它上去之前那一份，不猜一个状态。这期间若已经来过新的上报（对面被
+    /// 解开之后跑得比这里快），那一份更接近事实，不去动它。
+    private func settle(_ entry: Pending) {
+        guard case .waiting(.permission) = reports[entry.key]?.session.salience else { return }
+        guard let restore = entry.restore else {
+            reports[entry.key] = nil
+            return
+        }
+        reports[entry.key]?.session = restore
     }
 
     /// 宿主 App 退出后，它名下的活动一并撤下。
