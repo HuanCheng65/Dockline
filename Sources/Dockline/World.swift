@@ -1616,10 +1616,10 @@ final class World: ObservableObject {
     /// 只查条上显示着的那几个 App。
     func refreshBadges() {
         var apps: [String: URL] = [:]
+        // 走 `bundleURL(pid:)` 而不是直接问 NSRunningApplication：读 `bundleURL` 会向
+        // LaunchServices 同步问一次（见 `bundleURLCache`），而这里是每 2 秒、每格一遍。
         func note(_ cell: BarWindow) {
-            guard let id = cell.bundleID,
-                  let url = NSRunningApplication(processIdentifier: cell.pid)?.bundleURL
-            else { return }
+            guard let id = cell.bundleID, let url = bundleURL(pid: cell.pid) else { return }
             apps[id] = url
         }
         for item in bars.flatMap(\.barItems) {
