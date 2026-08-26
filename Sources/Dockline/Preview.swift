@@ -607,8 +607,11 @@ struct PreviewCard: View {
 
     private static let artworkSize: CGFloat = 56
     /// 细线加一行时间。刻意不是一根粗条——那是播放器控件的样子，不是一张卡的样子。
-    /// 时间移到线的两端之后，这一行不再是「线 + 一行字」两截，只要装得下末端那点光
+    /// 时间移到线的两端之后，这一行不再是「线 + 一行字」两截
     private static let progressHeight: CGFloat = 14
+    /// 换歌时文字交叉淡入的时长。与封面那一层同一个节奏——一张卡上换的是同一件事，
+    /// 两处用不同的速度会读成两件事先后发生。
+    private static let trackFade: TimeInterval = 0.32
     private static let controlHeight: CGFloat = 32
 
     /// 这一档全是定高的，因此高度是算出来的而不是量出来的。量文字那条路在这张卡上
@@ -627,12 +630,16 @@ struct PreviewCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     if let title = playing.title {
                         Text(title)
+                            .contentTransition(.opacity)
+                            .animation(.easeInOut(duration: Self.trackFade), value: title)
                             .font(.system(size: 13, weight: .semibold))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                     if let artist = playing.artist {
                         Text(artist)
+                            .contentTransition(.opacity)
+                            .animation(.easeInOut(duration: Self.trackFade), value: artist)
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -643,6 +650,8 @@ struct PreviewCard: View {
                     if let album = playing.album,
                        album != playing.title, album != playing.artist {
                         Text(album)
+                            .contentTransition(.opacity)
+                            .animation(.easeInOut(duration: Self.trackFade), value: album)
                             .font(.system(size: 10.5))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
@@ -694,7 +703,7 @@ struct PreviewCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .frame(width: Self.artworkSize, height: Self.artworkSize)
             .shadow(color: .black.opacity(0.2), radius: 5, y: 2)
-            .animation(.easeInOut(duration: 0.35), value: playing.artworkID)
+            .animation(.easeInOut(duration: Self.trackFade), value: playing.artworkID)
     }
 
     private func mediaButton(_ symbol: String, size: CGFloat,

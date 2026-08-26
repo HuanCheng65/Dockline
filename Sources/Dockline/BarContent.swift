@@ -1500,6 +1500,10 @@ private struct DockCell: View {
     let onHover: (CGFloat?) -> Void
     let onTap: () -> Void
 
+    /// 换歌时文字交叉淡入的时长。与卡片上那一层同一个数——同一件事换了，
+    /// 条上和卡上用不同的速度会读成两件事先后发生。
+    private static let trackFade: TimeInterval = 0.32
+
     @State private var frame: CGRect = .zero
 
     var body: some View {
@@ -1520,13 +1524,15 @@ private struct DockCell: View {
                 //
                 // 自下而上、渐隐到透明，与面板卡上那一层同一个手势。底色那几档是平铺的
                 // 实色，渐变因此不会被读成「这一格被悬停了」。
-                if let tint = slot.status?.media?.tint {
-                    RoundedRectangle(cornerRadius: metrics.cellRadius, style: .continuous)
-                        .fill(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
-                                             startPoint: .bottom, endPoint: .top))
-                        .padding(BarMetrics.backingInset)
-                        .animation(.easeInOut(duration: 0.5), value: tint)
-                }
+                // 这一层**始终在场**，没在放歌时是全透明的。用 `if` 让它进出的话，
+                // 起播与停播都是硬切；而颜色本身是可插值的，一路从透明淡进来即可，
+                // 换歌那次交叉淡入也走的是同一条路。
+                let tint = slot.status?.media?.tint ?? .clear
+                RoundedRectangle(cornerRadius: metrics.cellRadius, style: .continuous)
+                    .fill(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
+                                         startPoint: .bottom, endPoint: .top))
+                    .padding(BarMetrics.backingInset)
+                    .animation(.easeInOut(duration: 0.5), value: tint)
             }
         }
         // 活动状态画在格子边缘上，不额外占一行——那会破坏统一盒模型（§3.1）
@@ -1566,8 +1572,14 @@ private struct DockCell: View {
             .overlay(alignment: .bottomTrailing) {
                 if let playing = slot.status?.media {
                     MediaBadge(playing: playing, size: metrics.icon * 0.38, levels: levels)
+                        // 起播时从图标那个角上长出来，停播时缩回去。硬出现的角标读起来
+                        // 像画错了一帧。
+                        .transition(.scale(scale: 0.4, anchor: .bottomTrailing)
+                            .combined(with: .opacity))
                 }
             }
+            .animation(.spring(response: 0.34, dampingFraction: 0.74),
+                       value: slot.status?.media == nil)
             .modifier(LaunchBounce(bouncing: slot.bouncing, height: metrics.icon * 0.36))
     }
 
@@ -1578,6 +1590,10 @@ private struct DockCell: View {
             // 宽度由 LabelWidths 一次算准，不交给 frame(maxWidth:)：
             // 外层 fixedSize 会把它的理想宽取成上限值，短标题也会占满。
             Text(text)
+                // 换歌（以及换窗口标题）时交叉淡入，不硬切。范围只到这个 `Text` 为止：
+                // 挂在更外面的话，随文字一起变的宽度也会跟着滑，那是在动位置，不是在换字。
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: Self.trackFade), value: text)
                 .font(.system(size: BarMetrics.labelFontSize, weight: .medium))
                 .lineLimit(BarMetrics.labelLines)
                 .truncationMode(.tail)
