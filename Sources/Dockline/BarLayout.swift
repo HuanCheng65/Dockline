@@ -286,14 +286,14 @@ func alignBarOrder(windows: [IndexedWindow], pins: PinStore, retained: Set<AppKe
 /// 标题歧义要按 App 全局算，簇也可能有成员在别的屏上。
 /// - Parameter onThisDisplay: 归本屏的窗口。
 /// - Parameter dormantHere: 一个此刻没有窗口的 App，它的占位槽该不该出现在本屏。
-/// - Parameter session: 这一格上的会话。文本层要用它（见下面的优先级栈），所以必须在
-///   这里问——宽度是按最终要显示的那行字算的。「窗口级优先、App 级只归第一格」那条规则
-///   不在这里判，由 `World.session(window:of:leads:)` 一处说了算。
+/// - Parameter status: 这一格上的状态。文本层要用它（见下面的优先级栈），所以必须在
+///   这里问——宽度是按最终要显示的那行字算的。「窗口级优先、App 级只归第一格」以及
+///   「会话压过播放」两条规则都不在这里判，由 `World.status(window:of:leads:)` 说了算。
 func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
                   dormantHere: (AppKey) -> Bool, pins: PinStore, notice: String?,
                   clusters: ClusterStore, order: WindowOrder,
                   labels: LabelWidths, recency: (CGWindowID) -> Int,
-                  session: (CGWindowID, pid_t, Bool) -> Session?) -> [BarItem] {
+                  status: (CGWindowID, pid_t, Bool) -> CellStatus?) -> [BarItem] {
     // 三、标题只在同 App 有兄弟时出现。按 App 全局算——同 App 的两个窗口
     // 即使被拖散了，也还是要能区分。
     let byID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -316,11 +316,12 @@ func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
     func text(of window: IndexedWindow, leads: Bool) -> (label: String?, width: CGFloat) {
         let key = "w\(window.id)"
         let title = hasSiblings.contains(window.id) ? window.title : nil
-        guard let session = session(window.id, window.pid, leads) else {
+        guard let status = status(window.id, window.pid, leads) else {
             return (title, title.map { labels.width(of: key, $0) } ?? 0)
         }
         let width = BarMetrics.labelMaxWidth
-        let lines = [session.task ?? title, session.stateLine].compactMap { $0 }
+        let two = status.lines
+        let lines = [two.first ?? title, two.second].compactMap { $0 }
             .map { LabelWidths.fit($0, to: width) }
         return (lines.joined(separator: "\n"), width)
     }

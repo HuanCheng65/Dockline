@@ -35,6 +35,15 @@ cp "$BIN" "$APP/Contents/MacOS/Dockline"
 cp -R "$ROOT/Sources/Dockline/Resources/zh-Hans.lproj" "$APP/Contents/Resources/"
 # 活动状态的上报入口。放进 bundle，用户自行 ln -s 到 PATH 上。
 cp "$ROOT/.build/$CONFIG/dockctl" "$APP/Contents/MacOS/dockctl"
+
+# 「正在播放」的桥（实时状态设计 §5）。
+#
+# 它不是 Swift 包的一部分，所以在这里单独编译：MediaRemote 只答复 Apple 签的平台二进制，
+# 我们的做法是让 /usr/bin/perl 把这个 dylib 装进它自己的进程里。因此需要的只有一个
+# dylib 加一个几行的 perl 脚本，不依赖任何第三方产物。
+clang -dynamiclib -fobjc-arc -O2 -framework Foundation \
+    -o "$APP/Contents/Resources/libnowplaying.dylib" "$ROOT/Bridge/nowplaying.m"
+cp "$ROOT/Bridge/nowplaying.pl" "$APP/Contents/Resources/nowplaying.pl"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -75,5 +84,7 @@ else
     codesign --force --sign "$IDENTITY" "$APP"
 fi
 
-codesign --verify --verbose=1 "$APP" 2>&1 | sed 's/^/  /'
+# --deep --strict：bundle 里现在带着一个自己编的 dylib，它没签好会让整包的签名失效，
+# 而签名一坏，辅助功能与屏幕录制的授权下次启动就要重来。
+codesign --verify --deep --strict --verbose=1 "$APP" 2>&1 | sed 's/^/  /'
 echo "✅ $APP"

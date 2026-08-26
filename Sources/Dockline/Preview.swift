@@ -193,15 +193,21 @@ struct PreviewCard: View {
     /// 从它量就成了循环。见 `BarContent.peekBox`。
     let peek: CGSize?
 
-    /// 这一格上有 agent 会话时，卡片要说的东西。nil = 没有会话，卡片还是原来那张。
+    /// 这一格上有状态时，卡片要说的东西。nil = 什么都没有，卡片还是原来那张。
     ///
-    /// 有会话时缩略图**让位**：那扇窗口长什么样此刻不重要，重要的是它里面那件事进行到
-    /// 哪一步了。让位而不是拿掉，是为了不分成两张卡——分支一旦出现在带 `.frame` 的那一层，
-    /// 尺寸就没有起点可以插值，整块只剩淡入淡出（§3.1 那条教训）。
-    let session: Session?
+    /// 有状态时缩略图**让位**：那扇窗口长什么样此刻不重要，重要的是它里面那件事进行到
+    /// 哪一步了、或者在放什么。让位而不是拿掉，是为了不分成两张卡——分支一旦出现在带
+    /// `.frame` 的那一层，尺寸就没有起点可以插值，整块只剩淡入淡出（§3.1 那条教训）。
+    ///
+    /// **两种状态共用这一棵视图树，各写各的下半截。** 会话的时间线和播放器没有一处能
+    /// 共用，硬套一个模板只会得到两边都不称职的一张卡；但外壳、标题行与尺寸协议是共用的，
+    /// 否则从一个普通窗口格滑到音乐格就成了两张卡对着淡。
+    let content: CellStatus?
 
     /// 用户在这张卡上批了或驳了一次授权。
     let onAnswer: (UUID, Bool) -> Void
+    /// 用户按了播放控制。
+    let onMedia: (MediaCommand) -> Void
 
     /// 长出来的那一层。窗口相关的东西全在这里，非窗口的项（固定文件夹、废纸篓、
     /// 启动台）因此天然只有名字那一档。
@@ -229,13 +235,13 @@ struct PreviewCard: View {
     /// 只报名字那一档的高度
     static let nameHeight: CGFloat = 26
     /// 标题那一行占多高。名字那一档一行居中；窗口标题排两行；会话名只有一行。
-    private static func headHeight(detail: Detail?, session: Session?) -> CGFloat {
+    private static func headHeight(detail: Detail?, content: CellStatus?) -> CGFloat {
         guard detail != nil else { return nameHeight }
-        return session == nil ? titleHeight : sessionTitleHeight
+        return content == nil ? titleHeight : sessionTitleHeight
     }
 
-    private static func textHeight(showsAppName: Bool, session: Session?) -> CGFloat {
-        textInset * 2 + (session == nil ? titleHeight : sessionTitleHeight)
+    private static func textHeight(showsAppName: Bool, content: CellStatus?) -> CGFloat {
+        textInset * 2 + (content == nil ? titleHeight : sessionTitleHeight)
             + (showsAppName ? 2 + appNameHeight : 0)
     }
 
@@ -334,13 +340,13 @@ struct PreviewCard: View {
 
     /// 画面能占的最大范围。各档只差这一个框——尺寸算法与视图树都是同一套。
     private static func imageBox(_ peek: CGSize?, showsAppName: Bool,
-                                 session: Session?) -> CGSize {
+                                 content: CellStatus?) -> CGSize {
         guard let peek else {
             return CGSize(width: maxWidth - pad * 2, height: imageHeight)
         }
         return CGSize(width: peek.width - pad * 2,
                       height: peek.height - pad * 2
-                          - textHeight(showsAppName: showsAppName, session: session))
+                          - textHeight(showsAppName: showsAppName, content: content))
     }
 
     /// 有会话时画不画缩略图。
@@ -348,8 +354,8 @@ struct PreviewCard: View {
     /// **平时不画。** 那扇窗口长什么样，此刻不是问题；而一张小图浮在卡片中央、两边留着
     /// 大片空白，比不画难看得多。按住空格要大预览时才画——那时用户是明确要看窗口的，
     /// 而且那一档照旧铺满，会话区跟在下面。
-    private static func showsImage(_ session: Session?, _ peek: CGSize?) -> Bool {
-        session == nil || peek != nil
+    private static func showsImage(_ content: CellStatus?, _ peek: CGSize?) -> Bool {
+        content == nil || peek != nil
     }
 
     /// 缩略图按原比例装进上界里
@@ -364,22 +370,23 @@ struct PreviewCard: View {
 
     /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
     static func size(title: String, detail: Detail?, peek: CGSize?,
-                     session: Session?) -> CGSize {
+                     content: CellStatus?) -> CGSize {
         guard let detail else {
             let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
             return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
         }
         // App 名那一行在会话卡上是噪声：卡片说的是那件事，不是那个程序
-        let shows = session == nil && showsAppName(title, detail)
-        let draws = showsImage(session, peek)
+        let shows = content == nil && showsAppName(title, detail)
+        let draws = showsImage(content, peek)
         let image = draws ? imageSize(detail.image,
-                                      box: imageBox(peek, showsAppName: shows, session: session))
+                                      box: imageBox(peek, showsAppName: shows, content: content))
                           : .zero
-        let height = (draws ? image.height + pad * 2 : 0) + textHeight(showsAppName: shows, session: session)
-            + (session.map(sessionHeight) ?? 0)
+        let height = (draws ? image.height + pad * 2 : 0)
+            + textHeight(showsAppName: shows, content: content)
+            + (content.map(blockHeight) ?? 0)
         // 大预览那一档的宽度照旧由画面定——按住空格是要看窗口，会话卡的固定宽度
         // 不该把它压回去。
-        guard session != nil, peek == nil else {
+        guard content != nil, peek == nil else {
             return CGSize(width: min(peek?.width ?? maxWidth, max(minWidth, image.width + pad * 2)),
                           height: height)
         }
@@ -388,16 +395,16 @@ struct PreviewCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let detail, Self.showsImage(session, peek) { thumbnail(detail) }
+            if let detail, Self.showsImage(content, peek) { thumbnail(detail) }
             VStack(alignment: .leading, spacing: 2) {
                 // 间距按有没有会话给：没有会话时那些附加元素不存在，仍会占掉一份间距，
                 // 而名字那一档的宽度是照标题量出来的，少几个点就要截断（实测「Claude」
                 // 变成「Cla…」）。间距是取值，不是分支，identity 不受影响。
-                HStack(alignment: .firstTextBaseline, spacing: session == nil ? 0 : 7) {
-                    if let session {
-                        Image(systemName: session.symbol)
+                HStack(alignment: .firstTextBaseline, spacing: content == nil ? 0 : 7) {
+                    if let content {
+                        Image(systemName: Self.symbol(content))
                             .font(.system(size: 11.5))
-                            .foregroundStyle(session.tint)
+                            .foregroundStyle(Self.tint(content))
                             .frame(width: Self.symbolWidth)
                     }
                     // 各档共用这一个 Text。换成两个，它们之间就只剩淡入淡出可做了。
@@ -405,7 +412,7 @@ struct PreviewCard: View {
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(detail == nil ? 1 : 2)
                         .truncationMode(.tail)
-                    if let session {
+                if let session = content?.session {
                         Spacer(minLength: 8)
                         // 停了就把表停在收尾那一刻：任务已经结束，那个数字再往上走
                         // 说的就不是它跑了多久了。
@@ -414,9 +421,9 @@ struct PreviewCard: View {
                                     agent: session.agent)
                     }
                 }
-                .frame(height: Self.headHeight(detail: detail, session: session),
+                .frame(height: Self.headHeight(detail: detail, content: content),
                        alignment: detail == nil ? .center : .topLeading)
-                if let detail, session == nil, Self.showsAppName(title, detail) {
+                if let detail, content == nil, Self.showsAppName(title, detail) {
                     Text(detail.appName)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -426,7 +433,45 @@ struct PreviewCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.textPad)
             .padding(.vertical, detail == nil ? 0 : Self.textInset)
-            if let session { sessionBlock(session) }
+            switch content {
+            case .session(let session): sessionBlock(session)
+            case .media(let playing): mediaBlock(playing)
+            case nil: EmptyView()
+            }
+        }
+        // 播放时整张卡取一层封面的颜色。它同时回答三件事：哪一格在发声、换没换歌、
+        // 以及这首歌长什么样——一个元素干三件事，比三个元素各干一件好。
+        .background(alignment: .bottom) {
+            if let tint = content?.media?.tint {
+                LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.04)],
+                               startPoint: .bottom, endPoint: .top)
+                    .animation(.easeInOut(duration: 0.45), value: tint)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// 标题行左边那个图标。
+    private static func symbol(_ content: CellStatus) -> String {
+        switch content {
+        case .session(let session): return session.symbol
+        // 在放就是音符，停着就是暂停。格子那边靠均衡器动不动来分，
+        // 面板这边有按钮，图标只需要说清此刻是哪一种。
+        case .media(let playing): return playing.playing ? "music.note" : "pause.fill"
+        }
+    }
+
+    private static func tint(_ content: CellStatus) -> Color {
+        switch content {
+        case .session(let session): return session.tint
+        case .media(let playing): return playing.tint ?? .secondary
+        }
+    }
+
+    private static func blockHeight(_ content: CellStatus) -> CGFloat {
+        switch content {
+        case .session(let session): return sessionHeight(session)
+        case .media: return mediaHeight
         }
     }
 
@@ -558,6 +603,102 @@ struct PreviewCard: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: 播放（实时状态设计 §5）
+
+    private static let artworkSize: CGFloat = 56
+    /// 细线加一行时间。刻意不是一根粗条——那是播放器控件的样子，不是一张卡的样子。
+    private static let progressHeight: CGFloat = 22
+    private static let controlHeight: CGFloat = 32
+
+    /// 这一档全是定高的，因此高度是算出来的而不是量出来的。量文字那条路在这张卡上
+    /// 已经错过两次，能不走就不走。
+    private static var mediaHeight: CGFloat {
+        artworkSize + rowGap + progressHeight + rowGap + controlHeight + textInset
+    }
+
+    @ViewBuilder
+    private func mediaBlock(_ playing: NowPlaying) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                artwork(playing)
+                VStack(alignment: .leading, spacing: 3) {
+                    if let artist = playing.artist {
+                        Text(artist)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    if let album = playing.album, album != playing.artist {
+                        Text(album)
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(height: Self.artworkSize)
+            MediaProgress(playing: playing)
+                .frame(height: Self.progressHeight)
+                .padding(.top, Self.rowGap)
+            HStack(spacing: 20) {
+                Spacer(minLength: 0)
+                mediaButton("backward.fill", size: 13) { onMedia(.previous) }
+                // 中间那个大一圈。最常按的就是它，大一号手就不必瞄。
+                mediaButton(playing.playing ? "pause.fill" : "play.fill", size: 18) {
+                    onMedia(playing.playing ? .pause : .play)
+                }
+                mediaButton("forward.fill", size: 13) { onMedia(.next) }
+                Spacer(minLength: 0)
+            }
+            .frame(height: Self.controlHeight)
+            .padding(.top, Self.rowGap)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.textPad)
+        .padding(.bottom, Self.textInset)
+    }
+
+    private func artwork(_ playing: NowPlaying) -> some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(.quaternary)
+            .overlay {
+                if let image = playing.artwork {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        // 换歌时新旧封面交叉淡入。`id` 一变 SwiftUI 才当它是换了一个东西，
+                        // 否则同一个 Image 只是内容变了，没有过渡可做。
+                        .id(playing.artworkID ?? playing.title ?? "")
+                        .transition(.opacity)
+                } else {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .frame(width: Self.artworkSize, height: Self.artworkSize)
+            .shadow(color: .black.opacity(0.2), radius: 5, y: 2)
+            .animation(.easeInOut(duration: 0.35), value: playing.artworkID)
+    }
+
+    private func mediaButton(_ symbol: String, size: CGFloat,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .medium))
+                .foregroundStyle(.primary)
+                // 播放与暂停之间是**字形形变**，不是两张图硬切
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: size + 18, height: Self.controlHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     /// 时间线上的一行：图标、动作名、对象、量化结果。
     ///
     /// 对象走等宽字：文件名与命令是代码，正文字体里的 `l` 和 `1` 分不开，
@@ -610,8 +751,8 @@ struct PreviewCard: View {
         let size = Self.imageSize(
             detail.image,
             box: Self.imageBox(peek,
-                               showsAppName: session == nil && Self.showsAppName(title, detail),
-                               session: session))
+                               showsAppName: content == nil && Self.showsAppName(title, detail),
+                               content: content))
         return ZStack {
             if let image = detail.image {
                 Image(nsImage: image)
@@ -641,6 +782,45 @@ struct PreviewCard: View {
 ///
 /// 只在面板存在的那几秒里跑：条上不添第二样会动的东西——条的动效只有格子边缘那一处，
 /// 那是身份层唯一允许的偏离。数字走等宽：不然每跳一秒，右边那一栏就横着挪一下。
+/// 播放进度：一根细线加一行时间。
+///
+/// **位置是本地推算的，不去轮询。** 桥送来的是「某一刻的位置 + 速率 + 那一刻是什么时候」，
+/// 剩下的自己往前推就行；真正要收推送的只有换歌、暂停这些实际发生的变化。
+private struct MediaProgress: View {
+    let playing: NowPlaying
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let position = playing.position(at: context.date)
+            let total = playing.duration ?? 0
+            VStack(spacing: 4) {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary)
+                        Capsule().fill(.primary.opacity(0.7))
+                            .frame(width: total > 0
+                                ? geometry.size.width * min(1, position / total) : 0)
+                    }
+                }
+                .frame(height: 3)
+                HStack(spacing: 0) {
+                    Text(Self.clock(position))
+                    Spacer(minLength: 0)
+                    if total > 0 { Text("−\(Self.clock(total - position))") }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(height: 12)
+            }
+        }
+    }
+
+    private static func clock(_ seconds: Double) -> String {
+        let whole = Int(max(0, seconds).rounded(.down))
+        return String(format: "%d:%02d", whole / 60, whole % 60)
+    }
+}
+
 private struct LiveElapsed: View {
     let start: Date
     /// 停在这一刻。nil = 还在跑，跟着走。

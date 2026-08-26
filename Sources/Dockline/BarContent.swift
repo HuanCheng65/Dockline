@@ -162,8 +162,8 @@ struct BarContent: View {
                         .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
                                                        style: .continuous))
                         // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有
-                        // 一次等着批的授权，那一档要点得着（见 `askable`）
-                        .allowsHitTesting(stage.isList || askable(stage))
+                        // 要动手的东西（见 `interactive`）
+                        .allowsHitTesting(stage.isList || interactive(stage))
                         // 量尺寸与悬停判定都必须挂在 .position 之前。`.position` 交回来的是
                         // 一个铺满可用空间的容器，挂在它后面，量到的是整块根视图、
                         // 悬停判定也变成整块根视图（面板因此收不回去，采样也采到半屏）。
@@ -372,11 +372,10 @@ struct BarContent: View {
             guard hoveredCell == id else { return }
             previewDwell?.cancel()
             previewDwell = nil
-            // 卡上有等着批的授权时，指针要经过条与卡片之间那道缝才够得着按钮；
-            // 照常立刻收，那两个按钮就永远点不到。宽限期间指针落到卡上即作数
-            // （见浮层那一层的 `.onHover`）。其余情况照旧——预览是「看一眼」，
-            // 不该赖着不走。
-            guard askableCard else {
+            // 卡上有按钮时，指针要经过条与卡片之间那道缝才够得着；照常立刻收，
+            // 那些按钮就永远点不到。宽限期间指针落到卡上即作数（见浮层那一层的
+            // `.onHover`）。其余情况照旧——预览是「看一眼」，不该赖着不走。
+            guard interactiveCard else {
                 hoveredCell = nil
                 preview = nil
                 return
@@ -405,13 +404,13 @@ struct BarContent: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    /// 此刻这张预览卡上有没有等着批的授权。与 `askable(_:)` 同一个判断，
+    /// 此刻这张预览卡上有没有要动手的东西。与 `interactive(_:)` 同一个判断，
     /// 只是这里用在还没算出档位的地方。
-    private var askableCard: Bool {
+    private var interactiveCard: Bool {
         guard let preview else { return false }
-        let target = preview.window
-        return model.world.session(window: target.id, of: target.pid,
-                                   leads: preview.leads)?.ask != nil
+        return Self.interactive(model.world.status(window: preview.window.id,
+                                                   of: preview.window.pid,
+                                                   leads: preview.leads))
     }
 
     private func keepPreview() {
@@ -419,9 +418,9 @@ struct BarContent: View {
         previewHold = nil
     }
 
-    /// 指针离开了卡片。批完之后卡上没东西可按了，那时照旧立刻收。
+    /// 指针离开了卡片。卡上没东西可按了就照旧立刻收。
     private func dismissPreview() {
-        guard askableCard else {
+        guard interactiveCard else {
             previewHold?.cancel()
             previewHold = nil
             hoveredCell = nil
@@ -1012,13 +1011,21 @@ struct BarContent: View {
         var isList: Bool { if case .list = kind { return true } else { return false } }
     }
 
-    /// 这一档浮层里有没有等着按的东西。
+    /// 这一档浮层里有没有要动手的东西。
     ///
     /// 预览卡向来只是「看一眼」，指针一离开那一格就收——所以它整档不收事件。
-    /// 待授权把它变成了要**动手**的东西：按钮得点得着，指针也得够得过去
-    /// （见 `schedulePreview` 的宽限）。只有这一档破例，其余照旧。
-    private func askable(_ stage: FloatStage) -> Bool {
-        cardSession(stage)?.ask != nil
+    /// 有两样把它变成了要**动手**的东西：等着批的授权，和播放控制。按钮得点得着，
+    /// 指针也得够得过去（见 `schedulePreview` 的宽限）。其余情况照旧。
+    private func interactive(_ stage: FloatStage) -> Bool {
+        Self.interactive(cardStatus(stage))
+    }
+
+    static func interactive(_ status: CellStatus?) -> Bool {
+        switch status {
+        case .session(let session): return session.ask != nil
+        case .media: return true
+        case nil: return false
+        }
     }
 
     /// 此刻该显示哪一档。三档互斥，按信息量从多到少挑。
@@ -1062,7 +1069,7 @@ struct BarContent: View {
     private func floatSize(_ stage: FloatStage, in size: CGSize, layout: BarLayout) -> CGSize {
         guard case .list(let kind) = stage.kind else {
             return PreviewCard.size(title: cardTitle(stage), detail: cardDetail(stage),
-                                    peek: peekBox, session: cardSession(stage))
+                                    peek: peekBox, content: cardStatus(stage))
         }
         guard let content = panelContent(kind, in: layout) else { return .zero }
         return CGSize(width: WindowPanel.width(content.windows.count, available: size.width),
@@ -1076,19 +1083,19 @@ struct BarContent: View {
         case .preview(let target):
             // 有会话时卡片的标题是这件事叫什么，不是这扇窗口叫什么：窗口的身份由图标与
             // 位置已经给过了，而你打开这张卡是为了看那件事进行到哪一步。
-            let session = model.world.session(window: target.window.id,
-                                              of: target.window.pid, leads: target.leads)
-            return session?.task ?? target.window.title
+            let status = model.world.status(window: target.window.id,
+                                            of: target.window.pid, leads: target.leads)
+            return status?.lines.first ?? target.window.title
         case .list:
             return ""
         }
     }
 
     /// 这一档预览的窗口上有没有 agent 会话。有就让卡片让位给它。
-    private func cardSession(_ stage: FloatStage) -> Session? {
+    private func cardStatus(_ stage: FloatStage) -> CellStatus? {
         guard case .preview(let target) = stage.kind else { return nil }
-        return model.world.session(window: target.window.id,
-                                   of: target.window.pid, leads: target.leads)
+        return model.world.status(window: target.window.id,
+                                  of: target.window.pid, leads: target.leads)
     }
 
     /// nil = 还只是名字那一档
@@ -1150,8 +1157,9 @@ struct BarContent: View {
             // 缩略图从它上方长出来。
             // `.task` 也必须无条件挂：只挂在其中一档上，修饰符链一变，identity 照样断。
             PreviewCard(title: cardTitle(stage), detail: cardDetail(stage), peek: peekBox,
-                        session: cardSession(stage),
-                        onAnswer: { id, allow in model.world.answerAsk(id, allow: allow) })
+                        content: cardStatus(stage),
+                        onAnswer: { id, allow in model.world.answerAsk(id, allow: allow) },
+                        onMedia: { command in model.world.sendMedia(command) })
                 .task(id: cardDetail(stage)?.window.id) {
                     guard let id = cardDetail(stage)?.window.id else { return }
                     while !Task.isCancelled {
@@ -1331,7 +1339,7 @@ struct BarContent: View {
         }
         // 未读语义的出口：点过这一格就算看见了，终态退场。放在召回之前，
         // 因为召回本身可能改变这一格是谁。
-        if slot.session?.isUnread == true {
+        if slot.status?.isUnread == true {
             model.world.markStatusSeen(window: cell.id, of: cell.pid)
         }
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
@@ -1400,7 +1408,7 @@ struct Slot {
     let mark: WindowMark
     let tabs: Int
     let badge: String?
-    let session: Session?
+    let status: CellStatus?
     let minimized: Bool
     let isFront: Bool
     /// 正在启动：图标弹跳，与系统程序坞同义
@@ -1421,7 +1429,7 @@ struct Slot {
             self.tabs = cell.tabs.count
             // App 级的东西只挂在该 App 的第一格上，不逐格重复
             self.badge = cell.leadsApp ? model.world.badges[cell.bundleID ?? ""] : nil
-            self.session = Slot.session(of: cell, in: model)
+            self.status = Slot.status(of: cell, in: model)
             self.minimized = cell.window.minimized
             // 会话显形期间不再标注前台。此刻条回答的是「松手会去哪儿」，不是「现在在哪儿」，
             // 前台那一格的亮底留着只会和选中底色抢读。
@@ -1439,7 +1447,7 @@ struct Slot {
             self.mark = model.world.hasWindows(app) ? .elsewhere : .none
             self.tabs = 0
             self.badge = model.world.badges[app.bundleID]
-            self.session = nil
+            self.status = nil
             self.minimized = false
             self.isFront = false
             self.bouncing = model.world.launching.contains(app.bundleID)
@@ -1455,7 +1463,7 @@ struct Slot {
             self.mark = .none
             self.tabs = 0
             self.badge = nil
-            self.session = nil
+            self.status = nil
             self.minimized = false
             self.isFront = false
             self.bouncing = false
@@ -1465,10 +1473,8 @@ struct Slot {
         }
     }
 
-    /// 这一格该显示谁的活动状态。窗口级的先问——它更精确；问不到再退回 App 级，
-    /// 而 App 级的东西只挂在该 App 在条上的第一格，与未读角标同一条规则。
-    static func session(of cell: BarWindow, in model: BarModel) -> Session? {
-        model.world.session(window: cell.id, of: cell.pid, leads: cell.leadsApp)
+    static func status(of cell: BarWindow, in model: BarModel) -> CellStatus? {
+        model.world.status(window: cell.id, of: cell.pid, leads: cell.leadsApp)
     }
 }
 
@@ -1515,6 +1521,14 @@ private struct DockCell: View {
             .overlay(alignment: .topLeading) {
                 if slot.tabs > 0 { CountBadge(text: "\(slot.tabs)", scheme: scheme) }
             }
+            // 在放歌就摆一个均衡器。左下角是图标上唯一还空着的角——右上是未读角标、
+            // 左上是标签页数、正下方是运行点。
+            .overlay(alignment: .bottomLeading) {
+                if let playing = slot.status?.media {
+                    Equalizer(playing: playing.playing, tint: playing.tint ?? .primary)
+                        .padding(1)
+                }
+            }
             .modifier(LaunchBounce(bouncing: slot.bouncing, height: metrics.icon * 0.36))
     }
 
@@ -1534,6 +1548,23 @@ private struct DockCell: View {
                 .frame(width: metrics.label(slot.labelWidth), alignment: .leading)
                 // 标题靠紧自己的图标，与下一格拉开——归属只剩邻近性可依据
                 .padding(.trailing, metrics.labelTrailing - metrics.cellInset)
+                // 在放歌的那一格，标签区底上铺一层取自封面的颜色。
+                //
+                // 这一个元素同时回答三件事：**哪一格在发声**、**换没换歌**（颜色交叉淡入，
+                // 不动宽度也不动位置）、以及**这首歌长什么样**。比声波动效加封面角标加
+                // 歌名三样各干一件要省，而且那三样在这里都摆不下——图标四个角已经被
+                // 未读角标、标签页数、运行点和状态环占满了。
+                .background(alignment: .leading) {
+                    if let tint = slot.status?.media?.tint {
+                        LinearGradient(colors: [tint.opacity(0.30), tint.opacity(0)],
+                                       startPoint: .leading, endPoint: .trailing)
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .padding(.vertical, -1)
+                            .padding(.trailing, metrics.labelTrailing)
+                            .animation(.easeInOut(duration: 0.5), value: tint)
+                            .allowsHitTesting(false)
+                    }
+                }
                 // App 开出第二个窗口时，这一格是原地长出标题区的：格子沿用 App 的
                 // 身份（见 BarItem.id），SwiftUI 因此走过渡而不是拆掉重建。
                 .transition(.scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
@@ -1542,7 +1573,8 @@ private struct DockCell: View {
 
     @ViewBuilder
     private var edge: some View {
-        if let session = slot.session {
+        // 只有会话画边缘。播放不参与显著度那套排序，格子上也就不该有会为它闪的东西。
+        if let session = slot.status?.session {
             SessionEdge(session: session, radius: metrics.cellRadius, isFront: slot.isFront)
                 .help(session.summary ?? "")
         }
@@ -1692,6 +1724,50 @@ private struct ClusterLine: View {
 /// 三档的强度差别在这里只表达一半，另一半是胶囊——**高显著度只归 waiting**，
 /// 所以这里 waiting 与 finished 都只常亮、不呼吸：边缘再闪一遍，会与它头顶的胶囊
 /// 争抢同一份注意力。呼吸留给 working，它唯一要传达的就是任务仍在运行。
+/// 均衡器。
+///
+/// **动效本身就是状态**：在放就跳，暂停就冻住。因此格子上不需要再画一个 ▶ 或 ⏸——
+/// 一个元素说清了两件事，而图标周围本来也没有第二个位置可用了。
+///
+/// 关于「条上不许有动效」那条规矩：它针对的是**抢注意力的动效**——会话那圈呼吸的边框
+/// 是在喊「看我」。这个不是。它小、恒定、不闪，而且放的是用户自己开的歌，他知道它在那儿。
+///
+/// 相位不放在视图的 `@State` 里：格子每收到一次上报就重建一遍，`onAppear` 不会再来
+/// （`LaunchBounce` 与 `SessionEdge` 各记过一次这条教训）。`phaseAnimator` 自己循环。
+private struct Equalizer: View {
+    let playing: Bool
+    let tint: Color
+
+    private static let size: CGFloat = 9
+    private static let bar: CGFloat = 2
+    /// 三根柱子各走各的一串高度，长度还互不相同——同步跳三根看起来像一个整体在缩放，
+    /// 错开才像在跳。
+    private static let steps: [[CGFloat]] = [
+        [0.35, 0.95, 0.55, 0.75],
+        [0.90, 0.40, 1.00],
+        [0.55, 0.75, 0.30, 0.95, 0.45],
+    ]
+    /// 停着时的高度。三根一样高，一眼看出它没在动。
+    private static let resting: CGFloat = 0.42
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 1.5) {
+            ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, phases in
+                Capsule()
+                    .fill(tint)
+                    .frame(width: Self.bar, height: Self.size)
+                    .phaseAnimator(phases) { view, scale in
+                        view.scaleEffect(y: playing ? scale : Self.resting, anchor: .bottom)
+                    } animation: { _ in
+                        playing ? .easeInOut(duration: 0.30 + Double(index) * 0.06)
+                                : .easeOut(duration: 0.22)
+                    }
+            }
+        }
+        .frame(height: Self.size, alignment: .bottom)
+    }
+}
+
 private struct SessionEdge: View {
     let session: Session
     let radius: CGFloat

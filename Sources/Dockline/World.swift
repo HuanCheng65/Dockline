@@ -44,6 +44,10 @@ final class World: ObservableObject {
     /// 活动状态。计划书 §3。挂点见 `StatusTarget`：来源现在只产出 App 级，
     /// 窗口级要等会话与窗口的绑定做出来。
     @Published private(set) var sessions: [StatusTarget: Session] = [:]
+    /// 此刻在放什么。全系统只有一个「正在播放」，所以这里就一份，不按格子分。
+    @Published private(set) var nowPlaying: NowPlaying?
+    /// 发声那个 App 的进程号。由 `nowPlaying.bundleID` 解析而来，解析不到就没有落点。
+    private(set) var mediaPID: pid_t?
 
     let pins = PinStore()
     let clusters = ClusterStore()
@@ -85,6 +89,7 @@ final class World: ObservableObject {
     private let missionControl = MissionControlWatch()
     private let sessionCenter = SessionCenter()
     private let askServer = AskServer()
+    private let nowPlayingReader = NowPlayingReader()
     private var mouseMonitor: Any?
 
     /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
@@ -105,9 +110,27 @@ final class World: ObservableObject {
         return leads ? sessions[.app(pid)] : nil
     }
 
+    /// 这一格此刻显示什么。
+    ///
+    /// **任务型压过常驻型。** 一格上同时有会话和播放是极少见的（两者绑的是不同的
+    /// App），真撞上时该让位的是播放：它不会结束，等会话停了自然回来，而反过来会把
+    /// 一件正在等你的事盖住。
+    ///
+    /// 播放挂在发声那个 App 的第一格上，与 App 级会话同一条规则。
+    func status(window id: CGWindowID, of pid: pid_t, leads: Bool) -> CellStatus? {
+        if let session = session(window: id, of: pid, leads: leads) { return .session(session) }
+        guard leads, let playing = nowPlaying, mediaPID == pid else { return nil }
+        return .media(playing)
+    }
+
     /// 用户在面板上批了或驳了一次授权（实时状态设计 §4.7）。
     func answerAsk(_ id: UUID, allow: Bool) {
         sessionCenter.answer(id, allow: allow)
+    }
+
+    /// 用户在面板上按了播放控制。
+    func sendMedia(_ command: MediaCommand) {
+        nowPlayingReader.send(command)
     }
 
     // MARK: 每块屏的 bar
@@ -399,6 +422,28 @@ final class World: ObservableObject {
             guard let self else { return }
             sessions = sessionCenter.display
         }
+        nowPlayingReader.onChange = { [weak self] playing in
+            guard let self else { return }
+            // bundleID 要当场解析成进程号：格子是按 pid 认的，而同一个 bundle 可能
+            // 根本没在跑（播放源刚退出时就会这样），那时它没有落点。
+            let pid = playing.flatMap {
+                NSRunningApplication.runningApplications(withBundleIdentifier: $0.bundleID)
+                    .first?.processIdentifier
+            }
+            let next = pid == nil ? nil : playing
+            // 桥在同一个状态上可能连发好几条（几个通知先后到达）。原样往下传会让整条 bar
+            // 白重排几次，而这一档本来就不该有任何动静。
+            guard next != nowPlaying else { return }
+            mediaPID = pid
+            nowPlaying = next
+            guard let next else {
+                Timeline.log("播放  没有播放源")
+                return
+            }
+            Timeline.log("播放  \(next.bundleID) pid \(pid ?? 0)  "
+                         + "\(next.playing ? "在放" : "停着")  \(next.title ?? "—")")
+        }
+        nowPlayingReader.start()
         // 上次绑的那扇窗口还在，就原样沿用、不重新判断。复核只发生在会话头一次上报、
         // cwd 变了、或那扇窗口没了这三种时候——任务结束那一刻的焦点已经不是它了。
         sessionCenter.bind = { [weak self] host, cwd, keeping in

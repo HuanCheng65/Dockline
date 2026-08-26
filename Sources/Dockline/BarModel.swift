@@ -251,8 +251,8 @@ final class BarModel: ObservableObject {
             pins: world.pins, notice: world.notice, clusters: world.clusters,
             order: world.order, labels: labelWidths,
             recency: { [world] in world.lastActive[$0] ?? 0 },
-            session: { [world] id, pid, leads in
-                world.session(window: id, of: pid, leads: leads)
+            status: { [world] id, pid, leads in
+                world.status(window: id, of: pid, leads: leads)
             })
     }
 
