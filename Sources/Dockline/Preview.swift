@@ -607,7 +607,8 @@ struct PreviewCard: View {
 
     private static let artworkSize: CGFloat = 56
     /// 细线加一行时间。刻意不是一根粗条——那是播放器控件的样子，不是一张卡的样子。
-    private static let progressHeight: CGFloat = 22
+    /// 时间移到线的两端之后，这一行不再是「线 + 一行字」两截，只要装得下末端那点光
+    private static let progressHeight: CGFloat = 14
     private static let controlHeight: CGFloat = 32
 
     /// 这一档全是定高的，因此高度是算出来的而不是量出来的。量文字那条路在这张卡上
@@ -651,7 +652,7 @@ struct PreviewCard: View {
                 Spacer(minLength: 0)
             }
             .frame(height: Self.artworkSize)
-            MediaProgress(playing: playing)
+            MediaProgress(playing: playing, tint: playing.tint ?? .accentColor)
                 .frame(height: Self.progressHeight)
                 .padding(.top, Self.rowGap)
             HStack(spacing: 20) {
@@ -793,37 +794,81 @@ struct PreviewCard: View {
 ///
 /// 只在面板存在的那几秒里跑：条上不添第二样会动的东西——条的动效只有格子边缘那一处，
 /// 那是身份层唯一允许的偏离。数字走等宽：不然每跳一秒，右边那一栏就横着挪一下。
-/// 播放进度：一根细线加一行时间。
+/// 播放进度：一根细线，两端各一个时间，已播的那一端一点光。
 ///
 /// **位置是本地推算的，不去轮询。** 桥送来的是「某一刻的位置 + 速率 + 那一刻是什么时候」，
 /// 剩下的自己往前推就行；真正要收推送的只有换歌、暂停这些实际发生的变化。
+///
+/// **线按帧走，不按秒走。** 先前每秒重算一次宽度，三分钟的歌铺在五百多点上，一秒就是
+/// 将近 3pt——那不是在走，是在跨步，而末端有了一点光之后，跨步会变成光在瞬移。位置本来
+/// 就是从时钟推出来的，按帧取样它自己就连续，因此也不需要给宽度挂线性动画：挂了的话，
+/// 跳转与暂停会「滑」到新位置，而它们应该直接落位。两端的时间仍按秒重算——它们一秒才
+/// 变一次，跟着帧走只是白排一遍版。
+///
+/// **轨道不做凹陷。** 深色卡上未播那段必须比卡片更亮才看得见，凹陷只会得到一个黑洞；
+/// `.quaternary` 本来就随外观翻转。造出层次的是末端那点光，不是凹槽。
 private struct MediaProgress: View {
+    @Environment(\.colorScheme) private var scheme
     let playing: NowPlaying
+    /// 取自封面。已播那段是这张卡上唯一会动的东西，也就该是承接封面颜色的那一处。
+    let tint: Color
+
+    private static let track: CGFloat = 5
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let position = playing.position(at: context.date)
-            let total = playing.duration ?? 0
-            VStack(spacing: 4) {
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(.quaternary)
-                        Capsule().fill(.primary.opacity(0.7))
-                            .frame(width: total > 0
-                                ? geometry.size.width * min(1, position / total) : 0)
-                    }
-                }
-                .frame(height: 3)
-                HStack(spacing: 0) {
-                    Text(Self.clock(position))
-                    Spacer(minLength: 0)
-                    if total > 0 { Text("−\(Self.clock(total - position))") }
-                }
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(height: 12)
+        HStack(spacing: 8) {
+            time { Self.clock(playing.position(at: $0)) }
+            bar
+            if let total = playing.duration, total > 0 {
+                time { "−" + Self.clock(total - playing.position(at: $0)) }
             }
         }
+    }
+
+    private func time(_ text: @escaping (Date) -> String) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(text(context.date))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var bar: some View {
+        TimelineView(.animation) { context in
+            let total = playing.duration ?? 0
+            let fraction = total > 0
+                ? min(1, max(0, playing.position(at: context.date) / total)) : 0
+            GeometryReader { geometry in
+                let filled = geometry.size.width * fraction
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+                    played(width: filled)
+                }
+                .frame(width: geometry.size.width, height: Self.track)
+                .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            }
+        }
+    }
+
+    /// 已播那段：从暗渐亮，末端最亮，然后是一个利落的圆头。
+    ///
+    /// **亮是渐变本身给的，不额外画一团光。** 光晕那条路试了三次，三次都难看，而且失败的
+    /// 方式一次比一次清楚：实心圆盖不住核、半径小峰值高的落差边缘仍有形状、定长的白亮边在
+    /// 进度低时比填充还长。真正的问题是方向反了——参考里那根线并没有光晕，末端之所以像在
+    /// 发光，是因为**填充自己从暗走到亮**，收口反而是干净的。
+    ///
+    /// 深色下走到白，浅色下不能：白色填充落在浅色卡上就没了，那一支的「亮」是颜色本身
+    /// 从淡走到实。
+    private func played(width: CGFloat) -> some View {
+        let stops: [Gradient.Stop] = scheme == .dark
+            ? [.init(color: tint.opacity(0.5), location: 0),
+               .init(color: tint, location: 0.55),
+               .init(color: .white, location: 1)]
+            : [.init(color: tint.opacity(0.45), location: 0),
+               .init(color: tint, location: 1)]
+        return Capsule()
+            .fill(LinearGradient(stops: stops, startPoint: .leading, endPoint: .trailing))
+            .frame(width: width)
     }
 
     private static func clock(_ seconds: Double) -> String {
