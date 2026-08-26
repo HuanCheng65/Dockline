@@ -41,12 +41,17 @@ final class BackdropSensor {
     /// 过滤器要定期重建。它是按一次快照建的，用久了抓回来的会是旧画面——
     /// 亮度从此冻住，条上的明暗就再也不动了（实测过，当时的过滤器带排除表；
     /// 换成不排除任何窗口之后是否还会冻，没有复现条件，先照旧重建）。
-    private static let filterLifetime = 15
+    ///
+    /// 原先按「本取色器采样 15 次」计龄。采样周期 2 秒，也就是 30 秒一次，但**每个
+    /// 取色器各算各的**——两块屏就是两份，一次也不便宜（见 `Snapshot`）。改成按时间计龄
+    /// 之后含义不变，还能让所有取色器共用同一份快照。
+    private static let snapshotLifetime: TimeInterval = 30
 
     private var scheme: ColorScheme = .light
     private var filter: SCContentFilter?
     private var filterDisplay: CGDirectDisplayID?
-    private var filterAge = 0
+    /// 建出当前这个过滤器的那份快照。快照换了就重建过滤器。
+    private var filterGeneration = 0
     private var sampling = false
     private var lastSample = Date.distantPast
     private var pending: (probe: CGRect, display: CGDirectDisplayID)?
@@ -101,16 +106,16 @@ final class BackdropSensor {
 
     @MainActor private func run(probe: CGRect, display: CGDirectDisplayID) async {
         do {
+            let snapshot = try await Snapshot.current()
             let active: SCContentFilter
-            if let filter, filterDisplay == display, filterAge < Self.filterLifetime {
+            if let filter, filterDisplay == display, filterGeneration == snapshot.generation {
                 active = filter
             } else {
-                active = try await Self.makeFilter(display)
+                active = try Self.makeFilter(display, from: snapshot)
                 filter = active
                 filterDisplay = display
-                filterAge = 0
+                filterGeneration = snapshot.generation
             }
-            filterAge += 1
             // ScreenCaptureKit 会保持源矩形的宽高比，比例对不上就在边上补黑，而补出来的
             // 黑边会被当成「背景很暗」——实测把一条 802×73 抓成 16×12，只有最上面两行
             // 有内容，其余十行全黑。所以先按行高定行数，再让宽度去迁就比例。
@@ -142,6 +147,8 @@ final class BackdropSensor {
         } catch {
             // 扔掉过滤器，下一次重建
             filter = nil
+            // 快照里没有这块屏，重建过滤器也还是没有——那份共用的快照本身要扔
+            if error is MissingDisplay { Snapshot.invalidate() }
             let reason = "\(probe)（屏 \(display)）：\(error)"
             if reportedFailure != reason {
                 reportedFailure = reason
@@ -151,13 +158,62 @@ final class BackdropSensor {
     }
 
     /// 不排除任何窗口：要的就是含我们自己那块玻璃在内的合成结果。
-    private static func makeFilter(_ display: CGDirectDisplayID) async throws -> SCContentFilter {
-        let content = try await SCShareableContent.excludingDesktopWindows(
-            false, onScreenWindowsOnly: false)
-        guard let target = content.displays.first(where: { $0.displayID == display }) else {
-            throw MissingDisplay(id: display, listed: content.displays.map(\.displayID))
+    private static func makeFilter(_ display: CGDirectDisplayID,
+                                   from snapshot: Snapshot) throws -> SCContentFilter {
+        guard let target = snapshot.displays.first(where: { $0.displayID == display }) else {
+            throw MissingDisplay(id: display, listed: snapshot.displays.map(\.displayID))
         }
         return SCContentFilter(display: target, excludingWindows: [])
+    }
+
+    /// 全部取色器共用的那份 `SCShareableContent`。
+    ///
+    /// 抓一次快照，ScreenCaptureKit 会为列出的**每一个窗口**构造一个
+    /// `SCRunningApplication`，而那个构造函数要读 `localizedName`，也就是向
+    /// LaunchServices 同步问一次。本机 321 个窗口，一次快照就是三百多次 XPC 往返，
+    /// 实测约 300ms、其中一半在等 LaunchServices——这是本进程空置时最大的一笔开销。
+    /// 而我们从这份快照里只取 `.displays`，窗口列表一个都不看。
+    ///
+    /// 收窄枚举范围这条路走不通：`onScreenWindowsOnly: true` 会**连显示器列表一起返空**
+    /// （实测于 macOS 26.5，两块屏都取不到，取色整个失效），所以只能照旧全量抓。
+    /// 能省的是次数：原先每个取色器各抓各的，两块屏就抓两遍，而它们要的是同一个东西。
+    private struct Snapshot {
+        let displays: [SCDisplay]
+        /// 每抓一次加一。取色器拿它和自己手上那个比，判断过滤器要不要重建。
+        let generation: Int
+        let takenAt: Date
+
+        @MainActor private static var latest: Snapshot?
+        @MainActor private static var counter = 0
+        /// 正在进行的那次抓取。**必须共用它，光共用结果不够**：一次抓取要几十毫秒，
+        /// 而每块屏的取色器是同一拍触发的——第二个进来时第一个还停在 `await` 里，
+        /// `latest` 还没写上，于是照样自己抓一遍。实测两次抓取相隔 20~40 毫秒成对出现。
+        @MainActor private static var inFlight: Task<Snapshot, Error>?
+
+        @MainActor static func current() async throws -> Snapshot {
+            if let latest,
+               Date().timeIntervalSince(latest.takenAt) < BackdropSensor.snapshotLifetime {
+                return latest
+            }
+            if let inFlight { return try await inFlight.value }
+            let task = Task { @MainActor () throws -> Snapshot in
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    false, onScreenWindowsOnly: false)
+                counter += 1
+                return Snapshot(displays: content.displays,
+                                generation: counter, takenAt: Date())
+            }
+            inFlight = task
+            defer { inFlight = nil }
+            let fresh = try await task.value
+            latest = fresh
+            return fresh
+        }
+
+        /// 快照里没有那块屏时必须扔掉重抓，不能等它自然到期。拔插显示器会让
+        /// ScreenCaptureKit 的显示器列表短暂变空，而共用一份快照意味着这一空要持续
+        /// 到下一次到期为止——插回来的屏最长要三十秒才跟上色。
+        @MainActor static func invalidate() { latest = nil }
     }
 
     /// 实测会发生：拔插显示器之后，ScreenCaptureKit 的显示器列表会空一阵子。
