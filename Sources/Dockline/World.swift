@@ -532,7 +532,6 @@ final class World: ObservableObject {
         askServer.start()
         placer.onPlaced = { [weak self] wid, kind in self?.corrector.noteWrite(wid, kind) }
         corrector.enabled = pins.correctsTiling
-        observers.watchesGeometry = pins.correctsTiling
         observers.onGeometryChanged = { [weak self] element in
             self?.corrector.handle(element)
         }
@@ -1054,7 +1053,6 @@ final class World: ObservableObject {
     func setCorrectsTiling(_ enabled: Bool) {
         pins.setCorrectsTiling(enabled)
         corrector.enabled = enabled
-        observers.watchesGeometry = enabled
         objectWillChange.send()
     }
 

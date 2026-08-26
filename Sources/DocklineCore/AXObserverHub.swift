@@ -19,17 +19,6 @@ public final class AXObserverHub {
     /// 拖拽窗口时它每一帧都触发，走主通道等于把每一像素的拖动都变成一次 AX 全量刷新。
     public var onGeometryChanged: ((AXUIElement) -> Void)?
 
-    /// 是否订阅几何变化。只有「结果纠正」需要，默认关闭（计划书 §3）。
-    /// 运行期开关，因此已订阅的窗口要跟着补注册或撤销。
-    public var watchesGeometry = false {
-        didSet {
-            guard watchesGeometry != oldValue else { return }
-            for (pid, windows) in watchedWindows {
-                guard let observer = observers[pid] else { continue }
-                for window in windows { applyGeometryNotifications(observer, window.element) }
-            }
-        }
-    }
 
     /// 重试用尽仍未订阅成功的进程。这些 App 的窗口变化只能靠通道三兜底。
     public private(set) var failedProcesses = Set<pid_t>()
@@ -38,14 +27,17 @@ public final class AXObserverHub {
         kAXWindowCreatedNotification,
         kAXFocusedWindowChangedNotification,
     ]
+    /// 窗口级通知。**移动与缩放一律订阅**，不看「结果纠正」开不开。
+    ///
+    /// 它们原先只为纠正而订阅，于是关掉纠正时，窗口被拖到另一块屏这件事**一条事件都没有**
+    /// ——那一格该挪到哪条 bar 上，只能靠定时对账看出来，而那一遍是这个进程闲着时的
+    /// 主要开销。要不要纠正是处理端的事（见 `Maximize.handle` 里的 `enabled`），
+    /// 与「边界变了要不要知道」不是同一个问题。
     private static let windowNotifications = [
         kAXUIElementDestroyedNotification,
         kAXTitleChangedNotification,
         kAXWindowMiniaturizedNotification,
         kAXWindowDeminiaturizedNotification,
-    ]
-
-    private static let geometryNotifications = [
         kAXWindowMovedNotification,
         kAXWindowResizedNotification,
     ]
@@ -109,19 +101,7 @@ public final class AXObserverHub {
         for name in Self.windowNotifications {
             AXObserverAddNotification(observer, window, name as CFString, context)
         }
-        applyGeometryNotifications(observer, window)
         watchedWindows[pid, default: []].insert(wrapper)
-    }
-
-    private func applyGeometryNotifications(_ observer: AXObserver, _ window: AXUIElement) {
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        for name in Self.geometryNotifications {
-            if watchesGeometry {
-                AXObserverAddNotification(observer, window, name as CFString, context)
-            } else {
-                AXObserverRemoveNotification(observer, window, name as CFString)
-            }
-        }
     }
 
     public func stop(pid: pid_t) {
@@ -133,9 +113,12 @@ public final class AXObserverHub {
     }
 
     fileprivate func dispatch(element: AXUIElement, notification: String) {
-        if Self.geometryNotifications.contains(notification) {
+        // 移动与缩放**两条路都要走**：纠正那一路要元素本身，索引那一路要知道边界变了
+        // ——一格该落在哪块屏上是按边界算的。原先它只走纠正那一路就返回了，于是即便
+        // 订阅着，索引也收不到窗口换屏这件事，只能等定时对账看出来。
+        if notification == kAXWindowMovedNotification
+            || notification == kAXWindowResizedNotification {
             onGeometryChanged?(element)
-            return
         }
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return }
