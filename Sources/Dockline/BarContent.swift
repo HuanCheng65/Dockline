@@ -1885,6 +1885,7 @@ private struct MediaBadge: View {
             // 读起来像整块被裁掉了一角——离屏渲染确认过。
             .overlay(alignment: .bottom) {
                 Equalizer(playing: playing.playing, size: size, levels: levels)
+                    .frame(width: size, height: size * 0.58)
                     .padding(.bottom, size * 0.16)
             }
             // 描一圈才与图标分得开：封面撞上同色系的图标时，两者会糊成一块
@@ -1912,46 +1913,128 @@ private struct MediaBadge: View {
 ///
 /// 拿不到电平时（tap 建不起来、或者那个进程根本不出声）走一套按时间算的静默动画。
 /// **这不是兜底，是两种都成立的状态**——一种在放真声音，一种只是在说「这一格在出声」。
-private struct Equalizer: View {
+///
+/// **它不走 SwiftUI 的逐帧重画。** 柱高一变，视图树的尺寸就跟着变，SwiftUI 于是每一帧
+/// 都要把整条 bar 重新量一遍版面（`NSHostingView.layout`）——三根柱子拖着整条 bar 走，
+/// 实测那一项占掉主线程 5 个百分点的 CPU，两块屏各一份，而柱子本身几乎不要钱。
+/// 换成三个图层、由自己的显示链接直接写高度之后，SwiftUI 每帧一无所知。
+///
+/// 试过的两条不成立：画进 `Canvas` 反而更贵（每帧重新栅格化，实测涨到 15%）；
+/// 只把帧率压到 60 只省下一个多点——**代价不在帧数上，在每一帧都惊动了整条 bar。**
+private struct Equalizer: NSViewRepresentable {
     let playing: Bool
     /// 角标的边长。柱宽、间距与最高点都按它派生，整枚记号因此随图标一起缩放。
     let size: CGFloat
     var levels: MediaLevels
 
+    func makeNSView(context: Context) -> EqualizerBars { EqualizerBars() }
+
+    func updateNSView(_ view: EqualizerBars, context: Context) {
+        view.configure(playing: playing, size: size, levels: levels)
+    }
+
+    static func dismantleNSView(_ view: EqualizerBars, coordinator: ()) { view.stop() }
+}
+
+/// 均衡器的那三根柱子。见 `Equalizer`。
+final class EqualizerBars: NSView {
+    private var bars: [CALayer] = []
+    private var link: CADisplayLink?
+    private var playing = false
+    private var levels: MediaLevels?
+    private var size: CGFloat = 0
+
+    /// 没有电平时三根柱子各走各的周期。错开才像在跳，同步跳三根看起来像一个整体在缩放。
+    private static let periods: [Double] = [0.62, 0.47, 0.55]
+    /// 停着时落到底。柱高不低于柱宽，于是三根收成三个圆点——**没有声音就没有高度**，
+    /// 这比一排等高的矮柱明确。先前取 0.42，结果是暂停反而比播放时更高。
+    private static let resting: CGFloat = 0
+
     private var width: CGFloat { size * 0.125 }
     private var gap: CGFloat { size * 0.085 }
     private var tall: CGFloat { size * 0.58 }
 
-    /// 没有电平时三根柱子各走各的周期。错开才像在跳，同步跳三根看起来像一个整体在缩放。
-    private static let periods: [Double] = [0.62, 0.47, 0.55]
-    /// 停着时落到底。`max(width, …)` 会把三根收成三个圆点——**没有声音就没有高度**，
-    /// 这比一排等高的矮柱明确。先前取 0.42，结果是暂停反而比播放时更高。
-    private static let resting: CGFloat = 0
+    override var isFlipped: Bool { false }
 
-    var body: some View {
-        TimelineView(.animation) { _ in
-            // 时基必须与写侧同一个。`context.date` 是墙钟，而包络的时间戳取自
-            // `CACurrentMediaTime()`，两者差着几十年——相减得到的经过时间毫无意义。
-            let values = heights(at: CACurrentMediaTime())
-            HStack(alignment: .bottom, spacing: gap) {
-                ForEach(0..<3, id: \.self) { index in
-                    Capsule()
-                        // 白色，不取封面的颜色：底下压着的就是那张封面，
-                        // 同色的柱子在它自己身上认不出来
-                        .fill(.white)
-                        // **走高度，不走 `scaleEffect`。** 缩放会把胶囊的圆头一起压扁，
-                        // 低电平那一档于是成了一枚扁椭圆而不是一根短柱。最矮不低于自己
-                        // 的宽度：到底就是一个圆点。
-                        .frame(width: width, height: max(width, tall * values[index]))
-                }
-            }
-            .frame(width: size, height: tall, alignment: .bottom)
+    /// 显示链接跟着窗口走。它持有着这个视图，离开窗口不停就是一条挂着的引用；
+    /// 而没进窗口时它也不会走，回来那一下要按当前状态重新起。
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil, playing { start() } else { stop() }
+    }
+
+    func configure(playing: Bool, size: CGFloat, levels: MediaLevels) {
+        self.playing = playing
+        self.levels = levels
+        if self.size != size {
+            self.size = size
+            layout(bars: true)
         }
+        // 停着的时候整个停下：那时三根柱子是恒定的零，逐帧重画它是纯粹的空转。
+        playing ? start() : stop()
+        // 停下之前把最后一帧画到位，否则柱子停在暂停那一刻的高度上
+        if !playing { draw() }
+    }
+
+    private func layout(bars rebuild: Bool) {
+        wantsLayer = true
+        guard let host = layer else { return }
+        if rebuild {
+            bars.forEach { $0.removeFromSuperlayer() }
+            bars = (0..<3).map { _ in
+                let bar = CALayer()
+                // 白色，不取封面的颜色：底下压着的就是那张封面，
+                // 同色的柱子在它自己身上认不出来
+                bar.backgroundColor = NSColor.white.cgColor
+                bar.cornerRadius = width / 2
+                host.addSublayer(bar)
+                return bar
+            }
+        }
+    }
+
+    private func start() {
+        guard link == nil else { return }
+        let link = displayLink(target: self, selector: #selector(tick))
+        // **按分析的节奏走，不按屏幕的。** 包络每 512 个样本更新一次，48kHz 下是每秒
+        // 93.75 次；ProMotion 那 120Hz 里有相当一部分帧画的是同一批数字。每一帧的代价
+        // 不在这三个图层上，而在它引出的那一次事务提交——那一次提交会带着整个宿主视图
+        // 再走一遍显示列表，实测 120 与 60 之间差一个多百分点。
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+
+    func stop() {
+        link?.invalidate()
+        link = nil
+    }
+
+    @objc private func tick() { draw() }
+
+    private func draw() {
+        guard !bars.isEmpty else { return }
+        // 时基必须与写侧同一个。包络的时间戳取自 `CACurrentMediaTime()`。
+        let values = heights(at: CACurrentMediaTime())
+        let span = width * 3 + gap * 2
+        let left = (bounds.width - span) / 2
+        // 图层的隐式动画在这里是有害的：每帧都会给出一个 0.25 秒的过渡，而整条动力学
+        // 已经在包络里了（见 `MediaLevels`），再叠一层低通就是先前那三层低通的老毛病。
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (index, bar) in bars.enumerated() {
+            // **走高度，不走缩放。** 缩放会把胶囊的圆头一起压扁，低电平那一档于是成了
+            // 一枚扁椭圆而不是一根短柱。最矮不低于自己的宽度：到底就是一个圆点。
+            let height = max(width, tall * values[index])
+            bar.frame = CGRect(x: left + (width + gap) * CGFloat(index), y: 0,
+                               width: width, height: height)
+        }
+        CATransaction.commit()
     }
 
     private func heights(at now: Double) -> [CGFloat] {
         guard playing else { return [CGFloat](repeating: Self.resting, count: 3) }
-        if let bars = levels.bars(at: now) { return bars }
+        if let bars = levels?.bars(at: now) { return bars }
         return (0..<3).map { index in
             let phase = now.truncatingRemainder(dividingBy: Self.periods[index])
                 / Self.periods[index]
