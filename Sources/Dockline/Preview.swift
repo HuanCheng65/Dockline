@@ -236,9 +236,19 @@ struct PreviewCard: View {
     static let nameHeight: CGFloat = 26
     /// 标题那一行占多高。名字那一档一行居中；窗口标题排两行；会话名只有一行。
     private static func headHeight(detail: Detail?, content: CellStatus?) -> CGFloat {
-        guard detail != nil else { return nameHeight }
-        return content == nil ? titleHeight : sessionTitleHeight
+        guard content == nil else { return sessionTitleHeight }
+        return detail == nil ? nameHeight : titleHeight
     }
+
+    /// 只报名字那一档：没有窗口可预览，这一格上也没有状态可说。
+    ///
+    /// **不等于 `detail == nil`。** 窗口全关之后那一格照旧有状态（见 §5.4），
+    /// 它没有缩略图可给，但要说的东西和窗口格上的一样多。
+    private static func isPill(_ detail: Detail?, _ content: CellStatus?) -> Bool {
+        detail == nil && content == nil
+    }
+
+    private var pill: Bool { Self.isPill(detail, content) }
 
     private static func textHeight(showsAppName: Bool, content: CellStatus?) -> CGFloat {
         textInset * 2 + (content == nil ? titleHeight : sessionTitleHeight)
@@ -371,14 +381,14 @@ struct PreviewCard: View {
     /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
     static func size(title: String, detail: Detail?, peek: CGSize?,
                      content: CellStatus?) -> CGSize {
-        guard let detail else {
+        guard !isPill(detail, content) else {
             let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
             return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
         }
         // App 名那一行在会话卡上是噪声：卡片说的是那件事，不是那个程序
         let shows = content == nil && showsAppName(title, detail)
-        let draws = showsImage(content, peek)
-        let image = draws ? imageSize(detail.image,
+        let draws = detail != nil && showsImage(content, peek)
+        let image = draws ? imageSize(detail?.image,
                                       box: imageBox(peek, showsAppName: shows, content: content))
                           : .zero
         let height = (draws ? image.height + pad * 2 : 0)
@@ -386,7 +396,7 @@ struct PreviewCard: View {
             + (content.map(blockHeight) ?? 0)
         // 大预览那一档的宽度照旧由画面定——按住空格是要看窗口，会话卡的固定宽度
         // 不该把它压回去。
-        guard content != nil, peek == nil else {
+        guard content != nil, !draws else {
             return CGSize(width: min(peek?.width ?? maxWidth, max(minWidth, image.width + pad * 2)),
                           height: height)
         }
@@ -410,7 +420,7 @@ struct PreviewCard: View {
                     // 各档共用这一个 Text。换成两个，它们之间就只剩淡入淡出可做了。
                     Text(title)
                         .font(.system(size: 12.5, weight: .medium))
-                        .lineLimit(detail == nil ? 1 : 2)
+                        .lineLimit(pill ? 1 : 2)
                         .truncationMode(.tail)
                 if let session = content?.session {
                         Spacer(minLength: 8)
@@ -422,7 +432,7 @@ struct PreviewCard: View {
                     }
                 }
                 .frame(height: Self.headHeight(detail: detail, content: content),
-                       alignment: detail == nil ? .center : .topLeading)
+                       alignment: pill ? .center : .topLeading)
                 if let detail, content == nil, Self.showsAppName(title, detail) {
                     Text(detail.appName)
                         .font(.system(size: 11))
@@ -432,7 +442,7 @@ struct PreviewCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.textPad)
-            .padding(.vertical, detail == nil ? 0 : Self.textInset)
+            .padding(.vertical, pill ? 0 : Self.textInset)
             switch content {
             case .session(let session): sessionBlock(session)
             case .media(let playing): mediaBlock(playing)

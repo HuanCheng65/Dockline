@@ -110,6 +110,17 @@ struct BarContent: View {
     private static let askReach: TimeInterval = 0.18
     /// 宽限期间那一次收场。指针落到卡上就取消它。
     @State private var previewHold: DispatchWorkItem?
+    /// 名牌那一档上有要动手的东西时，那一格的同一道宽限。
+    ///
+    /// 没窗口的格子走的是名牌那一档（见 `pillTarget`），它长成一张卡全靠 `hoveredItem`
+    /// 撑着——指针一离开格子就收，卡上那几个按钮同样够不着。
+    @State private var itemHold: DispatchWorkItem?
+    /// 名牌那一档此刻替哪一格说状态。nil = 都还只是个名牌。
+    ///
+    /// 与 `hoveredItem` 分开，是因为长成一张卡要**先停留**：一路划过条时中途弹出
+    /// 一张卡，和预览卡不等停留就浮出来是同一种毛病（计划书 §3）。
+    @State private var statusItem: String?
+    @State private var statusDwell: DispatchWorkItem?
     /// 计划书 §3：悬停约 260ms 后浮出
     private static let previewDwell: TimeInterval = 0.26
     /// 大预览开着时换格子的停留。见 `schedulePreview`。
@@ -174,9 +185,11 @@ struct BarContent: View {
                             if inside {
                                 keepPanel()
                                 keepPreview()
+                                keepItem()
                             } else {
                                 dismissPanel()
                                 dismissPreview()
+                                if let hoveredItem { holdItem(hoveredItem) }
                             }
                         }
                         .onDisappear { model.setFloatFrame(nil) }
@@ -417,6 +430,36 @@ struct BarContent: View {
     private func keepPreview() {
         previewHold?.cancel()
         previewHold = nil
+    }
+
+    /// 这一格的名牌该不该长成状态卡。nil = 取消尚未兑现的那一次。
+    private func scheduleStatus(_ id: String?) {
+        statusDwell?.cancel()
+        guard let id else {
+            statusDwell = nil
+            return
+        }
+        let work = DispatchWorkItem { statusItem = id }
+        statusDwell = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.previewDwell, execute: work)
+    }
+
+    /// 指针离开了这一格，但它长出来的卡上有东西要按。留一段宽限，够指针走过中间那道缝。
+    private func holdItem(_ id: String) {
+        itemHold?.cancel()
+        let work = DispatchWorkItem {
+            guard hoveredItem == id else { return }
+            hoveredItem = nil
+            hoveredApp = nil
+            statusItem = nil
+        }
+        itemHold = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.askReach, execute: work)
+    }
+
+    private func keepItem() {
+        itemHold?.cancel()
+        itemHold = nil
     }
 
     /// 指针离开了卡片。卡上没东西可按了就照旧立刻收。
@@ -1001,7 +1044,9 @@ struct BarContent: View {
 
     private struct FloatStage: Equatable {
         enum Kind: Equatable {
-            case name(String)
+            /// 名字，以及这一格上的状态。**只有没窗口的那种格子会带状态**——
+            /// 有窗口的格子等停留过后长出预览卡，那才是它说状态的地方。
+            case name(String, CellStatus?)
             case preview(PreviewTarget)
             case list(FloatPanel)
         }
@@ -1039,7 +1084,7 @@ struct BarContent: View {
             return FloatStage(kind: .preview(preview), anchorX: preview.anchorX)
         }
         if let pill = pillTarget(layout) {
-            return FloatStage(kind: .name(pill.text), anchorX: pill.anchorX)
+            return FloatStage(kind: .name(pill.text, pill.status), anchorX: pill.anchorX)
         }
         return nil
     }
@@ -1079,7 +1124,7 @@ struct BarContent: View {
 
     private func cardTitle(_ stage: FloatStage) -> String {
         switch stage.kind {
-        case .name(let text):
+        case .name(let text, _):
             return text
         case .preview(let target):
             let status = model.world.status(window: target.window.id,
@@ -1101,11 +1146,17 @@ struct BarContent: View {
         }
     }
 
-    /// 这一档预览的窗口上有没有 agent 会话。有就让卡片让位给它。
+    /// 这一档说的那件事。有就让卡片让位给它。
     private func cardStatus(_ stage: FloatStage) -> CellStatus? {
-        guard case .preview(let target) = stage.kind else { return nil }
-        return model.world.status(window: target.window.id,
-                                  of: target.window.pid, leads: target.leads)
+        switch stage.kind {
+        case .name(_, let status):
+            return status
+        case .preview(let target):
+            return model.world.status(window: target.window.id,
+                                      of: target.window.pid, leads: target.leads)
+        case .list:
+            return nil
+        }
     }
 
     /// nil = 还只是名字那一档
@@ -1224,8 +1275,9 @@ struct BarContent: View {
                         from: id)
     }
 
-    /// 名牌此刻该报谁的名字。nil = 不出名牌。
-    private func pillTarget(_ layout: BarLayout) -> (text: String, anchorX: CGFloat)? {
+    /// 名牌此刻该报谁的名字，以及这一格上有没有状态要说。nil = 不出名牌。
+    private func pillTarget(_ layout: BarLayout)
+        -> (text: String, status: CellStatus?, anchorX: CGFloat)? {
         // 让不让位给信息更多的那两档，由 `floatStage` 统一定，这里只管报名字。
         // 拖拽最优先：手上正拎着文件，停在哪一格上就是此刻唯一要紧的事。
         if let id = model.dragOverWindow {
@@ -1234,20 +1286,30 @@ struct BarContent: View {
                   }),
                   let anchorX = cellAnchors[item.id], let text = name(of: item)
             else { return nil }
-            return (text, anchorX)
+            return (text, nil, anchorX)
         }
         // 键盘会话次之。指针可能停在某处一动不动，那不是用户此刻的注意力所在。
         if model.keyVisible {
             guard let item = layout.items.first(where: { keySelected($0) }),
                   let anchorX = cellAnchors[item.id], let text = name(of: item)
             else { return nil }
-            return (text, anchorX)
+            return (text, nil, anchorX)
         }
         guard let hoveredItem, let anchorX = cellAnchors[hoveredItem],
               let item = layout.items.first(where: { $0.id == hoveredItem }),
               let text = name(of: item)
         else { return nil }
-        return (text, anchorX)
+        return (text, hoveredItem == statusItem ? dormantStatus(of: item) : nil, anchorX)
+    }
+
+    /// 没窗口的那一格上此刻的状态。窗口全关不等于事情结束（见 §5.4），而这一格
+    /// 没有缩略图可给，名牌那一档就是它唯一能说话的地方。
+    ///
+    /// 有窗口的格子不走这里：它们的状态归预览卡，那一档要等停留过后才长出来，
+    /// 在名牌上先说一遍就成了「刚浮出来就换一副样子」。
+    private func dormantStatus(of item: BarItem) -> CellStatus? {
+        guard case .dormant(let app) = item else { return nil }
+        return model.world.status(app: app.pid)
     }
 
     /// 一格叫什么。窗口给完整标题——条上那一份是剥掉共同首尾段又压过宽度的片段。
@@ -1299,8 +1361,16 @@ struct BarContent: View {
                         levels: model.world.mediaLevels,
                         onHover: { anchorX in
                             guard let anchorX else {
-                                if hoveredItem == item.id { hoveredItem = nil }
-                                if hoveredApp == slot.key { hoveredApp = nil }
+                                // 相邻两格的「进入」与「离开」谁先到并不保证，晚到的这一条
+                                // 不该把邻格刚排下的停留掐掉（同 `schedulePreview`）
+                                if hoveredItem == item.id { scheduleStatus(nil) }
+                                if Self.interactive(slot.status), slot.cell == nil {
+                                    holdItem(item.id)
+                                } else {
+                                    if hoveredItem == item.id { hoveredItem = nil }
+                                    if hoveredApp == slot.key { hoveredApp = nil }
+                                    if statusItem == item.id { statusItem = nil }
+                                }
                                 guard let cell = slot.cell else {
                                     if case .elsewhere = slot.mark { dismissPanel() }
                                     return
@@ -1309,8 +1379,13 @@ struct BarContent: View {
                                                   : dismissPanel()
                                 return
                             }
+                            keepItem()
                             hoveredItem = item.id
                             hoveredApp = slot.key
+                            // 换了一格就从头停留。回到原来那一格不重来——指针从卡上
+                            // 挪回格子时，卡不该在手底下塌回名牌再长一遍。
+                            if statusItem != item.id { statusItem = nil }
+                            scheduleStatus(slot.cell == nil && slot.status != nil ? item.id : nil)
                             guard let cell = slot.cell else {
                                 // 空心圈那一档：浮出它在别的屏上的窗口。这一格没有本屏的
                                 // 窗口可预览，能给的正是「它在别处有什么」。
