@@ -1500,9 +1500,13 @@ private struct DockCell: View {
     let onHover: (CGFloat?) -> Void
     let onTap: () -> Void
 
-    /// 换歌时文字交叉淡入的时长。与卡片上那一层同一个数——同一件事换了，
-    /// 条上和卡上用不同的速度会读成两件事先后发生。
-    private static let trackFade: TimeInterval = 0.32
+    /// 换歌时条上这一档的编排。与卡片上那一套同一条曲线——同一件事换了，
+    /// 条上和卡上用不同的节奏会读成两件事先后发生。
+    private static let beat = Animation.spring(response: 0.36, dampingFraction: 0.86)
+    /// 方向性偏置。标题区只有八十几点宽，幅度必须比卡片上小得多，否则读成跑马灯。
+    private static let labelStep: CGFloat = 6
+    /// 糊到读不出字为止。字比卡片上小，模糊也小一档。
+    private static let labelBlur: CGFloat = 3
 
     @State private var frame: CGRect = .zero
 
@@ -1589,18 +1593,26 @@ private struct DockCell: View {
             // 两行折行，排不下末尾截断。
             // 宽度由 LabelWidths 一次算准，不交给 frame(maxWidth:)：
             // 外层 fixedSize 会把它的理想宽取成上限值，短标题也会占满。
+            // 换歌时同一套编排的缩微版：同一条曲线、同一个方向，幅度小一档。
+            // 身份取歌的身份，没有播放时退回文本本身——窗口标题变了也走同一条路。
+            let key = slot.status?.media?.track ?? text
             Text(text)
-                // 换歌（以及换窗口标题）时交叉淡入，不硬切。范围只到这个 `Text` 为止：
-                // 挂在更外面的话，随文字一起变的宽度也会跟着滑，那是在动位置，不是在换字。
-                .contentTransition(.opacity)
-                .animation(.easeInOut(duration: Self.trackFade), value: text)
                 .font(.system(size: BarMetrics.labelFontSize, weight: .medium))
                 .lineLimit(BarMetrics.labelLines)
                 .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
                 .foregroundStyle(.primary.opacity(slot.minimized ? 0.62 : 0.9))
+                // 方向性偏置只作用到这个 `Text` 为止：挂在更外面的话，随文字一起变的
+                // 宽度也会跟着滑，那是在动位置，不是在换字。
+                .id(key)
+                .transition((slot.status?.media?.advance ?? .forward)
+                    .drift(step: Self.labelStep, blur: Self.labelBlur))
                 // 上限由降级阶梯定（③压的就是它），视图与宽度计算读同一个值
                 .frame(width: metrics.label(slot.labelWidth), alignment: .leading)
+                .clipped()
+                // 动画挂在这个**定宽的稳定容器**上，不挂在换身份的那个 `Text` 上：
+                // 后者自己就是被换掉的东西，换的那一刻它已经不在了，提供不了事务。
+                .animation(Self.beat, value: key)
                 // 标题靠紧自己的图标，与下一格拉开——归属只剩邻近性可依据
                 .padding(.trailing, metrics.labelTrailing - metrics.cellInset)
                 // App 开出第二个窗口时，这一格是原地长出标题区的：格子沿用 App 的

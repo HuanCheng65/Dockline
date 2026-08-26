@@ -609,9 +609,6 @@ struct PreviewCard: View {
     /// 细线加一行时间。刻意不是一根粗条——那是播放器控件的样子，不是一张卡的样子。
     /// 时间移到线的两端之后，这一行不再是「线 + 一行字」两截
     private static let progressHeight: CGFloat = 14
-    /// 换歌时文字交叉淡入的时长。与封面那一层同一个节奏——一张卡上换的是同一件事，
-    /// 两处用不同的速度会读成两件事先后发生。
-    private static let trackFade: TimeInterval = 0.32
     private static let controlHeight: CGFloat = 32
 
     /// 这一档全是定高的，因此高度是算出来的而不是量出来的。量文字那条路在这张卡上
@@ -625,40 +622,7 @@ struct PreviewCard: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 artwork(playing)
-                // 歌名、歌手、专辑，从重到轻，整栏对着封面居中。
-                // 三行都靠在封面顶上、下面空一截，是这张卡先前看着别扭的地方。
-                VStack(alignment: .leading, spacing: 3) {
-                    if let title = playing.title {
-                        Text(title)
-                            .contentTransition(.opacity)
-                            .animation(.easeInOut(duration: Self.trackFade), value: title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    if let artist = playing.artist {
-                        Text(artist)
-                            .contentTransition(.opacity)
-                            .animation(.easeInOut(duration: Self.trackFade), value: artist)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    // 单曲的专辑名常常就是歌名，歌手的精选集则常常就是歌手名。
-                    // 重复的那一行不占位置——它没有第三样东西可说。
-                    if let album = playing.album,
-                       album != playing.title, album != playing.artist {
-                        Text(album)
-                            .contentTransition(.opacity)
-                            .animation(.easeInOut(duration: Self.trackFade), value: album)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
-                Spacer(minLength: 0)
+                lines(playing)
             }
             .frame(height: Self.artworkSize)
             MediaProgress(playing: playing, tint: playing.tint ?? .accentColor)
@@ -682,7 +646,115 @@ struct PreviewCard: View {
         .padding(.bottom, Self.textInset)
     }
 
+    /// 歌名、歌手、专辑，从重到轻，整栏对着封面居中。
+    ///
+    /// **每一行按歌的身份换掉，槽位按序号固定。** 先前是三个 `if let` 并排，子视图的数量
+    /// 会随歌变（单曲没有专辑行），数量一变结构标识就错位，兄弟视图跟着被拆掉重建——那正是
+    /// 「刷新了一下」的来源。用 `ForEach` 按序号定身份之后，行数变化只影响最后那一槽。
+    @ViewBuilder
+    private func lines(_ playing: NowPlaying) -> some View {
+        let texts = [playing.title, playing.artist,
+                     // 单曲的专辑名常常就是歌名，歌手的精选集则常常就是歌手名。
+                     // 重复的那一行不占位置——它没有第三样东西可说。
+                     playing.album.flatMap {
+                         $0 == playing.title || $0 == playing.artist ? nil : $0
+                     }].compactMap { $0 }
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(texts.enumerated()), id: \.offset) { index, text in
+                // 每一槽是一个**稳定的容器**，动画挂在它身上。
+                //
+                // 动画不能挂在换身份的那个视图上：它自己就是被换掉的东西之一，换的那一刻
+                // 它已经不在了，也就没有谁提供过渡所需的那次事务——表现是过渡根本不播。
+                ZStack(alignment: .leading) {
+                    Text(text)
+                        .font(Self.lineFonts[index])
+                        .foregroundStyle(Self.lineStyles[index])
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .id(playing.track)
+                        .transition(playing.advance.drift(step: Self.lineStep,
+                                                          blur: Self.lineBlur))
+                }
+                // 封面先动，两行字依次跟上。**同一条曲线、同一个时长、起点错开**——
+                // 那不是几件事，是一件事在这一行上传过去。
+                .animation(Self.beat.delay(Double(index + 1) * Self.stagger),
+                           value: playing.track)
+            }
+        }
+        // 宽度取满：新旧两行同时在场时，容器不会跟着较宽的那行伸缩
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private static let lineFonts: [Font] = [.system(size: 13, weight: .semibold),
+                                            .system(size: 11.5),
+                                            .system(size: 10.5)]
+    private static let lineStyles: [HierarchicalShapeStyle] = [.primary, .secondary, .tertiary]
+
+    /// 换歌时整行共用的这一条曲线。
+    private static let beat = Animation.spring(response: 0.36, dampingFraction: 0.86)
+    /// 相邻两个元素之间错开多久。
+    private static let stagger = 0.045
+    /// 方向性偏置。**取值等于封面到文字的间距**：退出的那一行走到头时正好贴着封面，
+    /// 而那一刻它的不透明度已经是 0，因此这一栏不必裁剪——模糊碰上硬裁剪会在边界上
+    /// 切出一道生硬的线，比让它压过去难看得多。
+    private static let lineStep: CGFloat = 10
+    /// 糊到读不出字为止，大约是字号的三分之一。
+    private static let lineBlur: CGFloat = 4.5
+    /// 封面翻过去的角度。
+    private static let turn: Double = 42
+    /// 封面转开时的模糊。比文字轻——它本来就不是拿来读的，糊重了只剩一团色。
+    private static let coverBlur: CGFloat = 3
+
+    /// 封面绕竖轴翻过去，像一面转过来的鼓。
+    ///
+    /// 下一首时新的那面**从右边转过来**：它进场时右缘朝里（绕 Y 轴正角），转正即停；
+    /// 旧的那面左缘朝里转走。上一首整个反过来。方向因此写在旋转的正负号里，
+    /// 而不是靠横向位移去说。
+    private static func flip(_ playing: NowPlaying) -> AnyTransition {
+        let sign: Double = playing.advance == .forward ? 1 : -1
+        return .asymmetric(
+            insertion: .modifier(active: Flip(progress: 1, angle: turn * sign),
+                                 identity: Flip(progress: 0, angle: turn * sign)),
+            removal: .modifier(active: Flip(progress: 1, angle: -turn * sign),
+                               identity: Flip(progress: 0, angle: -turn * sign)))
+    }
+
+    /// 封面翻过去。旋转、模糊、不透明度同样由一个数驱动，与文字那一侧同一个形状。
+    ///
+    /// **必须实现 `Animatable`。** `.modifier(active:identity:)` 的过渡靠插值修饰器的
+    /// `animatableData`；不声明的话它默认是 `EmptyAnimatableData`，角度会在两个状态之间
+    /// 瞬间切换——那等于没有翻转，屏幕上什么都看不见。
+    private struct Flip: ViewModifier, Animatable {
+        var progress: Double
+        /// 完全转开时的角度。
+        let angle: Double
+
+        var animatableData: Double {
+            get { progress }
+            set { progress = newValue }
+        }
+
+        func body(content: Content) -> some View {
+            content
+                .rotation3DEffect(.degrees(angle * progress), axis: (x: 0, y: 1, z: 0),
+                                  anchor: .center, perspective: 0.7)
+                .blur(radius: PreviewCard.coverBlur * progress)
+                .opacity(1 - progress)
+        }
+    }
+
     private func artwork(_ playing: NowPlaying) -> some View {
+        ZStack {
+            cover(playing)
+                .id(playing.track)
+                .transition(Self.flip(playing))
+        }
+        .frame(width: Self.artworkSize, height: Self.artworkSize)
+        // 封面是这一行的领奏：它先动，文字依次跟上
+        .animation(Self.beat, value: playing.track)
+    }
+
+    private func cover(_ playing: NowPlaying) -> some View {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(.quaternary)
             .overlay {
@@ -690,10 +762,6 @@ struct PreviewCard: View {
                     Image(nsImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        // 换歌时新旧封面交叉淡入。`id` 一变 SwiftUI 才当它是换了一个东西，
-                        // 否则同一个 Image 只是内容变了，没有过渡可做。
-                        .id(playing.artworkID ?? playing.title ?? "")
-                        .transition(.opacity)
                 } else {
                     Image(systemName: "music.note")
                         .font(.system(size: 20))
@@ -703,7 +771,6 @@ struct PreviewCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .frame(width: Self.artworkSize, height: Self.artworkSize)
             .shadow(color: .black.opacity(0.2), radius: 5, y: 2)
-            .animation(.easeInOut(duration: Self.trackFade), value: playing.artworkID)
     }
 
     private func mediaButton(_ symbol: String, size: CGFloat,

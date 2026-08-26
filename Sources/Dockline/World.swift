@@ -48,6 +48,9 @@ final class World: ObservableObject {
     @Published private(set) var nowPlaying: NowPlaying?
     /// 发声那个 App 的进程号。由 `nowPlaying.bundleID` 解析而来，解析不到就没有落点。
     private(set) var mediaPID: pid_t?
+    /// 按下上/下一首之后多久之内到达的换歌算作那一次按键的结果。
+    private static let skipWindow: TimeInterval = 1.5
+
     /// 均衡器的实时电平。**不走 `@Published`**：它一秒变三十次，进了 bar 的模型就是
     /// 每秒把整条条重建三十遍。均衡器那个视图自己读它。
     let mediaLevels = MediaLevels()
@@ -94,6 +97,8 @@ final class World: ObservableObject {
     private let askServer = AskServer()
     private let nowPlayingReader = NowPlayingReader()
     private lazy var mediaTap = MediaTap(levels: mediaLevels)
+    /// 我们自己最近发出的一条上/下一首，以及发出的时刻。换歌方向的唯一可靠来源。
+    private var lastSkip: (command: MediaCommand, at: Date)?
     private var mouseMonitor: Any?
 
     /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
@@ -134,6 +139,7 @@ final class World: ObservableObject {
 
     /// 用户在面板上按了播放控制。
     func sendMedia(_ command: MediaCommand) {
+        if command == .next || command == .previous { lastSkip = (command, Date()) }
         nowPlayingReader.send(command)
     }
 
@@ -434,7 +440,17 @@ final class World: ObservableObject {
                 NSRunningApplication.runningApplications(withBundleIdentifier: $0.bundleID)
                     .first?.processIdentifier
             }
-            let next = pid == nil ? nil : playing
+            var next = pid == nil ? nil : playing
+            // 换歌的方向。MediaRemote 不说这是「下一首」还是「跳到某一首」，只能推。
+            //
+            // 能拿到的只有一条可靠信号：我们自己的上/下一首刚被按过。其余一律判向前——
+            // 自动续播占绝大多数，而在少数「你在播放器里直接点了另一首」的情况下猜错，
+            // 代价只是动画方向不对。**上一首多数时候根本不换歌**（播放器普遍是位置超过
+            // 三秒就从头开始），所以判定挂在歌的身份变了这个条件上，不挂在指令上。
+            if next?.track != nowPlaying?.track, let skip = lastSkip,
+               Date().timeIntervalSince(skip.at) < Self.skipWindow {
+                next?.advance = skip.command == .previous ? .backward : .forward
+            }
             // 桥在同一个状态上可能连发好几条（几个通知先后到达）。原样往下传会让整条 bar
             // 白重排几次，而这一档本来就不该有任何动静。
             guard next != nowPlaying else { return }

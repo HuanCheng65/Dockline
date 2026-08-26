@@ -28,6 +28,19 @@ struct NowPlaying: Equatable {
     /// 从封面里取出来的主色。格子的标签区与面板的底都用它——
     /// 一个元素同时回答三件事：哪一格在发声、换没换歌、以及这首歌长什么样。
     let tint: Color?
+    /// 这一次换歌是往前还是往后。由 `World` 在新歌到达那一刻判定，视图只管照着演。
+    ///
+    /// **不放在视图的 `@State` 里**：格子每收到一次上报就重建一遍，视图自己记不住任何
+    /// 跨越重建的东西（`LaunchBounce` 与 `SessionEdge` 各记过一次这条教训）。
+    var advance = Advance.forward
+
+    enum Advance { case forward, backward }
+
+    /// 歌的身份。换歌的动效按它触发。
+    ///
+    /// **不能按指令触发。** 播放器普遍是「位置超过三秒就从头开始」，所以按一下上一首
+    /// 多数时候根本不换歌——按指令演的话，那一下只是进度归零，却放了一遍换歌动画。
+    var track: String { artworkID ?? title ?? bundleID }
 
     /// 此刻播到哪儿了。按上报时刻往前推，不必再问一次。
     func position(at now: Date) -> Double {
@@ -41,6 +54,50 @@ struct NowPlaying: Equatable {
     var line: String? { title }
     /// 格子第二行：谁唱的。没有歌手就用专辑——两样都没有就不占第二行。
     var subline: String? { artist ?? album }
+}
+
+extension NowPlaying.Advance {
+    /// 换歌时文字进出的过渡：一个方向性的偏置，中途糊掉。
+    ///
+    /// **模糊是关键，不是装饰。** 文字在交叠的那一刻是读不出来的——两串清晰的字叠在一起，
+    /// 眼睛会去读那个叠加态，读到的是乱码，整件事于是被读成「闪了一下」而不是「换了一下」。
+    /// 糊掉之后它不再是字，交叠也就不再刺眼。
+    ///
+    /// **位移只是偏置，不是位移。** 眼睛读得出「从右边来的」，而没有任何东西真的横穿过去，
+    /// 那样会读成跑马灯。
+    func drift(step: CGFloat, blur: CGFloat) -> AnyTransition {
+        let x = self == .forward ? step : -step
+        return .asymmetric(
+            insertion: .modifier(active: Drift(progress: 1, x: x, blur: blur),
+                                 identity: Drift(progress: 0, x: x, blur: blur)),
+            removal: .modifier(active: Drift(progress: 1, x: -x, blur: blur),
+                               identity: Drift(progress: 0, x: -x, blur: blur)))
+    }
+}
+
+/// 位移、模糊、不透明度**由同一个数驱动**。
+///
+/// 用 `.offset().combined(with: .opacity)` 拼出来的是三段各自的效果，只是凑巧共用一条曲线；
+/// 一个 `Animatable` 的修饰器才真的是一件事在动。
+///
+/// 而且 `Animatable` 是必需的：`.modifier(active:identity:)` 的过渡靠插值 `animatableData`，
+/// 不声明的话它默认是 `EmptyAnimatableData`，两个状态之间瞬间切换，屏幕上什么都看不见。
+struct Drift: ViewModifier, Animatable {
+    var progress: Double
+    let x: CGFloat
+    let blur: CGFloat
+
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: x * progress)
+            .blur(radius: blur * progress)
+            .opacity(1 - progress)
+    }
 }
 
 /// 能发给播放源的指令。
