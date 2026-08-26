@@ -200,6 +200,10 @@ struct DormantApp {
     let name: String
     let url: URL?        // nil = App 已被删除，图标解析不出来
     let pid: pid_t?      // 非 nil = 在运行，只是一个窗口都没有
+    /// 有状态时占位槽也长出文本区。**窗口全关不等于事情结束**：播放器关掉窗口继续在
+    /// 后台放歌是常态，那一格该照旧说清在放什么。没有状态时仍旧只有一个图标。
+    let label: String?
+    let labelWidth: CGFloat
 }
 
 /// 可以拖动的东西。
@@ -289,11 +293,13 @@ func alignBarOrder(windows: [IndexedWindow], pins: PinStore, retained: Set<AppKe
 /// - Parameter status: 这一格上的状态。文本层要用它（见下面的优先级栈），所以必须在
 ///   这里问——宽度是按最终要显示的那行字算的。「窗口级优先、App 级只归第一格」以及
 ///   「会话压过播放」两条规则都不在这里判，由 `World.status(window:of:leads:)` 说了算。
+/// - Parameter dormantStatus: 没有窗口的那些 App 上的状态。占位槽也要能长出文本区。
 func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
                   dormantHere: (AppKey) -> Bool, pins: PinStore, notice: String?,
                   clusters: ClusterStore, order: WindowOrder,
                   labels: LabelWidths, recency: (CGWindowID) -> Int,
-                  status: (CGWindowID, pid_t, Bool) -> CellStatus?) -> [BarItem] {
+                  status: (CGWindowID, pid_t, Bool) -> CellStatus?,
+                  dormantStatus: (pid_t) -> CellStatus?) -> [BarItem] {
     // 三、标题只在同 App 有兄弟时出现。按 App 全局算——同 App 的两个窗口
     // 即使被拖散了，也还是要能区分。
     let byID = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -348,11 +354,23 @@ func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
         return cell(window, leads: leads)
     }
 
+    func placeholder(_ bundleID: String) -> DormantApp {
+        let app = dormant(bundleID: bundleID)
+        guard let status = app.pid.flatMap(dormantStatus) else { return app }
+        let two = status.lines
+        let lines = [two.first, two.second].compactMap { $0 }
+            .map { LabelWidths.fit($0, to: BarMetrics.labelMaxWidth) }
+        guard !lines.isEmpty else { return app }
+        return DormantApp(bundleID: app.bundleID, name: app.name, url: app.url, pid: app.pid,
+                          label: lines.joined(separator: "\n"),
+                          labelWidth: BarMetrics.labelMaxWidth)
+    }
+
     for element in order.elements {
         switch element {
         case .app(let key):
             guard dormantHere(key), let bundleID = key.bundleID else { continue }
-            slots.append(.dormant(dormant(bundleID: bundleID)))
+            slots.append(.dormant(placeholder(bundleID)))
 
         case .window(let wid):
             guard let window = byID[wid] else { continue }
@@ -362,7 +380,7 @@ func makeBarItems(windows: [IndexedWindow], onThisDisplay: Set<CGWindowID>,
                 guard let bundleID = window.bundleID, pins.isPinned(bundleID),
                       !localApps.contains(window.appKey),
                       slotted.insert(window.appKey).inserted else { continue }
-                slots.append(.dormant(dormant(bundleID: bundleID)))
+                slots.append(.dormant(placeholder(bundleID)))
                 continue
             }
             guard let id = clusters.clusterID(of: wid) else {
@@ -412,7 +430,9 @@ private func dormant(bundleID: String) -> DormantApp {
                           ?? url.map { FileManager.default.displayName(atPath: $0.path) }
                           ?? bundleID,
                       url: url,
-                      pid: running?.processIdentifier)
+                      pid: running?.processIdentifier,
+                      label: nil,
+                      labelWidth: 0)
 }
 
 /// 收拢态那一摞的宽度：封面满尺寸，后面每层露出一条边
@@ -520,6 +540,7 @@ struct BarLayout {
         items.map { item in
             switch item {
             case .window(let cell): return "\(item.id):\(cell.labelWidth)"
+            case .dormant(let app): return "\(item.id):\(app.labelWidth)"
             case .cluster(let cluster):
                 return "\(item.id):\(cluster.layers):\(cluster.labelWidth)"
             default: return item.id
@@ -539,8 +560,12 @@ private func itemWidth(_ item: BarItem, metrics: BarMetrics) -> CGFloat {
             .size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width)
             + metrics.cellInset * 2
     // 簇按收拢态算，正好一个格子宽——扇面是浮层，不占条上的宽度
-    case .launcher, .folder, .trash, .dormant:
+    case .launcher, .folder, .trash:
         return metrics.cellBox
+    case .dormant(let app):
+        guard app.label != nil else { return metrics.cellBox }
+        return metrics.cellBox + metrics.labelGap + metrics.label(app.labelWidth)
+            + metrics.labelTrailing
     case .cluster(let cluster):
         // 面板是浮层，不占条上的宽度
         let deck = metrics.cellInset * 2 + deckWidth(cluster.layers, icon: metrics.icon)

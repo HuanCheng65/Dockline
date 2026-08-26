@@ -105,6 +105,20 @@ final class World: ObservableObject {
     /// 就消失的通知等于没有发出过。只撤终态，运行中与等待中的不动。
     /// 这一格的终态已被用户看见。**目标由这里判**，不由调用方判：窗口级还是 App 级
     /// 与上面那条查找是同一条规则，让点击那一侧再判一次就是第六份抄写。
+    /// 一个此刻没有窗口的 App 上的状态。
+    ///
+    /// **窗口全关不等于事情结束。** 播放器关掉窗口继续在后台放歌是常态，而那一格还在——
+    /// 它是窗口全关之后留下的占位槽（计划书 §6 M5）。先前占位槽那一支把状态直接写死成
+    /// `nil`，于是关掉播放器的窗口，条上就什么都不说了。
+    ///
+    /// 优先级与有窗口那条一致：**任务型压过常驻型**。
+    func status(app pid: pid_t?) -> CellStatus? {
+        guard let pid else { return nil }
+        if let session = sessions[.app(pid)] { return .session(session) }
+        guard let playing = nowPlaying, mediaPID == pid else { return nil }
+        return .media(playing)
+    }
+
     func markStatusSeen(window id: CGWindowID, of pid: pid_t) {
         sessionCenter.markSeen(sessions[.window(id)] != nil ? .window(id) : .app(pid))
     }

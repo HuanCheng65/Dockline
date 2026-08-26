@@ -1452,13 +1452,13 @@ struct Slot {
         case .dormant(let app):
             self.key = AppKey.bundle(app.bundleID)
             self.icon = model.world.icon(app: app.url, bundleID: app.bundleID)
-            self.label = nil
-            self.labelWidth = 0
+            self.label = app.label
+            self.labelWidth = app.labelWidth
             // 窗口全在别的屏时给一个弱记号，而不是和「压根没开」共用一张脸。
             self.mark = model.world.hasWindows(app) ? .elsewhere : .none
             self.tabs = 0
             self.badge = model.world.badges[app.bundleID]
-            self.status = nil
+            self.status = model.world.status(app: app.pid)
             self.minimized = false
             self.isFront = false
             self.bouncing = model.world.launching.contains(app.bundleID)

@@ -253,7 +253,8 @@ final class BarModel: ObservableObject {
             recency: { [world] in world.lastActive[$0] ?? 0 },
             status: { [world] id, pid, leads in
                 world.status(window: id, of: pid, leads: leads)
-            })
+            },
+            dormantStatus: { [world] pid in world.status(app: pid) })
     }
 
     func layout() -> BarLayout {
