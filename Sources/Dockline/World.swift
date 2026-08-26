@@ -48,6 +48,9 @@ final class World: ObservableObject {
     @Published private(set) var nowPlaying: NowPlaying?
     /// 发声那个 App 的进程号。由 `nowPlaying.bundleID` 解析而来，解析不到就没有落点。
     private(set) var mediaPID: pid_t?
+    /// 均衡器的实时电平。**不走 `@Published`**：它一秒变三十次，进了 bar 的模型就是
+    /// 每秒把整条条重建三十遍。均衡器那个视图自己读它。
+    let mediaLevels = MediaLevels()
 
     let pins = PinStore()
     let clusters = ClusterStore()
@@ -90,6 +93,7 @@ final class World: ObservableObject {
     private let sessionCenter = SessionCenter()
     private let askServer = AskServer()
     private let nowPlayingReader = NowPlayingReader()
+    private lazy var mediaTap = MediaTap(levels: mediaLevels)
     private var mouseMonitor: Any?
 
     /// 这一格的终态已被用户看见。未读语义的出口——终态不自行消失，因为用户没看到
@@ -436,6 +440,9 @@ final class World: ObservableObject {
             guard next != nowPlaying else { return }
             mediaPID = pid
             nowPlaying = next
+            // 换了播放源就把 tap 挪过去。停着的时候也照挂——那边只是给一串零，
+            // 而下一次起播就不必等一轮重挂。
+            mediaTap.follow(next?.bundleID)
             guard let next else {
                 Timeline.log("播放  没有播放源")
                 return

@@ -1,5 +1,6 @@
 import Carbon.HIToolbox
 import DocklineCore
+import QuartzCore
 import SwiftUI
 
 /// 画在玻璃上的手绘层要按外观换色。
@@ -1295,6 +1296,7 @@ struct BarContent: View {
         let slot = Slot(item, model: model)
         return DockCell(slot: slot, metrics: metrics,
                         backing: backing(item.id, key: slot.key),
+                        levels: model.world.mediaLevels,
                         onHover: { anchorX in
                             guard let anchorX else {
                                 if hoveredItem == item.id { hoveredItem = nil }
@@ -1492,6 +1494,9 @@ private struct DockCell: View {
     let slot: Slot
     let metrics: BarMetrics
     let backing: Backing
+    /// 均衡器的实时电平。只穿到那三根柱子那里，不进 `Slot`——它一秒变三十次，
+    /// 而 `Slot` 是每次条重排都要整个重建的值。
+    let levels: MediaLevels
     let onHover: (CGFloat?) -> Void
     let onTap: () -> Void
 
@@ -1560,7 +1565,7 @@ private struct DockCell: View {
             // 朝着的是上一格。与 `labelTrailing` 是同一条邻近性规则。
             .overlay(alignment: .bottomTrailing) {
                 if let playing = slot.status?.media {
-                    MediaBadge(playing: playing, size: metrics.icon * 0.38)
+                    MediaBadge(playing: playing, size: metrics.icon * 0.38, levels: levels)
                 }
             }
             .modifier(LaunchBounce(bouncing: slot.bouncing, height: metrics.icon * 0.36))
@@ -1754,6 +1759,7 @@ private struct ClusterLine: View {
 private struct MediaBadge: View {
     let playing: NowPlaying
     let size: CGFloat
+    var levels: MediaLevels
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
@@ -1775,7 +1781,12 @@ private struct MediaBadge: View {
             }
             .overlay { shape.fill(.black.opacity(0.34)) }
             .clipShape(shape)
-            .overlay { Equalizer(playing: playing.playing, height: size * 0.46) }
+            // 柱子站在角标底上，不居中。居中那一版的基线浮在正中间，上下各空一截，
+            // 读起来像整块被裁掉了一角——离屏渲染确认过。
+            .overlay(alignment: .bottom) {
+                Equalizer(playing: playing.playing, size: size, levels: levels)
+                    .padding(.bottom, size * 0.16)
+            }
             // 描一圈才与图标分得开：封面撞上同色系的图标时，两者会糊成一块
             .overlay { shape.strokeBorder(.white.opacity(0.35), lineWidth: 0.5) }
             .frame(width: size, height: size)
@@ -1784,50 +1795,68 @@ private struct MediaBadge: View {
     }
 }
 
-/// 均衡器。
+/// 均衡器：图标角标上那三根柱子。
 ///
-/// **动效本身就是状态**：在放就跳，暂停就冻住。因此不需要再画一个 ▶ 或 ⏸——
-/// 一个元素说清了两件事，而它待的那枚角标本来也放不下第二样东西。
+/// **动效本身就是状态**：在放就跳，暂停就落到底，收成三个圆点。因此不需要再画一个
+/// ▶ 或 ⏸——一个元素说清了两件事，而它待的那枚角标本来也放不下第二样东西。
 ///
 /// 关于「条上不许有动效」那条规矩：它针对的是**抢注意力的动效**——会话那圈呼吸的边框
 /// 是在喊「看我」。这个不是。它小、恒定、不闪，而且放的是用户自己开的歌，他知道它在那儿。
 ///
-/// 相位不放在视图的 `@State` 里：格子每收到一次上报就重建一遍，`onAppear` 不会再来
-/// （`LaunchBounce` 与 `SessionEdge` 各记过一次这条教训）。`phaseAnimator` 自己循环。
+/// **驱动它的不是「这一刻多响」，而是「这一刻来了多少新能量」**（见 `MediaTap`）。
+/// 响度本身是缓变量，拿它驱动只能得到起伏，得不到锁拍。
+///
+/// **整条动力学都在包络里，视图这边一律不加隐式动画。** 先前叠过三层低通（指数回落 +
+/// 30Hz 采样保持 + 70ms 缓出，而那段缓出每 33ms 就被重定目标、永远走不完），等效两百多
+/// 毫秒——120BPM 的十六分音符才 125 毫秒，当然糊。现在按显示刷新率取一次值就画一次。
+///
+/// 拿不到电平时（tap 建不起来、或者那个进程根本不出声）走一套按时间算的静默动画。
+/// **这不是兜底，是两种都成立的状态**——一种在放真声音，一种只是在说「这一格在出声」。
 private struct Equalizer: View {
     let playing: Bool
-    /// 柱子的高度。宽度与间距按它派生，整枚记号因此随图标一起缩放。
-    let height: CGFloat
+    /// 角标的边长。柱宽、间距与最高点都按它派生，整枚记号因此随图标一起缩放。
+    let size: CGFloat
+    var levels: MediaLevels
 
-    private var bar: CGFloat { height * 0.22 }
-    private var gap: CGFloat { height * 0.17 }
-    /// 三根柱子各走各的一串高度，长度还互不相同——同步跳三根看起来像一个整体在缩放，
-    /// 错开才像在跳。
-    private static let steps: [[CGFloat]] = [
-        [0.35, 0.95, 0.55, 0.75],
-        [0.90, 0.40, 1.00],
-        [0.55, 0.75, 0.30, 0.95, 0.45],
-    ]
-    /// 停着时的高度。三根一样高，一眼看出它没在动。
-    private static let resting: CGFloat = 0.42
+    private var width: CGFloat { size * 0.125 }
+    private var gap: CGFloat { size * 0.085 }
+    private var tall: CGFloat { size * 0.58 }
+
+    /// 没有电平时三根柱子各走各的周期。错开才像在跳，同步跳三根看起来像一个整体在缩放。
+    private static let periods: [Double] = [0.62, 0.47, 0.55]
+    /// 停着时落到底。`max(width, …)` 会把三根收成三个圆点——**没有声音就没有高度**，
+    /// 这比一排等高的矮柱明确。先前取 0.42，结果是暂停反而比播放时更高。
+    private static let resting: CGFloat = 0
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: gap) {
-            ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, phases in
-                Capsule()
-                    // 白色，不取封面的颜色：底下压着的就是那张封面，
-                    // 同色的柱子在它自己身上认不出来
-                    .fill(.white)
-                    .frame(width: bar, height: height)
-                    .phaseAnimator(phases) { view, scale in
-                        view.scaleEffect(y: playing ? scale : Self.resting, anchor: .bottom)
-                    } animation: { _ in
-                        playing ? .easeInOut(duration: 0.30 + Double(index) * 0.06)
-                                : .easeOut(duration: 0.22)
-                    }
+        TimelineView(.animation) { _ in
+            // 时基必须与写侧同一个。`context.date` 是墙钟，而包络的时间戳取自
+            // `CACurrentMediaTime()`，两者差着几十年——相减得到的经过时间毫无意义。
+            let values = heights(at: CACurrentMediaTime())
+            HStack(alignment: .bottom, spacing: gap) {
+                ForEach(0..<3, id: \.self) { index in
+                    Capsule()
+                        // 白色，不取封面的颜色：底下压着的就是那张封面，
+                        // 同色的柱子在它自己身上认不出来
+                        .fill(.white)
+                        // **走高度，不走 `scaleEffect`。** 缩放会把胶囊的圆头一起压扁，
+                        // 低电平那一档于是成了一枚扁椭圆而不是一根短柱。最矮不低于自己
+                        // 的宽度：到底就是一个圆点。
+                        .frame(width: width, height: max(width, tall * values[index]))
+                }
             }
+            .frame(width: size, height: tall, alignment: .bottom)
         }
-        .frame(height: height, alignment: .bottom)
+    }
+
+    private func heights(at now: Double) -> [CGFloat] {
+        guard playing else { return [CGFloat](repeating: Self.resting, count: 3) }
+        if let bars = levels.bars(at: now) { return bars }
+        return (0..<3).map { index in
+            let phase = now.truncatingRemainder(dividingBy: Self.periods[index])
+                / Self.periods[index]
+            return 0.35 + 0.3 * CGFloat(sin(phase * 2 * .pi))
+        }
     }
 }
 
