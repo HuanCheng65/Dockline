@@ -543,6 +543,7 @@ final class World: ObservableObject {
         if fillHotKey == nil {
             Timeline.log("⚠️ 铺满快捷键 ⌃⌥⌘F 注册失败，该组合已被其他程序占用")
         }
+        watchScreenPower()
         for bar in bars { bar.refreshFullscreenState() }
         refreshFrontWindow()
         refreshTrash()
@@ -725,8 +726,54 @@ final class World: ObservableObject {
         display.map { "屏 \($0)" } ?? "未知"
     }
 
+    /// 屏幕锁上了 / 睡着了。两件事分开记：睡着之后再锁上、锁着的时候屏幕醒过来，
+    /// 这两种交错都真实发生，合成一个开关会卡在错的那一边。
+    ///
+    /// 初值必须在这里当场问，不能等到 `watchScreenPower()`：登录项在解锁之前就启动了，
+    /// 那时屏幕已经锁着，而「锁屏」那条通知早在我们订阅之前就发过。等到 `start()`
+    /// 里再问也来不及——条一量出自己的位置就会请求取色，那比 `world.start()` 还早。
+    private var screenLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])
+        .flatMap { $0["CGSSessionScreenIsLocked"] as? Bool } ?? false
+    private var screenAsleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
+    /// 屏幕上没有画面可采。取色的总闸在 `BarModel.sampleBackdrop()` 上——
+    /// 那里是所有取色请求唯一的漏斗，这个属性是它的判据之一。
+    var screenDark: Bool { screenLocked || screenAsleep }
+
     private func sampleBackdrop() {
         for bar in bars { bar.sampleBackdrop() }
+    }
+
+    /// 锁屏与屏幕睡眠。前者只有分布式通知，后者在 NSWorkspace 上。
+    private func watchScreenPower() {
+        if screenDark {
+            Timeline.log("启动时屏幕是黑的，玻璃板取色暂不进行"
+                         + "（锁屏 \(screenLocked)，睡眠 \(screenAsleep)）")
+        }
+        let distributed = DistributedNotificationCenter.default()
+        for (name, locked) in [("com.apple.screenIsLocked", true),
+                               ("com.apple.screenIsUnlocked", false)] {
+            distributed.addObserver(forName: Notification.Name(name),
+                                    object: nil, queue: .main) { [weak self] _ in
+                self?.noteScreenPower(locked: locked)
+            }
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true),
+                               (NSWorkspace.screensDidWakeNotification, false)] {
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.noteScreenPower(asleep: asleep)
+            }
+        }
+    }
+
+    private func noteScreenPower(locked: Bool? = nil, asleep: Bool? = nil) {
+        let before = screenDark
+        if let locked { screenLocked = locked }
+        if let asleep { screenAsleep = asleep }
+        guard before != screenDark else { return }
+        Timeline.log("屏幕\(screenDark ? "黑了" : "亮了")，玻璃板取色\(screenDark ? "停下" : "继续")"
+                     + "（锁屏 \(screenLocked)，睡眠 \(screenAsleep)）")
+        if !screenDark { sampleBackdrop() }
     }
 
     // MARK: 前台窗口

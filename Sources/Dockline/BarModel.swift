@@ -461,7 +461,11 @@ final class BarModel: ObservableObject {
     /// 采一次条与浮层玻璃板的亮度。单次约 35ms，异步；`BackdropSensor` 内部有 1 秒去抖。
     /// 采的是容器内侧那条纯玻璃，位置由 `BackdropSensor.band` 从容器矩形算出。
     func sampleBackdrop() {
-        guard !hidden, !yielding, let display else { return }
+        // 屏幕黑着的时候 ScreenCaptureKit 的显示器列表是空的，抓图必然失败；而失败会
+        // 扔掉过滤器（见 `BackdropSensor.run` 的 catch），下一次 2 秒后又要重抓一份
+        // 快照——一份快照要为屏上每个窗口问一次 LaunchServices。于是屏幕黑着的时候
+        // 反而比亮着的时候更费：亮着是三十秒抓一份，黑着是两秒抓一份，而且全是白抓。
+        guard !hidden, !yielding, !world.screenDark, let display else { return }
         if barFrame != .zero {
             backdrop.sample(probe: probe(barFrame), on: display)
         }
