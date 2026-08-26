@@ -178,39 +178,101 @@ public func enumerateCGWindows() -> [CGWindowRecord] {
 @_silgen_name("CGWindowListCreate")
 private func _CGWindowListCreate(_ option: UInt32, _ relativeTo: CGWindowID) -> Unmanaged<CFArray>?
 
-/// 窗口清单此刻的指纹。**只取窗口号，不建那一堆字典。**
+/// 窗口清单的变化哨兵：**索引会在意的那种变化，这一轮发生了没有。**
 ///
-/// `CGWindowListCopyWindowInfo` 每次都要为屏幕上几百个窗口各建一个字典（标题、边界、
-/// 拥有者、透明度……），本机实测 4.19 毫秒；同一份名单只取窗口号是 0.09 毫秒，差四十倍。
-/// 而对账绝大多数轮次什么都兜不到——那几毫秒是纯粹的空转，且它是这个进程空置时几乎
-/// 全部的开销。
+/// 对账要为屏幕上几百个窗口各建一个字典（标题、边界、拥有者、透明度……），本机实测
+/// 4.19 毫秒，而绝大多数轮次它什么都兜不到。同一份名单只取窗口号是 0.09 毫秒，差四十倍，
+/// 所以先花那 0.09 毫秒问一句「名单动了没有」，再决定要不要花那 4 毫秒去对。
 ///
 /// 两份名单都要：`optionAll` 那份认窗口的增减，上屏那份认上屏与下屏（最小化、切到别的
-/// Space，在 CG 层面就是从这一份里消失）。两份都没变，对账这一轮能发现的增减就都没发生。
+/// Space，在 CG 层面就是从这一份里消失）。
 ///
-/// **它替代不了对账。** 标题与边界不在指纹里，改标题、把窗口拖到另一块屏都不会让它变——
-/// 那两样归 AX 通知，以及每隔一段必来一次的那一遍完整对账（见 `World.reconcile`）。
+/// **比的是集合，不是顺序。** 名单本身是 z 序的，而 z 序一天要变几百次——用户把一个
+/// 窗口点到前面就变一次。对账不从 z 序推导任何东西（前台窗口走 AX 焦点，最近使用走
+/// `activationClock`），按顺序比等于为一件与自己无关的事反复跑完整对账。
+///
+/// **layer 不为 0 的窗口一律不算数**，因为 `isCandidate` 第一条就把它们挡在外面：
+/// 它们不可能进条，它们的增减对索引没有任何意义。这不是可有可无的一道过滤——
+/// 我们自己的玻璃板取色每抓一次图，系统就点亮一次录屏指示灯（`StatusIndicator`，
+/// layer 2147483630，每块屏一个），于是名单每两秒变一次、每两秒逼出一遍完整对账，
+/// 而那遍对账每次都只能发现「什么都没变」。实测这个自激回路占掉空置开销的九成。
+///
+/// 消失的窗口查不到属性了，所以要记住：某个窗口号是以「不算数」的身份出现的，
+/// 它消失时也不算数。不记的话只修好一半——指示灯每次**熄灭**照样触发完整对账。
 ///
 /// `nil` = 这一次没读出来。调用方应当照常走完整那一遍：把「没读到」当成「没变化」，
 /// 就是让兜底静悄悄地失效。
 ///
 /// `CGWindowListCreate` 是 CoreGraphics 的公开 C 函数，只是在 Swift 里被标成不可用，
 /// 因此按符号取。它与 `Private.swift` 里那些不是一回事——那些是私有 API，这个不是。
-public func windowListFingerprint() -> UInt64? {
-    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-    for option in [CGWindowListOption([.optionAll, .excludeDesktopElements]),
-                   CGWindowListOption([.optionOnScreenOnly, .excludeDesktopElements])] {
+public final class WindowListWatch {
+    private static let options: [CGWindowListOption] = [
+        [.optionAll, .excludeDesktopElements],
+        [.optionOnScreenOnly, .excludeDesktopElements],
+    ]
+
+    /// 上一轮的名单，以及其中「不算数」的那些。两份名单各记各的：同一个窗口可以在
+    /// 全部名单里而不在上屏名单里，共用一份会让它在一边消失时把另一边的记录也抹掉。
+    private var previous: [Set<CGWindowID>?]
+    private var ignored: [Set<CGWindowID>]
+
+    public init() {
+        previous = Array(repeating: nil, count: Self.options.count)
+        ignored = Array(repeating: [], count: Self.options.count)
+    }
+
+    public func changed() -> Bool? {
+        var answer = false
+        for (slot, option) in Self.options.enumerated() {
+            guard let now = Self.windowList(option) else { return nil }
+            defer { previous[slot] = now }
+            // 头一轮没有基准，说不出变没变
+            guard let before = previous[slot] else { answer = true; continue }
+
+            let gone = before.subtracting(now)
+            let unaccounted = gone.subtracting(ignored[slot])
+            ignored[slot].subtract(gone)
+            if !unaccounted.isEmpty { answer = true }
+
+            let fresh = now.subtracting(before)
+            guard !fresh.isEmpty else { continue }
+            let layers = Self.layers(of: fresh)
+            for id in fresh {
+                // 查不到属性的当成算数：窗口刚生就灭也是一种变化，宁可多对一遍
+                if layers[id] == 0 || layers[id] == nil { answer = true }
+                else { ignored[slot].insert(id) }
+            }
+        }
+        return answer
+    }
+
+    private static func windowList(_ option: CGWindowListOption) -> Set<CGWindowID>? {
         guard let list = _CGWindowListCreate(option.rawValue, kCGNullWindowID)?
             .takeRetainedValue() else { return nil }
         // 窗口号直接存在数组的指针位里，不是 CFNumber
+        var ids = Set<CGWindowID>(minimumCapacity: CFArrayGetCount(list))
         for index in 0..<CFArrayGetCount(list) {
-            let wid = UInt64(UInt(bitPattern: CFArrayGetValueAtIndex(list, index)))
-            hash = (hash ^ wid) &* 0x0000_0100_0000_01b3
+            ids.insert(CGWindowID(UInt(bitPattern: CFArrayGetValueAtIndex(list, index))))
         }
-        // 两份名单之间下一个分隔符，免得「A 少一个、B 多一个」互相抵消
-        hash = (hash ^ 0xffff_ffff) &* 0x0000_0100_0000_01b3
+        return ids
     }
-    return hash
+
+    /// 只问新出现的那几个窗口的 layer，一次问完。逐个问的话固定开销要付很多遍，
+    /// 而指示灯的窗口号每一轮都是新的，这条路每轮都要走。
+    private static func layers(of ids: Set<CGWindowID>) -> [CGWindowID: Int] {
+        // 窗口号要放在数组的**指针位**里，与 `CGWindowListCreate` 返回的那种数组同形。
+        // 装成 CFNumber 的话这个函数一条都查不出来，而且不报错，只是返回空数组。
+        var slots = ids.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        guard let array = CFArrayCreate(nil, &slots, slots.count, nil) else { return [:] }
+        let described = CGWindowListCreateDescriptionFromArray(array) as? [[String: Any]] ?? []
+        var result: [CGWindowID: Int] = [:]
+        for entry in described {
+            guard let id = entry[kCGWindowNumber as String] as? CGWindowID,
+                  let layer = entry[kCGWindowLayer as String] as? Int else { continue }
+            result[id] = layer
+        }
+        return result
+    }
 }
 
 /// 屏幕上的窗口，**从前到后**。

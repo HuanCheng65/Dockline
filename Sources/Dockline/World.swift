@@ -584,7 +584,7 @@ final class World: ObservableObject {
 
     /// 手上还有没认领的窗口时，完整那一遍最长隔多久必来一次。
     private static let unclaimedSweep: TimeInterval = 10
-    private var lastFingerprint: UInt64?
+    private let listWatch = WindowListWatch()
     private var lastFullReconcile = Date.distantPast
 
     /// 完整那一遍此刻还有没有它独有的活儿。
@@ -608,14 +608,13 @@ final class World: ObservableObject {
         // **先花 0.2 毫秒问一句「名单有没有变」，再决定要不要花二十几毫秒去对账。**
         // 绝大多数轮次它什么都发现不了，而这个进程空置时的开销几乎全在这一遍上。
         //
-        // 指纹认窗口的增减与上下屏，名单之外的变化归窗口级通知。两者合起来是完备的，
+        // 哨兵认窗口的增减与上下屏，名单之外的变化归窗口级通知。两者合起来是完备的，
         // 除了还搭不上话的那些窗口——那才是下面这条按时扫一遍的理由，它有名有姓，
         // 不是「以防万一」。
-        let fingerprint = windowListFingerprint()
+        let listMoved = listWatch.changed()
         let sweep = hasUnclaimedWindows
             && Date().timeIntervalSince(lastFullReconcile) >= Self.unclaimedSweep
-        guard sweep || fingerprint == nil || fingerprint != lastFingerprint else { return }
-        lastFingerprint = fingerprint
+        guard sweep || listMoved != false else { return }
         lastFullReconcile = Date()
         let before = Set(store.windows.map(\.id))
         let changed = store.reconcile()
