@@ -52,6 +52,17 @@ enum HookInstaller {
         (hook["command"] as? String)?.contains("dockctl") == true
     }
 
+    /// `dockctl install-hooks` / `uninstall-hooks` 这两个动词。
+    static func run(_ command: String, _ arguments: [String]) -> Never {
+        var settings: String?
+        if let index = arguments.firstIndex(of: "--settings") {
+            guard index + 1 < arguments.count else { fail("--settings 缺少路径") }
+            settings = arguments[index + 1]
+        }
+        print(run(uninstall: command == "uninstall-hooks", settings: settings))
+        exit(0)
+    }
+
     static func run(uninstall: Bool, settings: String? = nil) -> String {
         let url = settingsURL(settings)
         var root: [String: Any] = [:]

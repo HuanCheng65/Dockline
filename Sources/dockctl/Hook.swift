@@ -332,3 +332,87 @@ enum HookAdapter {
         return clamp(line)
     }
 }
+
+/// `dockctl hook` 这个动词：事件 JSON 从 stdin 来，翻译见 `HookAdapter`。
+///
+/// **报状态的那些事件不许往 stdout 写任何东西**——hook 的 stdout 是它与 Claude Code 之间
+/// 的通道，状态上报没有资格在那上面说话。出错走 stderr 加非零退出：那是非阻塞的错误，
+/// 看得见，又不会把用户的 agent 拦下来。
+///
+/// `PermissionRequest` 是唯一的例外，它的 stdout **就是**通道：那个事件不是在报状态，
+/// 是在替用户做一次决定（见 `ask`）。
+enum Hook {
+    static func run() -> Never {
+        let input = FileHandle.standardInput.readDataToEndOfFile()
+        guard let json = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any] else {
+            fail("hook 的输入不是 JSON 对象")
+        }
+        guard let session = json["session_id"] as? String, !session.isEmpty else {
+            fail("hook 事件缺少 session_id")
+        }
+        if json["hook_event_name"] as? String == "PermissionRequest" { ask(json, session: session) }
+        guard var payload = HookAdapter.payload(json) else { exit(0) }
+        payload["session"] = session
+        payload["pid"] = Int(Report.hostApp())
+        // cwd 以事件里那份为准：hook 进程的工作目录未必是会话的。
+        if let cwd = json["cwd"] as? String { payload["cwd"] = cwd }
+        // 每个事件都重算一次会话名，不只在提交提示词那一次：会话标题会随对话变，
+        // 而它就是格子第一行的字。
+        if payload["command"] as? String == "push" {
+            if let task = HookAdapter.task(json) { payload["task"] = task }
+            // 用户这一轮的原话。面板里单占一行，与任务名分工：一个是这件事叫什么，
+            // 一个是这件事怎么被交代的。
+            if let prompt = json["prompt"] as? String, !prompt.isEmpty {
+                payload["prompt"] = prompt
+            }
+            payload["agent"] = "Claude Code"
+        }
+        Report.post(payload)
+        exit(0)
+    }
+
+    /// 就地授权（实时状态设计 §4.7）：把这次权限请求摆到条上，等用户在那儿按一下。
+    ///
+    /// 阻塞期间 Claude Code 停在这一步不动，终端里不会弹它自己的对话框——实测确认过。
+    /// 只有一样东西会在阻塞期间照常发生：约六秒后那条 `Notification` 通知，
+    /// 它走的是自己的计时器，不等这个 hook。
+    ///
+    /// **条不接手就什么都不打印。** 不打印决定 = Claude Code 照常走自己那套权限流程，
+    /// 所以「条没在跑」「连接断了」「这个进程被超时杀掉」全都退回现状，
+    /// 没有哪条失败路径会静默地放行。
+    private static func ask(_ json: [String: Any], session: String) -> Never {
+        guard let tool = json["tool_name"] as? String else {
+            fail("PermissionRequest 缺少 tool_name")
+        }
+        // 提问与计划审阅也会走这个事件，但它们**批不下来**：Claude Code 对「需要用户亲自
+        // 交互」的工具只认带上答案的放行，光说一句「允许」会被它忽略、照旧弹自己的界面
+        // （实测确认）。在条上摆一个按下去没有反应的按钮，比不摆更糟——那两档照旧只报状态，
+        // 由 `HookAdapter` 那条路显示「待回答」「待审阅」。
+        guard !["AskUserQuestion", "ExitPlanMode"].contains(tool) else { exit(0) }
+        let preview = HookAdapter.preview(json)
+        var payload: [String: Any] = [
+            "session": session,
+            "pid": Int(Report.hostApp()),
+            "verb": HookAdapter.verb(tool),
+            "lines": preview.lines,
+            "more": preview.more,
+            "agent": "Claude Code",
+        ]
+        if let cwd = json["cwd"] as? String { payload["cwd"] = cwd }
+        if let task = HookAdapter.task(json) { payload["task"] = task }
+        if let object = HookAdapter.object(json) { payload["object"] = object }
+        guard let answer = Ask.request(payload) else { exit(0) }
+
+        var decision: [String: Any] = ["behavior": answer.allow ? "allow" : "deny"]
+        // 拒绝的理由会原样进模型的上下文，让它知道这一步为什么没走成
+        if let message = answer.message { decision["message"] = message }
+        let output: [String: Any] = [
+            "hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: output) else {
+            fail("生成授权决定失败")
+        }
+        FileHandle.standardOutput.write(data)
+        exit(0)
+    }
+}
