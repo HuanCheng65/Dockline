@@ -191,10 +191,16 @@ final class NowPlayingReader {
 
 /// 从封面里取一个能用的主色。
 enum Artwork {
-    /// 缩到很小再挑，而不是取平均：平均色几乎总是发灰的，那正好把「每首歌长得不一样」
-    /// 这件事抹平。这里挑的是**又艳又不太暗**的那个像素，再把明度压进一个好看的区间。
+    /// 取的是**占地方的那个色相**，不是最艳的那个像素。
+    ///
+    /// 先前挑单个最艳像素，结果是一张以蓝为主的封面给出了粉色：单个像素本来就是噪声，
+    /// JPEG 的一块边缘瑕疵就能当选。这里改成按色相分桶投票，每个像素按自己的鲜艳程度
+    /// 投，于是一大片中等鲜艳的蓝压得过几个极艳的杂点。
+    ///
+    /// 桶内的色相用单位向量求平均：色相是环形的，350° 与 10° 直接取算术平均会得到 180°，
+    /// 正好是它们的补色。
     static func tint(_ image: NSImage) -> Color {
-        let side = 16
+        let side = 32
         guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return .accentColor
         }
@@ -205,7 +211,14 @@ enum Artwork {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return .accentColor }
         context.draw(source, in: CGRect(x: 0, y: 0, width: side, height: side))
 
-        var best: (score: CGFloat, color: NSColor)?
+        let bins = 24
+        var weights = [CGFloat](repeating: 0, count: bins)
+        var vectors = [(x: CGFloat, y: CGFloat)](repeating: (0, 0), count: bins)
+        var saturations = [CGFloat](repeating: 0, count: bins)
+        var brightnesses = [CGFloat](repeating: 0, count: bins)
+        var litCount = 0
+        var litBrightness: CGFloat = 0
+
         for index in stride(from: 0, to: pixels.count, by: 4) {
             let color = NSColor(red: CGFloat(pixels[index]) / 255,
                                 green: CGFloat(pixels[index + 1]) / 255,
@@ -213,17 +226,43 @@ enum Artwork {
                                 alpha: 1).usingColorSpace(.deviceRGB) ?? .gray
             let saturation = color.saturationComponent
             let brightness = color.brightnessComponent
-            // 太暗的像素颜色不可信（黑边、阴影），给它压分而不是直接扔掉——
-            // 整张都很暗的封面还是要给得出一个色
-            let score = saturation * (brightness < 0.15 ? brightness : 1)
-            if score > (best?.score ?? -1) { best = (score, color) }
+            // 太暗的像素色相不可信：黑边和阴影里剩下的那点色差全是噪声
+            guard brightness > 0.18 else { continue }
+            litCount += 1
+            litBrightness += brightness
+            // 鲜艳度取平方：一个 s=0.9 的像素只抵九个 s=0.3 的，
+            // 少数几个杂点因此压不过一整片底色
+            let weight = saturation * saturation * brightness
+            let hue = color.hueComponent
+            let bin = min(Int(hue * CGFloat(bins)), bins - 1)
+            let radians = hue * 2 * .pi
+            weights[bin] += weight
+            vectors[bin] = (vectors[bin].x + cos(radians) * weight,
+                            vectors[bin].y + sin(radians) * weight)
+            saturations[bin] += saturation * weight
+            brightnesses[bin] += brightness * weight
         }
-        guard let picked = best?.color else { return .accentColor }
-        // 压进一个好看的区间：太艳的会在浅色外观下刺眼，太暗的在深色外观下看不出来
-        let tuned = NSColor(hue: picked.hueComponent,
-                            saturation: min(max(picked.saturationComponent, 0.35), 0.85),
-                            brightness: min(max(picked.brightnessComponent, 0.45), 0.9),
+
+        // 整张封面没有一处有颜色（黑白照、纯灰底）。这不是取色失败，
+        // 它的主色本来就是灰的，那就给灰——不为它编一个颜色出来。
+        guard litCount > 0 else { return .accentColor }
+        guard let top = weights.indices.max(by: { weights[$0] < weights[$1] }), weights[top] > 0
+        else {
+            return Color(nsColor: NSColor(white: clampBrightness(litBrightness / CGFloat(litCount)),
+                                          alpha: 1))
+        }
+        let weight = weights[top]
+        let hue = atan2(vectors[top].y, vectors[top].x) / (2 * .pi)
+        // 压明度是为了在半透明的条上还看得见：浅色外观下太暗的读不出，深色外观下太亮的发白。
+        // 鲜艳度只封顶不托底——托底等于给一张本来素净的封面凭空造一个颜色。
+        let tuned = NSColor(hue: hue < 0 ? hue + 1 : hue,
+                            saturation: min(saturations[top] / weight, 0.85),
+                            brightness: clampBrightness(brightnesses[top] / weight),
                             alpha: 1)
         return Color(nsColor: tuned)
+    }
+
+    private static func clampBrightness(_ value: CGFloat) -> CGFloat {
+        min(max(value, 0.45), 0.9)
     }
 }
