@@ -296,7 +296,7 @@ struct PreviewCard: View {
     /// 必须提前算准，而定高的行不需要经过量文字那条容易出错的路。
     private static let askLineHeight: CGFloat = 15
     private static let askBoxPad: CGFloat = 5
-    private static let buttonHeight: CGFloat = 24
+    private static let buttonHeight: CGFloat = 30
 
     private static func askHeight(_ ask: Session.Ask) -> CGFloat {
         var height = rowHeight
@@ -575,8 +575,9 @@ struct PreviewCard: View {
                 .foregroundStyle(.tertiary)
                 .frame(height: Self.countHeight, alignment: .leading)
         }
-        HStack(spacing: 6) {
-            Spacer(minLength: 0)
+        // 两个键平分整行。这张卡此刻的用途就是按下去，而缩在右下角的一对小键
+        // 既难点，也在说「这不是重点」。
+        HStack(spacing: 8) {
             askButton(localized("activity.ask.deny"), prominent: false) {
                 onAnswer(ask.id, false)
             }
@@ -601,9 +602,9 @@ struct PreviewCard: View {
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-                .padding(.horizontal, 12)
+                .frame(maxWidth: .infinity)
                 .frame(height: Self.buttonHeight)
                 .background(prominent
                     ? AnyShapeStyle(Color.accentColor)
