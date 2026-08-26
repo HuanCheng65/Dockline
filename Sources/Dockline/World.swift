@@ -1596,6 +1596,12 @@ final class World: ObservableObject {
         CFPreferencesAppSynchronize("com.apple.dock" as CFString)
         let value = CFPreferencesCopyAppValue("trash-full" as CFString,
                                               "com.apple.dock" as CFString) as? NSNumber
-        trashFull = value?.boolValue ?? false
+        let fresh = value?.boolValue ?? false
+        // 先比再赋值，理由与上面的 `badges` 一模一样：`@Published` 赋同一个值照样发
+        // `objectWillChange`，而整条 bar 都观察着 World。每 2 秒读一次废纸篓，就等于
+        // 每 2 秒把整棵视图树重算一遍、再走一次 `NSHostingView.layout()`——实测这一句
+        // 单独占掉空置开销的三分之一，而这三分之一里没有任何东西真的变了。
+        guard fresh != trashFull else { return }
+        trashFull = fresh
     }
 }
