@@ -579,12 +579,41 @@ final class World: ObservableObject {
 
     // MARK: 通道三
 
+    /// 手上还有没认领的窗口时，完整那一遍最长隔多久必来一次。
+    private static let unclaimedSweep: TimeInterval = 10
+    private var lastFingerprint: UInt64?
+    private var lastFullReconcile = Date.distantPast
+
+    /// 完整那一遍此刻还有没有它独有的活儿。
+    ///
+    /// 指纹只认名单。名单之外的变化——标题、边界——各有各的窗口级通知，**唯独没拿到
+    /// AX 引用的窗口一条都收不到**：跨 Space 的存量窗口在被认领之前就是这样，CG 那一遍
+    /// 是它们唯一的信息源。这种窗口一个都没有的时候，指纹就是完备的判据，不必再定时来。
+    ///
+    /// 新出现的窗口不在此列：它一出现名单就变了，指纹认得出。这里说的只是**已经知道、
+    /// 却还搭不上话**的那些。
+    private var hasUnclaimedWindows: Bool {
+        store.windows.contains { $0.element == nil }
+    }
+
     func reconcile() {
         // 跟着对账 tick 采一次背景亮度。这里必须是周期性的，不能只挂在事件上：
         // 条底下那个窗口自己换了内容（切页、播视频、换主题）不触发我们的任何事件，
         // 而那正是最常见的情况。单次约 35ms，异步，只在条可见时进行。
         sampleBackdrop()
         guard accessibility else { return }
+        // **先花 0.2 毫秒问一句「名单有没有变」，再决定要不要花二十几毫秒去对账。**
+        // 绝大多数轮次它什么都发现不了，而这个进程空置时的开销几乎全在这一遍上。
+        //
+        // 指纹认窗口的增减与上下屏，名单之外的变化归窗口级通知。两者合起来是完备的，
+        // 除了还搭不上话的那些窗口——那才是下面这条按时扫一遍的理由，它有名有姓，
+        // 不是「以防万一」。
+        let fingerprint = windowListFingerprint()
+        let sweep = hasUnclaimedWindows
+            && Date().timeIntervalSince(lastFullReconcile) >= Self.unclaimedSweep
+        guard sweep || fingerprint == nil || fingerprint != lastFingerprint else { return }
+        lastFingerprint = fingerprint
+        lastFullReconcile = Date()
         let before = Set(store.windows.map(\.id))
         let changed = store.reconcile()
         diagnostics.timing = store.timing

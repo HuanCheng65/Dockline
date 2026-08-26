@@ -175,6 +175,44 @@ public func enumerateCGWindows() -> [CGWindowRecord] {
     cgWindows(.optionAll)
 }
 
+@_silgen_name("CGWindowListCreate")
+private func _CGWindowListCreate(_ option: UInt32, _ relativeTo: CGWindowID) -> Unmanaged<CFArray>?
+
+/// 窗口清单此刻的指纹。**只取窗口号，不建那一堆字典。**
+///
+/// `CGWindowListCopyWindowInfo` 每次都要为屏幕上几百个窗口各建一个字典（标题、边界、
+/// 拥有者、透明度……），本机实测 4.19 毫秒；同一份名单只取窗口号是 0.09 毫秒，差四十倍。
+/// 而对账绝大多数轮次什么都兜不到——那几毫秒是纯粹的空转，且它是这个进程空置时几乎
+/// 全部的开销。
+///
+/// 两份名单都要：`optionAll` 那份认窗口的增减，上屏那份认上屏与下屏（最小化、切到别的
+/// Space，在 CG 层面就是从这一份里消失）。两份都没变，对账这一轮能发现的增减就都没发生。
+///
+/// **它替代不了对账。** 标题与边界不在指纹里，改标题、把窗口拖到另一块屏都不会让它变——
+/// 那两样归 AX 通知，以及每隔一段必来一次的那一遍完整对账（见 `World.reconcile`）。
+///
+/// `nil` = 这一次没读出来。调用方应当照常走完整那一遍：把「没读到」当成「没变化」，
+/// 就是让兜底静悄悄地失效。
+///
+/// `CGWindowListCreate` 是 CoreGraphics 的公开 C 函数，只是在 Swift 里被标成不可用，
+/// 因此按符号取。它与 `Private.swift` 里那些不是一回事——那些是私有 API，这个不是。
+public func windowListFingerprint() -> UInt64? {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    for option in [CGWindowListOption([.optionAll, .excludeDesktopElements]),
+                   CGWindowListOption([.optionOnScreenOnly, .excludeDesktopElements])] {
+        guard let list = _CGWindowListCreate(option.rawValue, kCGNullWindowID)?
+            .takeRetainedValue() else { return nil }
+        // 窗口号直接存在数组的指针位里，不是 CFNumber
+        for index in 0..<CFArrayGetCount(list) {
+            let wid = UInt64(UInt(bitPattern: CFArrayGetValueAtIndex(list, index)))
+            hash = (hash ^ wid) &* 0x0000_0100_0000_01b3
+        }
+        // 两份名单之间下一个分隔符，免得「A 少一个、B 多一个」互相抵消
+        hash = (hash ^ 0xffff_ffff) &* 0x0000_0100_0000_01b3
+    }
+    return hash
+}
+
 /// 屏幕上的窗口，**从前到后**。
 ///
 /// 必须用 `.optionOnScreenOnly`：只有这一档的返回顺序是 z 序。索引用的 `.optionAll`
