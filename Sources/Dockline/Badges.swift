@@ -22,9 +22,13 @@ final class BadgeReader {
 
     /// 程序坞重启（如改过偏好后 killall）会让缓存的元素全部失效，按 pid 变化重建。
     private func refreshDockItemsIfNeeded() {
+        // 认得出还是那个程序坞就到此为止。**不要每轮都去枚举全部运行中的 App**——
+        // 那要向 LaunchServices 逐个问 bundle ID，而绝大多数轮次它只是把同一个 pid
+        // 又认了一遍。实测那一下占掉空置开销的一成半。
+        if let dockPID, !dockItems.isEmpty,
+           NSRunningApplication(processIdentifier: dockPID)?.isTerminated == false { return }
         guard let dock = NSWorkspace.shared.runningApplications
             .first(where: { $0.bundleIdentifier == "com.apple.dock" }) else { return }
-        guard dockPID != dock.processIdentifier || dockItems.isEmpty else { return }
         dockPID = dock.processIdentifier
         dockItems = [:]
 

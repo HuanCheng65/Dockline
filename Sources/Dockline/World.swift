@@ -86,6 +86,8 @@ final class World: ObservableObject {
     private let observers = AXObserverHub()
     private var iconCache: [pid_t: NSImage] = [:]
     private var fileIconCache: [URL: NSImage] = [:]
+    private var nameCache: [URL: String] = [:]
+    private var bundleURLCache: [pid_t: URL] = [:]
 
     /// 写别人家窗口几何的唯一出口。三处摆位（铺满 / 分屏、搬到另一块屏、结果纠正）
     /// 全部从它走，报备因此不会漏。见 `WindowPlacer`。
@@ -836,8 +838,23 @@ final class World: ObservableObject {
 
     /// App 的本地化名称。用包文件名会显示成「Finder」「System Settings」，
     /// 而系统各处显示的是「访达」「系统设置」。
+    ///
+    /// **要记住。** 这个名字是在视图的 body 里取的，条一重排就每一项各取一次，而它走的是
+    /// LaunchServices 的同步 XPC（实测这一项占掉重排开销的一成半）。名字只有用户改名时
+    /// 才会变，而那时条上那一项本来就要重新出现一次。
     func displayName(of url: URL) -> String {
-        FileManager.default.displayName(atPath: url.path)
+        if let cached = nameCache[url] { return cached }
+        let name = FileManager.default.displayName(atPath: url.path)
+        nameCache[url] = name
+        return name
+    }
+
+    /// 这个进程的 App 包在哪儿。与图标同一个道理：也是在 body 里取的，也走 XPC。
+    func bundleURL(pid: pid_t) -> URL? {
+        if let cached = bundleURLCache[pid] { return cached }
+        guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL else { return nil }
+        bundleURLCache[pid] = url
+        return url
     }
 
     /// 文件夹、垃圾桶一类的文件图标
@@ -860,8 +877,7 @@ final class World: ObservableObject {
     }
 
     func icon(for cell: BarWindow) -> NSImage? {
-        icon(app: NSRunningApplication(processIdentifier: cell.pid)?.bundleURL,
-             bundleID: cell.bundleID)
+        icon(app: bundleURL(pid: cell.pid), bundleID: cell.bundleID)
     }
 
     /// 条上还没拿到权限时顶替内容的提示。
