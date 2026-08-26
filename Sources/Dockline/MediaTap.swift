@@ -421,10 +421,19 @@ final class MediaTap {
                 guard let data = buffer.mData else { continue }
                 let samples = data.assumingMemoryBound(to: Float.self)
                 let frames = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
-                for index in 0..<frames {
-                    ring[head] = samples[index]
-                    head = (head + 1) % Meter.size
-                    pending += 1
+                var offset = 0
+                while offset < frames {
+                    // 成段搬，一次搬到「环写到头」或「攒够一跳」为止，取近的那个。
+                    // 逐个样本搬的代价不在算术上，而在每写一格都要过一次数组的边界检查
+                    // 与唯一性检查——48kHz 下那是每秒四万八千次，实测占掉音频线程的大头。
+                    let run = min(Meter.size - head, Meter.hop - pending, frames - offset)
+                    ring.withUnsafeMutableBufferPointer { target in
+                        target.baseAddress!.advanced(by: head)
+                            .update(from: samples.advanced(by: offset), count: run)
+                    }
+                    head = (head + run) % Meter.size
+                    pending += run
+                    offset += run
                     if pending >= Meter.hop {
                         pending = 0
                         if let analysed = analyse() { result = analysed }
@@ -436,8 +445,16 @@ final class MediaTap {
 
         private func analyse() -> (flux: [Double], level: [Double])? {
             guard let fft, !edges.isEmpty else { return nil }
-            // 环形缓冲展平：head 是下一个要写的位置，也就是最老的那个样本
-            for index in 0..<Meter.size { frame[index] = ring[(head + index) % Meter.size] }
+            // 环形缓冲展平：head 是下一个要写的位置，也就是最老的那个样本。
+            // 分两段搬，理由同 `consume`：逐格取的代价在检查上，不在取模上。
+            let tail = Meter.size - head
+            frame.withUnsafeMutableBufferPointer { target in
+                ring.withUnsafeBufferPointer { source in
+                    target.baseAddress!.update(from: source.baseAddress! + head, count: tail)
+                    target.baseAddress!.advanced(by: tail).update(from: source.baseAddress!,
+                                                                  count: head)
+                }
+            }
 
             // 绝对静音门走时域均方根。它是真正的 dBFS，与 FFT 怎么定标无关。
             var mean: Float = 0
