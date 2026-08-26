@@ -2043,6 +2043,75 @@ final class EqualizerBars: NSView {
     }
 }
 
+/// 会话在跑时格子上那一圈呼吸的边框。
+///
+/// **不走 SwiftUI 的动画。** 一个不停的透明度动画会把 SwiftUI 的渲染循环一直开着：
+/// 哪怕 `body` 一秒才求值一次，显示列表照样每个显示帧重算一遍整棵树。实测这一圈占掉
+/// 主线程 4 个百分点的 CPU，而它画的只是一个矩形。交给 Core Animation 就没有这笔开销——
+/// 插值在渲染服务那边做，App 这一侧每帧什么都不做。
+///
+/// 相位也因此不再是问题。先前用 `phaseAnimator` 是因为格子每收到一次上报就重建一遍，
+/// `onAppear` 不会再来，靠 `value:` 触发的 `repeatForever` 只跑第一轮就冻住；而图层上的
+/// 动画由图层自己拿着，视图重建碰不到它。
+private struct BreathingRing: NSViewRepresentable {
+    let radius: CGFloat
+
+    func makeNSView(context: Context) -> BreathingRingView { BreathingRingView() }
+
+    func updateNSView(_ view: BreathingRingView, context: Context) { view.radius = radius }
+}
+
+/// 见 `BreathingRing`。
+final class BreathingRingView: NSView {
+    /// 两头的不透明度与那一段的时长，与其余几档的描边同宽。
+    private static let dim = 0.16
+    private static let bright = 0.7
+    private static let period: CFTimeInterval = 1.1
+    private static let line: CGFloat = 2
+
+    var radius: CGFloat = 0 {
+        didSet {
+            guard radius != oldValue else { return }
+            layer?.cornerRadius = radius
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else {
+            layer?.removeAllAnimations()
+            return
+        }
+        wantsLayer = true
+        guard let layer else { return }
+        layer.cornerRadius = radius
+        layer.cornerCurve = .continuous
+        layer.borderWidth = Self.line
+        paint()
+        let breath = CABasicAnimation(keyPath: "opacity")
+        breath.fromValue = Self.dim
+        breath.toValue = Self.bright
+        breath.duration = Self.period
+        breath.autoreverses = true
+        breath.repeatCount = .infinity
+        breath.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.opacity = Float(Self.dim)
+        layer.add(breath, forKey: "breath")
+    }
+
+    /// 边框取的是随外观走的标签色，与 SwiftUI 那边的 `.primary` 同一个。
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint()
+    }
+
+    private func paint() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = NSColor.labelColor.cgColor
+        }
+    }
+}
+
 private struct SessionEdge: View {
     let session: Session
     let radius: CGFloat
@@ -2062,13 +2131,10 @@ private struct SessionEdge: View {
             } else {
                 switch session.salience {
                 case .working:
-                    // 相位不放在视图的 `@State` 里。格子现在每收到一次上报就重建一遍，
-                    // `onAppear` 不会再来，靠 `value:` 触发的 `repeatForever` 于是只跑
-                    // 第一轮就冻住（实测：呼吸一会儿就停了）。`phaseAnimator` 自己循环，
-                    // 不依赖任何一次状态翻转，视图重建顶多闪一帧。
-                    shape.stroke(.primary, lineWidth: 2)
-                        .phaseAnimator([0.16, 0.7]) { view, phase in view.opacity(phase) }
-                            animation: { _ in .easeInOut(duration: 1.1) }
+                    // 呼吸交给 Core Animation，不交给 SwiftUI（见 `BreathingRing`）。
+                    // 描边落在路径两侧，各占一半，所以往外让一点、圆角跟着加一点，
+                    // 才与其余几档那圈 `stroke` 落在同一条边上。
+                    BreathingRing(radius: radius + 1).padding(-1)
                 case .waiting:
                     shape.stroke(.tint, lineWidth: 2)
                 case .finished(let outcome):
