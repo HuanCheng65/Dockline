@@ -27,7 +27,7 @@ final class World: ObservableObject {
     @Published var accessibility = false { didSet { rebuild() } }
     @Published var screenRecording = false { didSet { rebuild() } }
     /// 当前前台窗口——底色「亮底」档的唯一依据
-    @Published private(set) var frontWindow: CGWindowID?
+    @Published private(set) var frontWindow: CGWindowID? { didSet { noteFrontSeen() } }
     /// 正在启动的 App。系统 Dock 用图标弹跳表示「点到了，正在开」——
     /// 开一个 App 到窗口出现有好几秒，没有反馈时用户会以为没点上。
     @Published private(set) var launching: Set<String> = []
@@ -121,6 +121,21 @@ final class World: ObservableObject {
 
     func markStatusSeen(window id: CGWindowID, of pid: pid_t) {
         sessionCenter.markSeen(sessions[.window(id)] != nil ? .window(id) : .app(pid))
+    }
+
+    /// 终态的「看见」只有这一条出口：**那扇窗口到了前台**。
+    ///
+    /// 点条上那一格、⌘Tab 过去、直接点窗口、召回——用户能到达那扇窗口的路有好几条，
+    /// 而它们最终都汇到「谁在前台」这一个值上。判定因此挂在这个值上，不逐条去接：
+    /// 漏掉其中一条的代价是一条永远退不下去的终态，而这正是先前只接了「点格子」
+    /// 那一条时的样子。
+    ///
+    /// 上报变化时也要问一次：任务结束的那一刻用户可能正看着那扇窗口，此时前台没有变过，
+    /// 而「已经在看着」与「刚切过去」是同一件事。
+    private func noteFrontSeen() {
+        guard let id = frontWindow, let pid = windows.first(where: { $0.id == id })?.pid
+        else { return }
+        markStatusSeen(window: id, of: pid)
     }
 
     /// 这一格该显示谁的会话。窗口级的先问——它更精确；问不到再退回 App 级，
@@ -445,6 +460,7 @@ final class World: ObservableObject {
         sessionCenter.onChange = { [weak self] in
             guard let self else { return }
             sessions = sessionCenter.display
+            noteFrontSeen()
         }
         nowPlayingReader.onChange = { [weak self] playing in
             guard let self else { return }

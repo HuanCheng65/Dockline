@@ -1423,11 +1423,8 @@ struct BarContent: View {
             }
             return
         }
-        // 未读语义的出口：点过这一格就算看见了，终态退场。放在召回之前，
-        // 因为召回本身可能改变这一格是谁。
-        if slot.status?.isUnread == true {
-            model.world.markStatusSeen(window: cell.id, of: cell.pid)
-        }
+        // 终态的退场不在这里办：点这一格是「到那扇窗口去」的其中一条路，而所有的路
+        // 都汇到「谁在前台」上，判定挂在那里（见 `World.noteFrontSeen`）。
         // 点已经在前台的窗口 = 收起它。没有 AX 引用的窗口最小化不了，
         // 但它也不可能是前台窗口，走召回。
         if slot.isFront, cell.window.element != nil {
