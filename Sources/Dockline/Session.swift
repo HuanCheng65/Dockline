@@ -2,6 +2,35 @@ import AppKit
 import DocklineCore
 import SwiftUI
 
+/// 上报送来的那个动作词。
+///
+/// **它是一套归一化的共用词汇，不是某个 agent 的工具名。** 翻译在上报方的适配器里做完
+/// （见 `dockctl/Verb.swift`）：条这边只认这几个词，因此再接一个 agent 时，本地化资源
+/// 与图标表都不必跟着长。
+///
+/// 认不出的动作原样带着它自己的名字过来，文案与图标各自退回默认——泛化的说法
+/// （「处理中」一类）把「这一步在干什么」这个唯一要答的问题答成了废话，而原名至少是真的。
+struct Verb: Equatable {
+    let name: String
+
+    var text: String { localized("activity.verb.\(name)", fallback: name) }
+
+    /// SF Symbols，不进本地化资源——图标不是文案。
+    var symbol: String {
+        switch name {
+        case "read": return "doc.text"
+        case "edit": return "pencil.line"
+        case "write": return "square.and.pencil"
+        case "run": return "terminal"
+        case "search": return "magnifyingglass"
+        case "fetch", "websearch": return "globe"
+        case "subtask": return "person.2"
+        case "todo": return "checklist"
+        default: return "circle.dashed"
+        }
+    }
+}
+
 /// 一格上的活动状态（计划书 §3、实时状态设计 §2–§3）。
 ///
 /// **显著度只有三档，由「此刻谁在等谁」决定，不由状态种类决定。** 状态的种类以后还会加
@@ -66,15 +95,12 @@ struct Session: Equatable {
     /// 三行读起来是一张表，而不是三句碰巧开头相似的话。拼好了就再也拆不开。
     struct Step: Equatable, Identifiable {
         let id: Int
-        let tool: String
+        let verb: Verb
         let object: String?
         /// 完整的那一份（命令全文一类）。当前那一行给它，历史行给短的。
         let detail: String?
         /// 量化的结果：`+12 −5` 一类。缀在行尾右对齐。
         let metric: String?
-
-        var verb: String { localized("activity.tool.\(tool)", fallback: tool) }
-        var symbol: String { Session.symbol(tool: tool) }
     }
 
     /// 一次等着你批的授权（实时状态设计 §4.7）。
@@ -95,31 +121,13 @@ struct Session: Equatable {
         }
 
         let id: UUID
-        let tool: String
+        let verb: Verb
         let object: String?
         /// 要判断的那一段：命令全文、增删行、要写进去的内容。
         let lines: [Line]
         /// 截掉了多少行。**必须说出来**——一份被悄悄截短的 diff 会让人以为改动就这么点。
         let more: Int
         let since: Date
-
-        var verb: String { localized("activity.tool.\(tool)", fallback: tool) }
-        var symbol: String { Session.symbol(tool: tool) }
-    }
-
-    /// 工具的图标。SF Symbols，不进本地化资源——图标不是文案。
-    static func symbol(tool: String) -> String {
-        switch tool {
-        case "Read": return "doc.text"
-        case "Edit", "NotebookEdit": return "pencil.line"
-        case "Write": return "square.and.pencil"
-        case "Bash": return "terminal"
-        case "Grep", "Glob": return "magnifyingglass"
-        case "WebFetch", "WebSearch": return "globe"
-        case "Task", "Agent": return "person.2"
-        case "TodoWrite": return "checklist"
-        default: return "circle.dashed"
-        }
     }
 
     /// 当前状况那一行的图标。等待的四档各给各的：那一眼要读出「在等什么」，
@@ -127,7 +135,7 @@ struct Session: Equatable {
     var symbol: String {
         switch salience {
         case .working:
-            return tool.map(Session.symbol(tool:)) ?? "ellipsis"
+            return verb?.symbol ?? "ellipsis"
         case .waiting(let waiting):
             switch waiting {
             case .question: return "questionmark.bubble"
@@ -148,8 +156,8 @@ struct Session: Equatable {
     var stateParts: (verb: String, object: String?) {
         switch salience {
         case .working:
-            guard let tool else { return (localized("activity.thinking"), nil) }
-            return (localized("activity.tool.\(tool)", fallback: tool), object)
+            guard let verb else { return (localized("activity.thinking"), nil) }
+            return (verb.text, object)
         case .waiting(let waiting):
             return (waiting.text, nil)
         case .finished(let outcome):
@@ -162,7 +170,7 @@ struct Session: Equatable {
     /// 在跑、且这一步带着工具时，**最后一步就是当前那一行**——它已经在下面单独占一行了，
     /// 这里再列一遍就成了两条一模一样的记录（实测撞到过）。
     var history: [Step] {
-        if case .working = salience, tool != nil { return steps.dropLast() }
+        if case .working = salience, verb != nil { return steps.dropLast() }
         return steps
     }
 
@@ -171,7 +179,7 @@ struct Session: Equatable {
     /// 在跑、且这一步带着工具时给**完整的那一份**——命令全文正是此刻要判断的东西。
     /// 正在生成时它没有对象：那时把上一步残留的命令摆在这里，等于说它还在跑那条命令。
     var stateDetail: (object: String?, metric: String?) {
-        guard case .working = salience, tool != nil, let last = steps.last else {
+        guard case .working = salience, verb != nil, let last = steps.last else {
             return (stateParts.object, nil)
         }
         return (last.detail ?? stateParts.object, last.metric)
@@ -192,11 +200,11 @@ struct Session: Equatable {
     /// 它是格子上第一行的字，也是这条会话的名字。不用 cwd 目录名：目录名回答的是
     /// 「哪个项目」，而同一个项目里同时会有好几件事在跑，你要找的是事。
     var task: String?
-    /// 此刻在调用哪个工具，以及作用在什么上。
+    /// 此刻在做哪个动作，以及作用在什么上。
     ///
     /// **上报端不渲染文字**，只送这两样：界面文案统一走本地化资源，而 `dockctl` 不带
     /// 资源包，让它拼好一句中文送过来，等于把界面文字散到条外面去。
-    var tool: String?
+    var verb: Verb?
     var object: String?
     /// 与三档正交：在跑的同时可以有确定进度。nil = 边缘只呼吸，不画环。
     var progress: Double?
@@ -236,13 +244,11 @@ struct Session: Equatable {
 
     /// 此刻在做什么，渲染成一句话。nil = 上报没说，由 `stateLine` 退回「生成中」。
     ///
-    /// 认不出的工具直接显示它的原名。给一个泛化的说法（「处理中」一类）等于把
-    /// 「这一步在干什么」这个唯一要答的问题答成废话，而工具原名至少是真的。
+    /// 认不出的动作直接显示上报送来的原名（见 `Verb`）。
     var action: String? {
-        guard let tool else { return nil }
-        let verb = localized("activity.tool.\(tool)", fallback: tool)
-        guard let object, !object.isEmpty else { return verb }
-        return localized("activity.action.format", verb, object)
+        guard let verb else { return nil }
+        guard let object, !object.isEmpty else { return verb.text }
+        return localized("activity.action.format", verb.text, object)
     }
 
     /// 格子上第二行的字：此刻是什么状况。第一行是 `task`。

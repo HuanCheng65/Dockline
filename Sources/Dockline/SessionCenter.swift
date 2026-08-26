@@ -85,7 +85,7 @@ final class SessionCenter {
     func receiveAsk(_ id: UUID, _ payload: [String: Any]) {
         guard let host = (payload["pid"] as? Int).map(pid_t.init),
               let key = Self.key(payload, host: host),
-              let tool = payload["tool"] as? String,
+              let verb = (payload["verb"] as? String).map(Verb.init(name:)),
               let raw = payload["lines"] as? [[String]] else {
             Timeline.log("⚠️ 收到格式不符的授权请求，已交回 Claude Code 自行处理：\(payload)")
             onDecline?(id)
@@ -101,7 +101,7 @@ final class SessionCenter {
             lines.append(Session.Ask.Line(id: index, sign: sign, text: pair[1]))
         }
         pending[id] = Pending(key: key, host: host,
-                              ask: Session.Ask(id: id, tool: tool,
+                              ask: Session.Ask(id: id, verb: verb,
                                                 object: payload["object"] as? String,
                                                 lines: lines,
                                                 more: payload["more"] as? Int ?? 0,
@@ -168,10 +168,10 @@ final class SessionCenter {
             // 会话名下。动作相反，每次都换——它说的是「此刻」。
             // `since` 同样粘住，但只在这一档没变的时候：它的含义是「这一档开始于何时」，
             // 等待队列按它排序，重置一次就等于插了一次队。
-            let tool = userInfo["tool"] as? String
+            let verb = (userInfo["verb"] as? String).map(Verb.init(name:))
             let object = userInfo["object"] as? String
-            let step = tool.map {
-                Session.Step(id: (previous?.steps.last?.id ?? 0) + 1, tool: $0, object: object,
+            let step = verb.map {
+                Session.Step(id: (previous?.steps.last?.id ?? 0) + 1, verb: $0, object: object,
                               detail: userInfo["detail"] as? String,
                               metric: userInfo["metric"] as? String)
             }
@@ -181,7 +181,7 @@ final class SessionCenter {
             let carried = turn ? nil : previous
             let session = Session(salience: salience,
                                     task: userInfo["task"] as? String ?? previous?.task,
-                                    tool: tool,
+                                    verb: verb,
                                     object: object,
                                     progress: userInfo["progress"] as? Double,
                                     label: userInfo["label"] as? String,

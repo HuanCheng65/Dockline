@@ -126,7 +126,7 @@ func runAsk(_ json: [String: Any], session: String) -> Never {
     var payload: [String: Any] = [
         "session": session,
         "pid": Int(hostApp()),
-        "tool": tool,
+        "verb": HookAdapter.verb(tool),
         "lines": preview.lines,
         "more": preview.more,
         "agent": "Claude Code",

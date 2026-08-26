@@ -46,7 +46,7 @@ enum HookAdapter {
             case "AskUserQuestion": return waiting("question")
             case let tool?:
                 var payload: [String: Any] = ["command": "push", "state": "working",
-                                              "tool": tool]
+                                              "verb": verb(tool)]
                 if let object = object(json) { payload["object"] = object }
                 if let detail = detail(json) { payload["detail"] = detail }
                 if let metric = metric(json) { payload["metric"] = metric }
@@ -78,6 +78,23 @@ enum HookAdapter {
         default:
             return nil
         }
+    }
+
+    /// Claude Code 的工具名翻成共用词汇（见 `Verb`）。认不出的原样返回它的名字。
+    static func verb(_ tool: String) -> String {
+        let verb: Verb? = switch tool {
+        case "Read": .read
+        case "Edit", "NotebookEdit": .edit
+        case "Write": .write
+        case "Bash": .run
+        case "Grep", "Glob": .search
+        case "WebFetch": .fetch
+        case "WebSearch": .websearch
+        case "Task", "Agent": .subtask
+        case "TodoWrite": .todo
+        default: nil
+        }
+        return verb?.rawValue ?? tool
     }
 
     private static func waiting(_ reason: String) -> [String: Any] {
@@ -139,7 +156,7 @@ enum HookAdapter {
     ///
     /// **只送这一个词，不在这里拼句子。** 界面文案统一走条那边的本地化资源，
     /// 而 dockctl 不带资源包；让它拼好一句中文送过去，等于把界面文字散到条外面。
-    /// 工具名原样送，动作怎么说由条决定。
+    /// 动作那一半同理：这里只归一成一个共用的动词（见 `Verb`），怎么说由条决定。
     static func object(_ json: [String: Any]) -> String? {
         let input = json["tool_input"] as? [String: Any] ?? [:]
         func path(_ key: String) -> String? {

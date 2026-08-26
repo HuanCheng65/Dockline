@@ -520,7 +520,7 @@ struct PreviewCard: View {
                 // 旧的在上、当前在下：读起来是一条往下走的时间线，最新的那一行贴着
                 // 卡片底边，也就是离条最近的地方。
                 ForEach(session.history) { step in
-                    row(symbol: step.symbol, verb: step.verb, object: step.object,
+                    row(symbol: step.verb.symbol, verb: step.verb.text, object: step.object,
                         metric: step.metric, tint: .tertiary, current: false)
                 }
                 let current = session.stateDetail
@@ -540,7 +540,7 @@ struct PreviewCard: View {
     /// 近期动作那几行让位给它——这一刻卡片的用途不是让你读进度，是让你按下去。
     @ViewBuilder
     private func askBlock(_ ask: Session.Ask) -> some View {
-        row(symbol: ask.symbol, verb: ask.verb, object: ask.object, metric: nil,
+        row(symbol: ask.verb.symbol, verb: ask.verb.text, object: ask.object, metric: nil,
             tint: Color.accentColor, current: true)
         if !ask.lines.isEmpty {
             VStack(alignment: .leading, spacing: 0) {

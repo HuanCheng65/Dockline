@@ -40,16 +40,14 @@
 /* 当前动作：动作名 + 作用对象。%1$@ 是动作名，%2$@ 是对象 */
 "activity.action.format" = "%1$@ %2$@";
 
-/* 动作名按工具名取。缺哪个工具就直接显示工具原名，不猜 */
-"activity.tool.Read" = "读取";
-"activity.tool.Edit" = "编辑";
-"activity.tool.NotebookEdit" = "编辑";
-"activity.tool.Write" = "写入";
-"activity.tool.Bash" = "执行";
-"activity.tool.Grep" = "搜索";
-"activity.tool.Glob" = "搜索";
-"activity.tool.WebFetch" = "访问网页";
-"activity.tool.WebSearch" = "网络搜索";
-"activity.tool.Task" = "子任务";
-"activity.tool.Agent" = "子任务";
-"activity.tool.TodoWrite" = "更新待办";
+/* 动作名。上报送来的是归一化的动词，不是某个 agent 的工具名（见 dockctl/Verb.swift）；
+   缺哪个就直接显示上报送来的原名，不猜 */
+"activity.verb.read" = "读取";
+"activity.verb.edit" = "编辑";
+"activity.verb.write" = "写入";
+"activity.verb.run" = "执行";
+"activity.verb.search" = "搜索";
+"activity.verb.fetch" = "访问网页";
+"activity.verb.websearch" = "网络搜索";
+"activity.verb.subtask" = "子任务";
+"activity.verb.todo" = "更新待办";
