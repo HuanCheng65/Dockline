@@ -105,16 +105,21 @@ struct BackdropProbe: NSViewRepresentable {
             super.layout()
             let width = max(bounds.width, 1)
             let height = max(min(bounds.height, Self.ceiling), 1)
-            widthConstraint.constant = width
-            heightConstraint.constant = height
+            if widthConstraint.constant != width { widthConstraint.constant = width }
+            if heightConstraint.constant != height { heightConstraint.constant = height }
             // 玻璃走 autoresizing，不吃上面那两条约束，尺寸必须明写——不写它就是 0×0，
             // 而 0×0 的玻璃什么都不报也不报错，症状是「明暗从此不动」，指不到原因。
             let box = NSRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
                              width: width, height: height)
             // 挂在别人身上，位置就要换算过去。还没进窗口时无从谈起，等 `viewDidMoveToWindow`。
             guard let anchor else { return }
-            glass.frame = convert(box, to: anchor)
-            glass.layoutSubtreeIfNeeded()
+            let target = convert(box, to: anchor)
+            // **位置没变就不要再排一次。** 下面那次 `layoutSubtreeIfNeeded` 是同步强排，
+            // 而这个 `layout()` 每次布局都会跑：悬停一变、缩略图一到货、计时器一跳都算一遍。
+            // 采样里它是自家代码的头一名（10 秒里 150 个采样），而其中绝大多数排的是
+            // 一模一样的尺寸。
+            guard target != glass.frame else { return }
+            glass.frame = target
             // 越过那道闸同样是静悄悄地失效，必须说出来
             if glass.frame.height > 64, !warnedAboutHeight {
                 warnedAboutHeight = true
