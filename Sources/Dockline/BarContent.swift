@@ -451,7 +451,16 @@ struct BarContent: View {
             .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
         // 高度是恒定的（§3.1），只有宽度要量。尺寸报给 SwiftUI，由它逐帧插值地设到
         // 玻璃上，条变宽变窄才是一段 spring 而不是一帧跳到位——见 `DockGlass`。
-        let measured = GlassRuler.size(of: inner).width
+        //
+        // 条的宽度只由 `signature` 决定：它逐格记下 id 与标签宽度，再带上图标尺寸、
+        // 标签上限、溢出格数与标签页折叠——「布局变没变」这件事本来就是它在回答
+        // （见 `BarLayout.signature`，行那条位移动画也是拿它当判据的）。明暗一并带上，
+        // 它换了字色会换、字宽不会，但量一次总比赌一次稳。
+        //
+        // 不带这个标记的话，悬停在两格之间来回一趟就要把整条 bar 离屏重排十几遍，
+        // 而条自始至终没动过——实测那是 `BarContent.body` 九成的开销。
+        let measured = GlassRuler.size(of: inner,
+                                       unchanged: "\(layout.signature)|\(scheme)").width
         return DockGlass(size: CGSize(width: measured,
                                       height: BarMetrics.barHeight),
                          cornerRadius: BarMetrics.barRadius) { inner }

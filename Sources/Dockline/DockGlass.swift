@@ -184,12 +184,19 @@ struct DockGlass<Content: View>: NSViewRepresentable {
 ///
 /// 每种内容各留一把，反复改 `rootView` 而不是每次新建：换档期间 body 一帧跑一次，
 /// 每帧新建一个宿主视图是白扔的。
+///
+/// **量一次不便宜：它把整段内容离屏重排一遍。** 实测条那一份约 11ms，而 `BarContent.body`
+/// 每次跑都会量，悬停变化、缩略图到货、计时器每一跳都算一次——采样里它独占 body 开销的
+/// 九成。所以调用方可以给一个 `unchanged` 标记：这个标记不变就说明内容排出来还是那么大，
+/// 直接把上次的数还回去。标记必须**盖全**所有会改变尺寸的输入，漏一样就是玻璃停在旧尺寸上。
 @MainActor
 enum GlassRuler {
     private static var rulers: [ObjectIdentifier: NSView] = [:]
+    private static var memo: [ObjectIdentifier: (mark: String, size: CGSize)] = [:]
 
-    static func size<V: View>(of content: V) -> CGSize {
+    static func size<V: View>(of content: V, unchanged mark: String? = nil) -> CGSize {
         let key = ObjectIdentifier(V.self)
+        if let mark, let hit = memo[key], hit.mark == mark { return hit.size }
         let ruler: NSHostingView<V>
         if let cached = rulers[key] as? NSHostingView<V> {
             ruler = cached
@@ -200,6 +207,8 @@ enum GlassRuler {
         }
         ruler.rootView = content
         let size = ruler.intrinsicContentSize
+        if let mark { memo[key] = (mark, CGSize(width: max(size.width, 0),
+                                                height: max(size.height, 0))) }
         // 固有尺寸缺一轴时 AppKit 返回 -1，玻璃会就此塌掉。内容自己没表达宽高，
         // 谁也替它猜不出来——说出来，别让它变成一个说不清来由的点。
         if size.width < 0 || size.height < 0 {
