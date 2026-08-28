@@ -60,6 +60,13 @@ struct DockGlass<Content: View>: NSViewRepresentable {
             //「Update Constraints 次数比窗口里的视图还多」这条 NSGenericException 上。
             // 症状是启动几秒后闪退，中间还夹着「条只剩一个点」。
             host.sizingOptions = []
+            // **宿主要裁。** 它的 frame 逐帧跟着玻璃爬（实测 124×26 → 145×81 → 159×118
+            // → 252×216），但它并不因此去约束里面那棵 SwiftUI 树：卡片按自己的理想尺寸
+            // 排版，一帧到位，于是在玻璃还只有名牌那么大的时候就整张画在了玻璃外面。
+            // 这就是「内容先蹦出来、容器随后才追上」的真正机制——不是两条曲线不同步，
+            // 是内容压根没在动，只有玻璃在动。裁到宿主边界，那一段就变成了**揭开**。
+            host.wantsLayer = true
+            host.layer?.masksToBounds = true
         }
     }
 
@@ -74,7 +81,12 @@ struct DockGlass<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ glass: NSGlassEffectView, context: Context) {
         glass.cornerRadius = cornerRadius
-        // 跟着外面那次事务改，玻璃里的内容才与玻璃本身同一条曲线
+        // 跟着外面那次事务改。**但别指望它能让玻璃里的内容也动起来**——实测不会：
+        // 事务里确实带着那条 spring（`FluidSpringAnimation(response: 0.28)` 打得出来），
+        // 换档时卡片仍然一帧从 124×26 跳到 168×142，中间没有任何一个值。
+        // 赋 `rootView` 只是排一次更新，真正的更新在事务作用域之外才跑；
+        // 在这里补一次 `layoutSubtreeIfNeeded` 也不改变这一点（试过）。
+        // 内容与玻璃对齐靠的是宿主那层裁切，见 `Coordinator.init`。
         withTransaction(context.transaction) {
             context.coordinator.host.rootView = content
         }
