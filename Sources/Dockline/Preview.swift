@@ -234,8 +234,15 @@ struct PreviewCard: View {
     /// 作为上界它是保守的：标题只有一行时，大预览的图至多矮这么一截，不会溢出。
     private static let titleHeight: CGFloat = 32
     private static let appNameHeight: CGFloat = 14
+    /// App 名与标题之间那条缝。折在 App 名自己的高度里，跟着它一起长（见 `body`）。
+    private static let appNameGap: CGFloat = 2
     /// 只报名字那一档的高度
     static let nameHeight: CGFloat = 26
+    /// 标题那一行的字面高度。12.5pt 系统字实测 15pt——只用来把 `nameHeight` 分成上下两半。
+    private static let titleLine: CGFloat = 15
+    /// 标题离卡片下沿多远。**各档同一个数**，见 `body` 里那段：标题因此不用在换档时移动。
+    /// 取这个值是为了让名牌那一档正好还是 `nameHeight` 高：5.5 + 15 + 5.5 = 26。
+    private static let pillInset: CGFloat = (nameHeight - titleLine) / 2
     /// 标题那一行占多高。nil = 按内容自然排。
     ///
     /// **窗口标题那一档不预留第二行。** 早先它固定占两行的高度，理由是「卡片才不会
@@ -249,9 +256,11 @@ struct PreviewCard: View {
     /// 却在缩略图和标题之间豁开一个 34pt 的洞——比标题字号还高一倍。
     ///
     /// 会话那一档早就是这个结论了（见 `sessionTitleHeight` 那段），当时只改了它一处。
-    private static func headHeight(detail: Detail?, content: CellStatus?) -> CGFloat? {
-        guard content == nil else { return sessionTitleHeight }
-        return detail == nil ? nameHeight : nil
+    ///
+    /// 名字与预览这两档都**不再定高**：名牌那一档的 26pt 由上下留白凑出来
+    /// （见 `pillInset`），这样标题到下沿的距离才与预览卡那一档是同一个数。
+    private static func headCeiling(content: CellStatus?) -> CGFloat? {
+        content == nil ? nil : sessionTitleHeight
     }
 
     /// 只报名字那一档：没有窗口可预览，这一格上也没有状态可说。
@@ -264,9 +273,13 @@ struct PreviewCard: View {
 
     private var pill: Bool { Self.isPill(detail, content) }
 
+    /// 这一档要不要报 App 名。那一行始终在场，这个值只决定它有多高、多明显（见 `body`）。
+    private var showsName: Bool { content == nil && Self.showsAppName(title, detail) }
+
+    /// 上下留白不对称：下沿那一份是 `pillInset`，两档共用（见 `body`）。
     private static func textHeight(showsAppName: Bool, content: CellStatus?) -> CGFloat {
-        textInset * 2 + (content == nil ? titleHeight : sessionTitleHeight)
-            + (showsAppName ? 2 + appNameHeight : 0)
+        textInset + pillInset + (content == nil ? titleHeight : sessionTitleHeight)
+            + (showsAppName ? appNameGap + appNameHeight : 0)
     }
 
     /// App 名与窗口标题一模一样时不报第二遍——「访达 / 访达」两行说的是同一件事。
@@ -367,10 +380,9 @@ struct PreviewCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let detail, Self.showsImage(content, peek) { thumbnail(detail) }
-            VStack(alignment: .leading, spacing: 2) {
-                // 间距按有没有会话给：没有会话时那些附加元素不存在，仍会占掉一份间距，
-                // 而名字那一档的宽度是照标题量出来的，少几个点就要截断（实测「Claude」
-                // 变成「Cla…」）。间距是取值，不是分支，identity 不受影响。
+            // 行距为 0：App 名那一行始终在场，它与标题之间那 2pt 折进了它自己的高度里
+            // （见下面的 `appNameGap`）。交给 VStack 的 spacing 就跟不上它一起长了。
+            VStack(alignment: .leading, spacing: 0) {
                 // **App 名排在标题上方。**
                 //
                 // 它只在展开那一档存在。排在标题**下方**的话，标题就得为它让出一行：
@@ -378,12 +390,18 @@ struct PreviewCard: View {
                 // 标题就整体上移同样多。而换档那一瞬玻璃还只有名牌那么高，标题因此被
                 // 甩到玻璃上边缘之外、整行被裁掉，等玻璃长过去才重新露出来——看起来
                 // 就是「标题先跑到顶上，再慢慢滑下来」。挪到上方，这一份让位就没有了。
-                if let detail, content == nil, Self.showsAppName(title, detail) {
-                    Text(detail.appName)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(height: Self.appNameHeight, alignment: .bottomLeading)
-                }
+                //
+                // **它始终在场，靠高度与不透明度长出来，不是 `if` 插进来的。** 插入不是插值：
+                // 那几帧里 SwiftUI 只能把这一行凭空摆上去，标题跟着被推，两行还会交叉而过。
+                // 始终在场的话，`0 → 16` 与 `0 → 1` 都是可插值的数，它就是从标题上方那条缝里
+                // 长出来的。行距（原先 VStack 的 2pt）折进这个高度里——间距本身没法跟着一起长。
+                Text(detail?.appName ?? "")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(height: showsName ? Self.appNameHeight + Self.appNameGap : 0,
+                           alignment: .topLeading)
+                    .opacity(showsName ? 1 : 0)
+                    .clipped()
                 HStack(alignment: .firstTextBaseline, spacing: content == nil ? 0 : 7) {
                     if let content {
                         Image(systemName: Self.symbol(content))
@@ -409,12 +427,24 @@ struct PreviewCard: View {
                                     agent: session.agent)
                     }
                 }
-                .frame(height: Self.headHeight(detail: detail, content: content),
-                       alignment: pill ? .center : .topLeading)
+                // 会话那一档定高（标题只有一行）；其余两档交给文字自己，两行也长得开。
+                .frame(height: Self.headCeiling(content: content), alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.textPad)
-            .padding(.vertical, pill ? 0 : Self.textInset)
+            // **标题离卡片下沿多远，两档必须是同一个数。**
+            //
+            // 这是整段换档连贯与否的全部。卡片的下沿是钉住的（见 `DockGlass.ClipBox`），
+            // 名牌与预览卡共用同一个 `Text`——只要它到下沿的距离不变，它就压根不用动，
+            // App 名与缩略图从它上方被玻璃一点点揭开，那才是「同一个元素连贯地在」。
+            //
+            // 指望动画把它从一处送到另一处是不行的，实测过：两档之间的差异有一半根本
+            // 没法插值（定高 ↔ nil、`if` 插入），标题是一帧从 y=1979.5 落到 685.0 的，
+            // 中间没有任何一个值。曲线再好也救不了没有中间态的变化。
+            //
+            // 上沿则各是各的：名牌那档要凑够 `nameHeight`，预览卡那档要给 App 名留出呼吸。
+            .padding(.bottom, Self.pillInset)
+            .padding(.top, pill ? Self.pillInset : Self.textInset)
             switch content {
             case .session(let session): sessionBlock(session)
             case .media(let playing): mediaBlock(playing)
