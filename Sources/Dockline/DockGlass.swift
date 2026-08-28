@@ -47,10 +47,41 @@ struct DockGlass<Content: View>: NSViewRepresentable {
         case camera = 22, cartouchePopover = 23
     }
 
+    /// 玻璃与宿主之间的那一层。**裁切与定位都归它。**
+    ///
+    /// 玻璃的 frame 由 SwiftUI 逐帧插值地设过去，这一层是它的 `contentView`、跟着一起变，
+    /// 所以它的边界就是「此刻玻璃有多大」。宿主则**不跟着缩**：它永远是内容的理想尺寸，
+    /// 底边贴着这一层的底边（AppKit 非翻转坐标里 y=0 就是底边），水平居中。
+    /// 于是玻璃长大时标题那一行原地不动，上面的东西从它上方一点点露出来。
+    ///
+    /// 让宿主跟着一起缩是不行的，试过：宿主并不把自己的尺寸传给里面那棵 SwiftUI 树，
+    /// 树照自己的理想尺寸排版（实测换档时卡片一帧就到终态，中间没有任何一个值），
+    /// 结果只是被从**中间**裁开——标题行跟着上下滑，逐帧看就是穿帮。
+    final class ClipBox: NSView {
+        /// 内容的理想尺寸，由 `DockGlass.size` 给。
+        var contentSize: CGSize = .zero {
+            didSet {
+                guard contentSize != oldValue else { return }
+                needsLayout = true
+            }
+        }
+
+        override func layout() {
+            super.layout()
+            guard let content = subviews.first else { return }
+            content.frame = NSRect(x: ((bounds.width - contentSize.width) / 2).rounded(),
+                                   y: 0,
+                                   width: contentSize.width,
+                                   height: contentSize.height)
+        }
+    }
+
     @MainActor
     final class Coordinator {
         /// 真正装进玻璃、真正画出来的那一份。
         let host: NSHostingView<Content>
+        /// 装着宿主的那一层，见 `ClipBox`。
+        let box = ClipBox()
 
         init(content: Content) {
             host = NSHostingView(rootView: content)
@@ -60,13 +91,12 @@ struct DockGlass<Content: View>: NSViewRepresentable {
             //「Update Constraints 次数比窗口里的视图还多」这条 NSGenericException 上。
             // 症状是启动几秒后闪退，中间还夹着「条只剩一个点」。
             host.sizingOptions = []
-            // **宿主要裁。** 它的 frame 逐帧跟着玻璃爬（实测 124×26 → 145×81 → 159×118
-            // → 252×216），但它并不因此去约束里面那棵 SwiftUI 树：卡片按自己的理想尺寸
-            // 排版，一帧到位，于是在玻璃还只有名牌那么大的时候就整张画在了玻璃外面。
-            // 这就是「内容先蹦出来、容器随后才追上」的真正机制——不是两条曲线不同步，
-            // 是内容压根没在动，只有玻璃在动。裁到宿主边界，那一段就变成了**揭开**。
-            host.wantsLayer = true
-            host.layer?.masksToBounds = true
+            // 内容压根没在动，只有玻璃在动（见 `updateNSView`）。所以它整张会画在玻璃
+            // 外面——「内容先蹦出来、容器随后才追上」就是这么来的。裁到玻璃此刻的边界，
+            // 那一段就变成了**揭开**。裁与定位都在 `ClipBox` 里。
+            box.wantsLayer = true
+            box.layer?.masksToBounds = true
+            box.addSubview(host)
         }
     }
 
@@ -75,12 +105,18 @@ struct DockGlass<Content: View>: NSViewRepresentable {
     func makeNSView(context: Context) -> NSGlassEffectView {
         let glass = NSGlassEffectView()
         Self.configure(glass, cornerRadius: cornerRadius)
-        glass.contentView = context.coordinator.host
+        context.coordinator.box.contentSize = size
+        context.coordinator.box.layer?.cornerRadius = cornerRadius
+        glass.contentView = context.coordinator.box
         return glass
     }
 
     func updateNSView(_ glass: NSGlassEffectView, context: Context) {
         glass.cornerRadius = cornerRadius
+        // 玻璃在动画期间由 SwiftUI 逐帧改 frame，`ClipBox` 跟着变；宿主守着这个理想尺寸
+        // 不动，底边因此始终对齐。见 `ClipBox`。
+        context.coordinator.box.contentSize = size
+        context.coordinator.box.layer?.cornerRadius = cornerRadius
         // 跟着外面那次事务改。**但别指望它能让玻璃里的内容也动起来**——实测不会：
         // 事务里确实带着那条 spring（`FluidSpringAnimation(response: 0.28)` 打得出来），
         // 换档时卡片仍然一帧从 124×26 跳到 168×142，中间没有任何一个值。
