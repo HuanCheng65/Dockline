@@ -121,6 +121,10 @@ struct Session: Equatable {
         }
 
         let id: UUID
+        /// Claude Code 具体工具调用的身份。一个 session 可同时有多个 tool use，
+        /// 不能只靠 session_id 区分授权请求。
+        let toolUseID: String?
+        let agentID: String?
         let verb: Verb
         let object: String?
         /// 要判断的那一段：命令全文、增删行、要写进去的内容。
@@ -224,6 +228,8 @@ struct Session: Equatable {
     /// 正等着你批的那次授权。它不随上报来去，生命周期由那条连接决定
     /// （见 `AskServer`），因此不在 `push` 里赋值，由 `display` 挂上来。
     var ask: Ask?
+    /// 同一 session 当前仍存活的全部授权请求。`ask` 保留为主请求，兼容现有条上卡片。
+    var asks: [Ask] = []
     /// 近期走过的几步，旧的在前。只留末尾几条：面板要的是「刚才发生了什么」，
     /// 不是一份完整日志——完整的在终端里。
     var steps: [Step] = []

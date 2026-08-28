@@ -55,9 +55,11 @@ final class World: ObservableObject {
     /// 未读角标，按 bundle ID。只在真的变了才发布，否则每 2 秒一次的读取会
     /// 把整条 bar 重绘一遍，打断动画。
     @Published private(set) var badges: [String: String] = [:]
-    /// 活动状态。计划书 §3。挂点见 `StatusTarget`：来源现在只产出 App 级，
-    /// 窗口级要等会话与窗口的绑定做出来。
+    /// 活动状态的主显示项。一个窗口可以承载多个 session；常驻条上仍只显示
+    /// 最值得处理的一条，完整集合见 `sessionGroups`。
     @Published private(set) var sessions: [StatusTarget: Session] = [:]
+    /// 一个窗口入口下的全部 session，按显著度与更新时间排序。
+    @Published private(set) var sessionGroups: [StatusTarget: [Session]] = [:]
     /// 此刻在放什么。全系统只有一个「正在播放」，所以这里就一份，不按格子分。
     @Published private(set) var nowPlaying: NowPlaying?
     /// 发声那个 App 的进程号。由 `nowPlaying.bundleID` 解析而来，解析不到就没有落点。
@@ -171,6 +173,13 @@ final class World: ObservableObject {
         return leads ? sessions[.app(pid)] : nil
     }
 
+    /// 这一格对应的全部会话。单格 App 级状态只挂在该 App 的第一格，规则与
+    /// `session(window:of:leads:)` 保持一致；窗口级状态则只属于它自己的窗口。
+    func sessionGroup(window id: CGWindowID, of pid: pid_t, leads: Bool) -> [Session] {
+        if let own = sessionGroups[.window(id)] { return own }
+        return leads ? (sessionGroups[.app(pid)] ?? []) : []
+    }
+
     /// 这一格此刻显示什么。
     ///
     /// **任务型压过常驻型。** 一格上同时有会话和播放是极少见的（两者绑的是不同的
@@ -182,6 +191,15 @@ final class World: ObservableObject {
         if let session = session(window: id, of: pid, leads: leads) { return .session(session) }
         guard leads, let playing = nowPlaying, mediaPID == pid else { return nil }
         return .media(playing)
+    }
+
+    /// 这一格的全部活动状态。用于 hover 面板等高带宽界面；条上状态继续走
+    /// `status(window:of:leads:)`，避免多个 session 改变常驻布局。
+    func statusGroup(window id: CGWindowID, of pid: pid_t, leads: Bool) -> [CellStatus] {
+        let sessions = sessionGroup(window: id, of: pid, leads: leads).map(CellStatus.session)
+        if !sessions.isEmpty { return sessions }
+        guard leads, let playing = nowPlaying, mediaPID == pid else { return [] }
+        return [.media(playing)]
     }
 
     /// 用户在面板上批了或驳了一次授权（实时状态设计 §4.7）。
@@ -487,6 +505,7 @@ final class World: ObservableObject {
         sessionCenter.onChange = { [weak self] in
             guard let self else { return }
             sessions = sessionCenter.display
+            sessionGroups = sessionCenter.sessionsByTarget
             noteFrontSeen()
         }
         nowPlayingReader.onChange = { [weak self] playing in

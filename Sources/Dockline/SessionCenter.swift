@@ -41,25 +41,32 @@ final class SessionCenter {
         }
     }
 
-    /// 条上每一格该显示哪一条。多条上报落在同一格时按 `Session.outranks` 取一条；
-    /// 其余的该在 hover 卡里排队，那一段尚未实现。
+    /// 同一格上的全部会话。窗口是入口，session 是窗口里的活动集合；不能因为共享
+    /// 一个窗口而在数据层互相覆盖。数组按“最值得处理”排在前面，后续 hover 面板
+    /// 可直接消费这份集合。
+    var sessionsByTarget: [StatusTarget: [Session]] {
+        let asks = Dictionary(grouping: pending.values, by: \.key)
+            .compactMapValues { $0.map(\.ask).sorted { $0.since < $1.since } }
+        var result: [StatusTarget: [Session]] = [:]
+        for (key, report) in reports {
+            var session = report.session
+            session.asks = asks[key] ?? []
+            session.ask = session.asks.first
+            result[report.target, default: []].append(session)
+        }
+        for target in result.keys {
+            result[target]?.sort { $0.outranks($1) }
+        }
+        return result
+    }
+
+    /// 条上每一格该显示的主会话。常驻层仍只显示一个状态，完整集合由
+    /// `sessionsByTarget` 提供给 hover 面板。
     ///
     /// 待授权要**先挂上再排序**：谁能当场办掉是排序的判据之一（见 `Session.outranks`），
     /// 排完再挂就晚了。同一条会话上撞了两次授权时只挂最早的那次，答掉它下一次才露面。
     var display: [StatusTarget: Session] {
-        let asks = Dictionary(grouping: pending.values, by: \.key)
-            .compactMapValues { $0.map(\.ask).min { $0.since < $1.since } }
-        var result: [StatusTarget: Session] = [:]
-        for (key, report) in reports {
-            var session = report.session
-            session.ask = asks[key]
-            guard let seated = result[report.target] else {
-                result[report.target] = session
-                continue
-            }
-            if session.outranks(seated) { result[report.target] = session }
-        }
-        return result
+        sessionsByTarget.compactMapValues(\.first)
     }
 
     // MARK: 就地授权（实时状态设计 §4.7）
@@ -103,7 +110,10 @@ final class SessionCenter {
             lines.append(Session.Ask.Line(id: index, sign: sign, text: pair[1]))
         }
         pending[id] = Pending(key: key, host: host,
-                              ask: Session.Ask(id: id, verb: verb,
+                              ask: Session.Ask(id: id,
+                                                toolUseID: payload["tool_use_id"] as? String,
+                                                agentID: payload["agent_id"] as? String,
+                                                verb: verb,
                                                 object: payload["object"] as? String,
                                                 lines: lines,
                                                 more: payload["more"] as? Int ?? 0,

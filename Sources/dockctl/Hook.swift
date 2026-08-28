@@ -398,6 +398,8 @@ enum Hook {
             "more": preview.more,
             "agent": "Claude Code",
         ]
+        if let toolUseID = json["tool_use_id"] as? String { payload["tool_use_id"] = toolUseID }
+        if let agentID = json["agent_id"] as? String { payload["agent_id"] = agentID }
         if let cwd = json["cwd"] as? String { payload["cwd"] = cwd }
         if let task = HookAdapter.task(json) { payload["task"] = task }
         if let object = HookAdapter.object(json) { payload["object"] = object }
