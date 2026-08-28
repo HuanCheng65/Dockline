@@ -352,7 +352,7 @@ struct PreviewCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let detail, Self.showsImage(content, peek) { thumbnail(detail) }
+            thumbnail(detail)
             VStack(alignment: .leading, spacing: 2) {
                 // 间距按有没有会话给：没有会话时那些附加元素不存在，仍会占掉一份间距，
                 // 而名字那一档的宽度是照标题量出来的，少几个点就要截断（实测「Claude」
@@ -796,18 +796,27 @@ struct PreviewCard: View {
         return text
     }
 
-    private func thumbnail(_ detail: Detail) -> some View {
-        let size = Self.imageSize(
-            detail.image,
-            box: Self.imageBox(peek,
-                               showsAppName: content == nil && Self.showsAppName(title, detail),
-                               content: content))
+    /// 缩略图。**始终在场，不显示的那几档高度是 0。**
+    ///
+    /// 早先它是 `if let detail { thumbnail(detail) }` ——那是一次**插入**：插进来的
+    /// 那一瞬它就是完整尺寸，而外面的玻璃还在往这个尺寸上爬（0.28 那条 spring）。
+    /// 看起来就是「图先蹦出来，玻璃随后才追上」，一件事读成了先后发生的两件。
+    /// 高度和内缩都是可插值的取值，从 0 长起来，才和玻璃走的是同一条曲线。
+    private func thumbnail(_ detail: Detail?) -> some View {
+        let draws = detail != nil && Self.showsImage(content, peek)
+        let size = draws
+            ? Self.imageSize(detail?.image,
+                             box: Self.imageBox(peek,
+                                                showsAppName: content == nil
+                                                    && Self.showsAppName(title, detail),
+                                                content: content))
+            : .zero
         return ZStack {
-            if let image = detail.image {
+            if let image = detail?.image {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-            } else {
+            } else if draws, let detail {
                 Text(detail.unavailable
                      ? (detail.window.minimized ? "窗口已最小化，暂时无法预览"
                                                 : "此窗口暂时无法预览")
@@ -820,10 +829,13 @@ struct PreviewCard: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: Self.innerRadius, style: .continuous))
-        .background(.quaternary,
+        .background(draws ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
                     in: RoundedRectangle(cornerRadius: Self.innerRadius, style: .continuous))
-        .padding(Self.pad)
+        // 内缩同样从 0 长起来：留着它，收拢那一档会平白多出一圈高度
+        .padding(draws ? Self.pad : 0)
         .frame(maxWidth: .infinity)
+        // 长到一半时图片本身还比容器大，不裁就会漫到玻璃外面去
+        .clipped()
     }
 }
 
