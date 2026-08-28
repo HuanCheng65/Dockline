@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+/// 玻璃里那张画布有多高。见 `DockGlass.ClipBox`——只要比任何一张卡片都高就够了。
+/// 写在类型外面：`ClipBox` 嵌在泛型里，泛型不许有静态存储属性。
+private let glassCanvas: CGFloat = 2000
+
 /// 条与扇面的背板。
 ///
 /// 不走 SwiftUI 的 `glassEffect`：它只暴露 `.regular` / `.clear` 两档，而系统程序坞用的是
@@ -49,34 +53,35 @@ struct DockGlass<Content: View>: NSViewRepresentable {
 
     /// 内容在宿主里**自己贴底**，不靠 SwiftUI 的默认居中。
     ///
-    /// 这一层是整件事的关键。宿主的尺寸和它装的内容永远不在同一拍上更新——`rootView`
-    /// 的赋值只是排一次更新，而尺寸无论从哪儿来（外面推、或读 `intrinsicContentSize`）
-    /// 都是当场生效。于是总有那么一两帧两者对不上，而 SwiftUI 默认把内容**居中**摆在
-    /// 宿主里（实测：200 高的宿主里 40 高的内容落在正中），一居中就被裁到看不见：
-    /// 名牌换预览卡的那两帧里，文字整个消失，随后才「从上面掉回来」。
-    ///
-    /// 贴底之后两个滞后方向都变得无害：宿主已经变大而内容还是名牌，名牌贴在底边、
-    /// 看得见；宿主还小而内容已是卡片，卡片贴底、上半截溢出去被裁掉，露出来的正好是
-    /// 标题那一行。**尺寸对不对，不再影响内容在哪。**
+    /// `.fixedSize(vertical:)` 是必需的：宿主给的画布高得多（见 `ClipBox.canvas`），
+    /// 不定住的话内容会照那个高度去排。定住之后它永远是自己那么高，只是贴在画布底边上。
     struct Anchored<C: View>: View {
         let content: C
         var body: some View {
-            content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
     }
 
-    /// 玻璃与宿主之间的那一层。**只负责裁切。**
+    /// 玻璃与宿主之间的那一层。**裁切与定位都归它。**
     ///
     /// 玻璃的 frame 由 SwiftUI 逐帧插值地设过去，这一层是它的 `contentView`、跟着一起变，
-    /// 所以它的边界就是「此刻玻璃有多大」。宿主铺满它，内容在宿主里贴底（见 `Anchored`）
-    /// ——于是玻璃长大时，贴着底边那一行原地不动，上面的东西从它上方一点点露出来。
+    /// 所以它的边界就是「此刻玻璃有多大」。宿主则铺一张**够大的画布**，底边贴住这一层的
+    /// 底边（AppKit 非翻转坐标里 y=0 就是底边），上边随便超出去多少——超出的部分正好被
+    /// 这一层裁掉。内容在画布里贴底（见 `Anchored`），于是玻璃长大时贴着底边那一行原地
+    /// 不动，上面的东西从它上方一点点露出来。
     ///
-    /// 宿主**没有自己的尺寸**：不从外面推，也不问 `intrinsicContentSize`。两种都试过，
-    /// 两种都会和内容差一两拍。这里干脆不给它第二个来源。
+    /// **画布必须够大，这是整件事的关键。** SwiftUI 把大过边框的内容一律**居中**摆，
+    /// `alignment: .bottom` 在溢出方向上不生效——内容一旦比画布高，它就被居中顶出去，
+    /// 下半截连同标题垂到玻璃下沿外面被裁光。而内容随时可能比画布大：玻璃与卡片各走
+    /// 一条 spring，两条曲线之间没有任何同步；照宿主报的固有尺寸去摆也一样，那个数
+    /// 落后画出来的那一份一拍。画布只要一直大过任何一张卡片，这件事就不会发生。
     final class ClipBox: NSView {
         override func layout() {
             super.layout()
-            subviews.first?.frame = bounds
+            subviews.first?.frame = NSRect(x: 0, y: 0,
+                                           width: bounds.width, height: glassCanvas)
         }
     }
 
@@ -89,16 +94,15 @@ struct DockGlass<Content: View>: NSViewRepresentable {
 
         init(content: Content) {
             host = NSHostingView(rootView: Anchored(content: content))
-            // 宿主铺满盒子，尺寸没有第二个来源；内容自己在里面贴底（见 `Anchored`）。
-            // 这里曾经是「不报固有尺寸 + 从外面推一个尺寸进来」，后来又改成「问宿主自己
-            // 报固有尺寸」——两种都会和 `rootView` 的更新差一两拍，而差的那一两帧里
-            // 内容被居中顶出玻璃，文字就消失一下。**尺寸这条线整个去掉才治本。**
-            //
-            // 顺带解释一条旧注释：当年给宿主开固有尺寸会引发无穷次 Update Constraints
-            // 然后闪退，是因为那时宿主是玻璃的 `contentView`、四条边被玻璃钉死。
-            // 现在被钉的是 `ClipBox`，宿主只是它下面一个跟着 bounds 走的子视图。
+            // **画的那一份不许发布固有尺寸。** 它的 frame 由 `ClipBox` 直接摆，尺寸不需要
+            // 第二个来源；而当年开着这一项时窗口曾被逼进无穷次 Update Constraints 然后闪退。
             host.sizingOptions = []
             host.translatesAutoresizingMaskIntoConstraints = true
+            // **宽度交给自动尺寸，别等 `layout()`。** 玻璃在动画期间逐帧改 frame，但那并不
+            // 保证 `contentView` 每一帧都跑一次 `layout()`（实测整段动画只跑了一次），
+            // 宿主的宽度会就此停在起点上，内容跟着停在一个偏掉的位置。
+            // 高度是常数、y 恒为 0，所以底边照旧钉着。
+            host.autoresizingMask = [.width]
             // 内容并不跟着玻璃逐帧缩放（见 `updateNSView`），换档那两帧它整张就是终态的
             // 大小。裁到玻璃此刻的边界，那一段才成其为**揭开**；不裁就是内容先蹦出来、
             // 玻璃随后才追上。圆角也在这一层，`cornerRadius` 要有遮罩才生效。
@@ -126,7 +130,7 @@ struct DockGlass<Content: View>: NSViewRepresentable {
         // 换档时卡片仍然一帧从 124×26 跳到 168×142，中间没有任何一个值。
         // 赋 `rootView` 只是排一次更新，真正的更新在事务作用域之外才跑；
         // 在这里补一次 `layoutSubtreeIfNeeded` 也不改变这一点（试过）。
-        // 内容与玻璃对齐靠的是宿主那层裁切，见 `Coordinator.init`。
+        // 内容与玻璃对齐靠的是宿主那层裁切与贴底，见 `ClipBox`。
         withTransaction(context.transaction) {
             context.coordinator.host.rootView = Anchored(content: content)
         }
