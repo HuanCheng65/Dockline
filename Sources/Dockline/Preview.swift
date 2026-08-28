@@ -229,15 +229,29 @@ struct PreviewCard: View {
     private static let textPad: CGFloat = 12
     private static let textInset: CGFloat = 9
     private static let titleFont = NSFont.systemFont(ofSize: 12.5, weight: .medium)
-    /// 标题固定占两行的高度，卡片才不会一高一矮（`WindowPanel` 里的卡片同理）
+    /// 两行标题占多高。**只用来给大预览的图片框留地方**（见 `textHeight`），
+    /// 不再拿它去固定标题那一行的高度——那正是下面 `headHeight` 说的事。
+    /// 作为上界它是保守的：标题只有一行时，大预览的图至多矮这么一截，不会溢出。
     private static let titleHeight: CGFloat = 32
     private static let appNameHeight: CGFloat = 14
     /// 只报名字那一档的高度
     static let nameHeight: CGFloat = 26
-    /// 标题那一行占多高。名字那一档一行居中；窗口标题排两行；会话名只有一行。
-    private static func headHeight(detail: Detail?, content: CellStatus?) -> CGFloat {
+    /// 标题那一行占多高。nil = 按内容自然排。
+    ///
+    /// **窗口标题那一档不预留第二行。** 早先它固定占两行的高度，理由是「卡片才不会
+    /// 一高一矮」——可那条理由属于 `WindowPanel`：那里的卡片并排成一行，不等高就参差
+    /// 不齐，而它有自己的 `titleHeight`。悬停这张卡同一时刻只有一张，在不同窗口之间高
+    /// 度不同正是这套设计一直在做的形变。
+    ///
+    /// 代价是实打实的：单行标题时框里凭空多出约 17pt，而这半行**没有一个好地方可放**。
+    /// 留在标题下方，标题就被垫得离卡片下沿很远，而下沿是钉住的（见 `DockGlass.ClipBox`），
+    /// 于是从名牌换到预览卡时标题要往上跳 36pt、整行被甩出玻璃；挪到标题上方，跳变没了，
+    /// 却在缩略图和标题之间豁开一个 34pt 的洞——比标题字号还高一倍。
+    ///
+    /// 会话那一档早就是这个结论了（见 `sessionTitleHeight` 那段），当时只改了它一处。
+    private static func headHeight(detail: Detail?, content: CellStatus?) -> CGFloat? {
         guard content == nil else { return sessionTitleHeight }
-        return detail == nil ? nameHeight : titleHeight
+        return detail == nil ? nameHeight : nil
     }
 
     /// 只报名字那一档：没有窗口可预览，这一格上也没有状态可说。
@@ -357,6 +371,19 @@ struct PreviewCard: View {
                 // 间距按有没有会话给：没有会话时那些附加元素不存在，仍会占掉一份间距，
                 // 而名字那一档的宽度是照标题量出来的，少几个点就要截断（实测「Claude」
                 // 变成「Cla…」）。间距是取值，不是分支，identity 不受影响。
+                // **App 名排在标题上方。**
+                //
+                // 它只在展开那一档存在。排在标题**下方**的话，标题就得为它让出一行：
+                // 卡片的下沿是钉住的（见 `DockGlass.ClipBox`），下面多出 14 + 2 点，
+                // 标题就整体上移同样多。而换档那一瞬玻璃还只有名牌那么高，标题因此被
+                // 甩到玻璃上边缘之外、整行被裁掉，等玻璃长过去才重新露出来——看起来
+                // 就是「标题先跑到顶上，再慢慢滑下来」。挪到上方，这一份让位就没有了。
+                if let detail, content == nil, Self.showsAppName(title, detail) {
+                    Text(detail.appName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(height: Self.appNameHeight, alignment: .bottomLeading)
+                }
                 HStack(alignment: .firstTextBaseline, spacing: content == nil ? 0 : 7) {
                     if let content {
                         Image(systemName: Self.symbol(content))
@@ -384,12 +411,6 @@ struct PreviewCard: View {
                 }
                 .frame(height: Self.headHeight(detail: detail, content: content),
                        alignment: pill ? .center : .topLeading)
-                if let detail, content == nil, Self.showsAppName(title, detail) {
-                    Text(detail.appName)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .frame(height: Self.appNameHeight, alignment: .topLeading)
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.textPad)
