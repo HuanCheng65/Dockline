@@ -28,8 +28,6 @@ final class BarModel: ObservableObject {
     /// 屏幕可见宽度，宽度降级阶梯的分母
     var availableWidth: CGFloat = 1440
 
-    /// 玻璃条在根坐标系里的位置，由视图报上来。只用来定条的命中区。
-    private var barFrame: CGRect = .zero
     /// 这条 bar 所在的屏。
     private(set) var display: CGDirectDisplayID?
 
@@ -390,12 +388,6 @@ final class BarModel: ObservableObject {
 
     // MARK: 几何与背景亮度
 
-    /// 视图量出玻璃条的位置后报上来，用来定条的命中区
-    func setBarFrame(_ rect: CGRect) {
-        guard rect != barFrame else { return }
-        barFrame = rect
-        barHitFrame = anchored(rect)
-    }
 
     /// 条上有悬停或浮层，条以上那块空间就要用起来了。
     ///
@@ -456,62 +448,29 @@ final class BarModel: ObservableObject {
 
     // MARK: 命中区
     //
-    // 落点由视图侧登记（SwiftUI 根坐标系，左上原点），命中判定与执行都在这里，
-    // 因为收拖放与右键的是面板的 contentView，它只知道坐标。
+    // 收拖放与右键的是面板的 contentView，它只知道坐标，所以判定在这里做。
     //
-    // **一律换算成「离面板底边多远」再存。** 面板会按需长高——浮层要用到条以上的空间，
-    // 而条钉在底边上，所以离底边的距离不随高度变，按左上原点存则会整体偏掉一个高度差。
-    // 这不是理论问题：拖拽经过条上的格子会浮出预览、面板当场长高，而视图侧的矩形要等
-    // 下一轮布局才重新上报，那几毫秒里松手就是一次落空，文件原地飞回去（实测复现）。
-    // AppKit 交给我们的落点本来就是从窗口底边量的，两边都不再碰 `bounds.height`，
-    // 这个竞态窗口就不存在了，也不必在改高度时作废任何东西。
+    // **登记的是视图，不是坐标。** 每一项在窗口坐标里的位置到判定这一刻才现问 AppKit，
+    // 见 `ZoneRegistry`——那里也记着为什么不能存数字：存下来的数会过期，而这条路上
+    // 一个过期的数就足以让右键一格都点不中。窗口坐标与 AppKit 交给我们的落点同一个原点
+    // （窗口左下），两边都不碰面板高度，面板按需长高也不必作废任何东西。
 
-    /// 面板当前的高度，由 `BarPanel` 在改几何时先一步报上来。
-    private var panelHeight: CGFloat = 0
-
-    /// 可接收文件的项：项 id -> 它离面板底边的位置
-    private var dropZones: [String: CGRect] = [:]
-    /// 右键命中区。与拖放区分开：每一格都能有菜单，拖放只认文件夹与废纸篓。
-    private var menuZones: [String: CGRect] = [:]
-    /// 条自己的命中区，供「右键落在条的空白处」判定。
-    private var barHitFrame: CGRect = .zero
+    /// 可接收文件的项。只有条上的格子收文件，因此与右键那本册子分开。
+    let dropZones = ZoneRegistry()
+    /// 右键命中区：条上的格子、簇里的项、浮层里的卡片都登记在这一本。
+    /// 每一格都能有菜单，拖放只认文件夹与废纸篓——所以两本册子不是一本。
+    let menuZones = ZoneRegistry()
+    /// 条自己，供「右键落在条的空白处」判定。
+    let barZone = ZoneRegistry()
     /// 正被拖拽悬停的项——不给高亮的话，用户不知道松手会掉进哪儿
     @Published private(set) var fileDropTarget: String?
 
-    func setPanelHeight(_ height: CGFloat) {
-        panelHeight = height
-    }
-
-    /// 左上原点的根坐标 → 离底边的距离。
-    private func anchored(_ rect: CGRect) -> CGRect {
-        CGRect(x: rect.minX, y: panelHeight - rect.maxY,
-               width: rect.width, height: rect.height)
-    }
-
-    func setDropZone(_ id: String, _ rect: CGRect?) {
-        dropZones[id] = rect.map(anchored)
-    }
-
     func dropZone(at point: CGPoint) -> String? {
-        dropZones.first { $0.value.contains(point) }?.key
-    }
-
-    /// 落空时把登记在册的接收区一并记下来。只记落点说不出问题出在哪一侧——
-    /// 是指针没落进去，还是这一格根本没登记上。
-    var dropZoneReport: String {
-        guard !dropZones.isEmpty else { return "一个都没登记" }
-        return dropZones.sorted { $0.key < $1.key }.map { id, rect in
-            String(format: "%@ x %.0f–%.0f y %.0f–%.0f",
-                   id, rect.minX, rect.maxX, rect.minY, rect.maxY)
-        }.joined(separator: "  ")
-    }
-
-    func setMenuZone(_ id: String, _ rect: CGRect?) {
-        menuZones[id] = rect.map(anchored)
+        dropZones.hit(point)
     }
 
     func menuZone(at point: CGPoint) -> String? {
-        menuZones.first { $0.value.contains(point) }?.key
+        menuZones.hit(point)
     }
 
     /// 条上某一项在屏幕坐标（AppKit，左下原点）里的位置。
@@ -519,15 +478,15 @@ final class BarModel: ObservableObject {
     /// 命中区存的就是「离面板底边多远」，而面板贴着本屏底边、占满整宽，所以这里只差
     /// 一个屏幕原点的平移。分屏的落点预览要从这一格长出来，需要它。
     func screenRect(of id: String) -> CGRect? {
-        guard let rect = menuZones[id],
+        // 面板铺满这块屏，窗口原点就是屏幕原点，窗口坐标加上它即是屏幕坐标。
+        guard let rect = menuZones.frame(of: id),
               let screen = NSScreen.screens.first(where: { displayID($0) == display })
         else { return nil }
-        return CGRect(x: screen.frame.minX + rect.minX, y: screen.frame.minY + rect.minY,
-                      width: rect.width, height: rect.height)
+        return rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
     }
 
     func barContains(_ point: CGPoint) -> Bool {
-        barHitFrame.contains(point)
+        barZone.frame(of: "bar")?.contains(point) ?? false
     }
 
     func setFileDropTarget(_ id: String?) {

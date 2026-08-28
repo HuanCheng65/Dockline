@@ -298,56 +298,6 @@ struct PreviewCard: View {
     private static let askBoxPad: CGFloat = 5
     private static let buttonHeight: CGFloat = 30
 
-    private static func askHeight(_ ask: Session.Ask) -> CGFloat {
-        var height = rowHeight
-        if !ask.lines.isEmpty {
-            height += rowGap / 2 + askBoxPad * 2 + CGFloat(ask.lines.count) * askLineHeight
-        }
-        if ask.more > 0 { height += countHeight }
-        return height + rowGap + buttonHeight
-    }
-
-    private static func sessionHeight(_ session: Session) -> CGFloat {
-        var height = textInset
-        if let prompt = session.prompt {
-            height += wrapped(AttributedString(prompt), lines: promptLines) + rowGap
-        }
-        // 有东西等着你批时，卡片只说这一件事。近期动作那几行此刻是背景资料，
-        // 而这张卡在这一刻的用途是让你按下去。
-        if let ask = session.ask {
-            return height + askHeight(ask)
-        }
-        if let response = session.response, session.isUnread {
-            // 停了就贴结论，不再列经过（经过还在终端里）
-            height += wrapped(styled(response), lines: responseLines)
-        } else {
-            if session.turnSteps > session.history.count { height += countHeight }
-            height += CGFloat(session.history.count + 1) * rowHeight
-        }
-        return height
-    }
-
-    /// 一段文字折行之后占多高，最多几行封顶。
-    ///
-    /// **交给 SwiftUI 自己量。** `NSString.boundingRect` 与 `Text` 的行高对不上——同一段
-    /// 文字实测 78 对 84，每行差 1pt。而这张卡的尺寸是浮层驱动的、必须提前算准，差一点
-    /// 就是底下空一条或者把最后一行裁掉。量一次缓存住：同一段文字在同一宽度下不会变。
-    private static var measured: [String: CGFloat] = [:]
-
-    private static func wrapped(_ text: AttributedString, lines: Int) -> CGFloat {
-        // 量的必须是**要渲染的那一份**：行内代码是等宽字、比正文宽，折行位置会不一样
-        let key = "\(lines)\u{0}\(String(text.characters))"
-        if let cached = measured[key] { return cached }
-        let view = Text(text)
-            .font(.system(size: 11))
-            .lineLimit(lines)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(width: innerWidth, alignment: .leading)
-        let height = NSHostingView(rootView: view).fittingSize.height
-        measured[key] = height
-        return height
-    }
-
     /// 画面能占的最大范围。各档只差这一个框——尺寸算法与视图树都是同一套。
     private static func imageBox(_ peek: CGSize?, showsAppName: Bool,
                                  content: CellStatus?) -> CGSize {
@@ -378,29 +328,26 @@ struct PreviewCard: View {
         return CGSize(width: (height * ratio).rounded(), height: height.rounded())
     }
 
-    /// 尺寸由浮层驱动，所以必须算得准，不能交给排版去撑——见 `BarContent` 的浮层一节。
-    static func size(title: String, detail: Detail?, peek: CGSize?,
-                     content: CellStatus?) -> CGSize {
-        guard !isPill(detail, content) else {
-            let measured = ceil((title as NSString).size(withAttributes: [.font: titleFont]).width)
-            return CGSize(width: min(measured + textPad * 2, maxWidth), height: nameHeight)
-        }
-        // App 名那一行在会话卡上是噪声：卡片说的是那件事，不是那个程序
-        let shows = content == nil && showsAppName(title, detail)
-        let draws = detail != nil && showsImage(content, peek)
-        let image = draws ? imageSize(detail?.image,
-                                      box: imageBox(peek, showsAppName: shows, content: content))
-                          : .zero
-        let height = (draws ? image.height + pad * 2 : 0)
-            + textHeight(showsAppName: shows, content: content)
-            + (content.map(blockHeight) ?? 0)
+    /// 这一档有多宽。
+    ///
+    /// **只剩宽度还要在这里定。** 高度已经交给排版自己长——玻璃跟着内容量出来的尺寸走
+    /// （见 `GlassRuler`），先前那套与视图树平行的高度算法（折行、授权段、动作行逐条累加）
+    /// 整个不需要了。而宽度不是排出来的，它是一条设计约束：名字那一档跟着文字走并封顶，
+    /// 会话与播放固定一个宽度好让几行对齐，预览卡跟着画面的比例走。
+    ///
+    /// nil = 不定宽，由文字自己撑，上限交给 `maxWidth`。
+    private var width: CGFloat? {
+        if pill { return nil }
+        let draws = detail != nil && Self.showsImage(content, peek)
         // 大预览那一档的宽度照旧由画面定——按住空格是要看窗口，会话卡的固定宽度
         // 不该把它压回去。
-        guard content != nil, !draws else {
-            return CGSize(width: min(peek?.width ?? maxWidth, max(minWidth, image.width + pad * 2)),
-                          height: height)
-        }
-        return CGSize(width: sessionWidth, height: height)
+        guard content == nil || draws else { return Self.sessionWidth }
+        // App 名那一行在会话卡上是噪声：卡片说的是那件事，不是那个程序
+        let shows = content == nil && Self.showsAppName(title, detail)
+        let image = Self.imageSize(detail?.image,
+                                   box: Self.imageBox(peek, showsAppName: shows, content: content))
+        return min(peek?.width ?? Self.maxWidth,
+                   max(Self.minWidth, image.width + Self.pad * 2))
     }
 
     var body: some View {
@@ -422,6 +369,10 @@ struct PreviewCard: View {
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(pill ? 1 : 2)
                         .truncationMode(.tail)
+                        // 名字那一档整张卡不定宽，长标题就在这里截住；别的档卡片已经
+                        // 定宽了，这里放开让它填满。是取值不是分支，identity 不受影响。
+                        .frame(maxWidth: pill ? Self.maxWidth - Self.textPad * 2 : .infinity,
+                               alignment: .leading)
                 if let session = content?.session {
                         Spacer(minLength: 8)
                         // 停了就把表停在收尾那一刻：任务已经结束，那个数字再往上走
@@ -449,6 +400,12 @@ struct PreviewCard: View {
             case nil: EmptyView()
             }
         }
+        // 宽度是设计约束，写在这里；高度由上面那棵树自己长出来。见 `width`。
+        // 名字那一档 `width` 是 nil，跟着文字走，上限由标题那一行自己截（见 body 里的
+        // `titleCap`）——**不能在这里加 `.frame(maxWidth:)`**：那样会把定宽 300 的会话卡
+        // 夹到 252，而且给了确定提议之后，里面 `maxWidth: .infinity` 的文字列会一路撑满，
+        // 每张卡都变成一样宽。
+        .frame(width: width, alignment: .leading)
         // 播放时整张卡取一层封面的颜色。它同时回答三件事：哪一格在发声、换没换歌、
         // 以及这首歌长什么样——一个元素干三件事，比三个元素各干一件好。
         .background(alignment: .bottom) {
@@ -475,13 +432,6 @@ struct PreviewCard: View {
         switch content {
         case .session(let session): return session.tint
         case .media(let playing): return playing.tint ?? .secondary
-        }
-    }
-
-    private static func blockHeight(_ content: CellStatus) -> CGFloat {
-        switch content {
-        case .session(let session): return sessionHeight(session)
-        case .media: return mediaHeight
         }
     }
 
@@ -1016,7 +966,8 @@ struct WindowPanel: View {
     let onHover: (CGWindowID, Bool) -> Void
     let onRecall: (IndexedWindow) -> Void
     /// 每张卡片在根坐标系里的位置，供右键落点判定；消失时传 nil
-    let onMenuZone: (CGWindowID, CGRect?) -> Void
+    /// 卡片把自己登记进这本册子，供右键判定。位置到用的时候现问，见 `ZoneRegistry`。
+    let zones: ZoneRegistry
     let metrics: BarMetrics
     let drag: DragBinding
 
@@ -1125,9 +1076,7 @@ struct WindowPanel: View {
         .background { BackingFill(backing: hovered(cell.id) ? .light : .none,
                                   radius: Self.cardRadius) }
         .contentShape(Rectangle())
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(BarContent.rootSpace)) }
-            action: { onMenuZone(cell.id, $0) }
-        .onDisappear { onMenuZone(cell.id, nil) }
+        .zone("panel.w\(cell.id)", in: zones)
         .onHover { onHover(cell.id, $0) }
         .onTapGesture { onRecall(cell.window) }
     }

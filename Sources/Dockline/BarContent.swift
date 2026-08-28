@@ -50,7 +50,6 @@ struct BarContent: View {
     /// 各可拖动单位在条内的位置，供拖拽时判断落点
     @State private var unitFrames: [DragUnit: CGRect] = [:]
     /// 簇在根坐标系里的中心横坐标，供面板定位
-    @State private var clusterAnchors: [Int: CGFloat] = [:]
     /// 拖拽中压住的那一个——松手即与它吸合成簇
     @State private var mergeTarget: DragUnit?
     /// 分屏（计划书 §3「接管最大化」）。把格子提出条的上沿就上膛，此后指针在屏幕的
@@ -79,7 +78,6 @@ struct BarContent: View {
     @State private var panelShow: DispatchWorkItem?
     @State private var panelHide: DispatchWorkItem?
     /// 从面板里往外拖的窗口
-    @State private var overflowAnchor: CGFloat = 0
     /// 浮层的上一档，用来撑过「旧的没了、新的还没到」那一帧。见 `body`。
     @State private var lingering: FloatStage?
     @State private var lingerWork: DispatchWorkItem?
@@ -88,15 +86,13 @@ struct BarContent: View {
     /// 当前这个浮层是键盘切换开的，不是悬停开的。收的时候要认这一点：
     /// 不能因为键盘那边没有选中项了，就把用户正悬停着的浮层一并收掉。
     @State private var panelFromKeyboard = false
-    @State private var cellAnchors: [String: CGFloat] = [:]
     @State private var panelDragging: CGWindowID?
     @State private var panelDragOffset: CGSize = .zero
     /// 计划书 §3：悬停浮出，与预览同一个节奏
     private static let panelDwell: TimeInterval = 0.22
 
-    private static let barSpace = "moor.bar"
-    /// 浮层也要按这个坐标系报位置（见 `WindowPanel`），因此不是 private
-    static let rootSpace = "moor.root"
+    // 条内不再有任何具名坐标系。格子、簇、卡片的位置一律从 `BarModel` 的那几本册子
+    // 现问（见 `ZoneRegistry`）——具名坐标系跨不过玻璃那道边界，量出来的数也会过期。
 
     @StateObject private var thumbnails = Thumbnails()
     /// 指针停在某个窗口格上超过 dwell 后要预览的目标
@@ -121,6 +117,8 @@ struct BarContent: View {
     /// 一张卡，和预览卡不等停留就浮出来是同一种毛病（计划书 §3）。
     @State private var statusItem: String?
     @State private var statusDwell: DispatchWorkItem?
+    /// 浮层上一帧量出来的宽度。只用于贴边时的夹取，见浮层那一段的 `.offset`。
+    @State private var floatWidth: CGFloat = 0
     /// 计划书 §3：悬停约 260ms 后浮出
     private static let previewDwell: TimeInterval = 0.26
     /// 大预览开着时换格子的停留。见 `schedulePreview`。
@@ -160,55 +158,7 @@ struct BarContent: View {
                     .animation(.spring(response: 0.34, dampingFraction: 0.86), value: model.hidden)
                     .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
                 if let stage {
-                    let size = floatSize(stage, in: geometry.size, layout: layout)
-                    floatContent(stage, in: layout, available: geometry.size.width)
-                        // 底边对齐：浮层贴着条的上沿往上长，长大缩小时下面这条边不动，
-                        // 名字那一行因此原地不动，缩略图从它上方展开。
-                        .frame(width: size.width, height: size.height, alignment: .bottom)
-                        .environment(\.colorScheme, model.floatScheme)
-                        .background {
-                            ZStack {
-                                BackdropProbe(name: "浮层") { model.noteFloatBackdrop($0) }
-                                DockGlass(cornerRadius: BarMetrics.barRadius)
-                            }
-                            .allowsHitTesting(false)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
-                                                    style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius,
-                                                       style: .continuous))
-                        // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有
-                        // 要动手的东西（见 `interactive`）
-                        .allowsHitTesting(stage.isList || interactive(stage))
-                        // 悬停判定必须挂在 .position 之前。`.position` 交回来的是一个
-                        // 铺满可用空间的容器，挂在它后面，判定就变成了整块根视图，
-                        // 面板因此收不回去。
-                        .onHover { inside in
-                            if inside {
-                                keepPanel()
-                                keepPreview()
-                                keepItem()
-                            } else {
-                                dismissPanel()
-                                dismissPreview()
-                                if let hoveredItem { holdItem(hoveredItem) }
-                            }
-                        }
-                        // 从那一格的位置长出来，收回时缩回同一个点
-                        .transition(.scale(scale: 0.28,
-                                           anchor: panelAnchor(stage.anchorX, in: geometry.size))
-                            .combined(with: .opacity))
-                        .position(x: floatingX(stage.anchorX, in: geometry.size.width,
-                                               half: size.width / 2),
-                                  y: geometry.size.height - BarMetrics.bottomGap
-                                      - BarMetrics.barHeight - Self.floatGap - size.height / 2)
-                        // 动效挂在浮层自己身上，不挂在整棵树上：挂在外面的话，
-                        // 悬停与键盘在同一次事务里都变了时，两条 .animation 会互相打架。
-                        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: stage)
-                        // 长成大预览是另一段曲线：东西大得多，同一条曲线读起来会显轻飘。
-                        // 与上一条各管各的值，不会在同一次事务里打架。
-                        .animation(.spring(response: 0.36, dampingFraction: 0.88),
-                                   value: model.peeking)
+                    float(stage, in: layout, container: geometry.size)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -216,7 +166,12 @@ struct BarContent: View {
             // 再叠一段位移只会打架，而且淡出比滑出快，让得出去才是重点。
             .opacity(model.yielding ? 0 : 1)
             .animation(.easeOut(duration: 0.15), value: model.yielding)
-            .coordinateSpace(name: Self.rootSpace)
+            // **这一层必须铺满宿主视图。**
+            //
+            // 浮层按窗口坐标定位（锚点见 `ZoneRegistry`），而这里用的是本层的坐标。
+            // 两者相等的前提就是本层铺满宿主、宿主铺满 `catcher`、`catcher` 是窗口的
+            // contentView。给本层加上内缩或偏移，这个等价就没了，症状是浮层整体偏掉，
+            // 而一路上没有任何东西会报错。
             // 条以上那块空间由面板按需长出来（见 BarPanel）。悬停也算——浮出前的
             // 那两百多毫秒里就得把地方准备好，等浮层出现再长就晚了。
             // 键盘会话也要算进来：名牌与预览卡浮在条上方，面板不先长上去它们会被裁掉
@@ -275,20 +230,20 @@ struct BarContent: View {
     private func keyAnchor(_ kind: FloatPanel, in layout: BarLayout) -> CGFloat? {
         switch kind {
         case .cluster(let id):
-            return clusterAnchors[id]
+            return model.menuZones.midX(of: "cluster.\(id)")
         case .overflow:
-            return overflowAnchor
+            return model.menuZones.midX(of: "overflow")
         case .tabs(let host):
             for item in layout.items {
                 guard case .window(let cell) = item, cell.id == host else { continue }
-                return cellAnchors[item.id]
+                return model.menuZones.midX(of: item.id)
             }
             return nil
         case .elsewhere(let key):
             for item in layout.items {
                 guard case .dormant(let app) = item,
                       AppKey.bundle(app.bundleID) == key else { continue }
-                return cellAnchors[item.id]
+                return model.menuZones.midX(of: item.id)
             }
             return nil
         }
@@ -481,27 +436,33 @@ struct BarContent: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.askReach, execute: work)
     }
 
-    @ViewBuilder
     private func glassBar(_ layout: BarLayout) -> some View {
         // 宽度交给 SwiftUI 自己量，不按 BarLayout 算出来的数值硬设。
         // 原因是实测出来的：NSFont 量出的字宽比 SwiftUI 实际排版需要的少几个点，
         // 硬设宽度会让柔性的 Text 被挤掉（「Dockline」被截成「M…」）。
         // BarLayout 的宽度只用来选降级档位——那个判断差几个点无所谓。
-        row(layout)
+        // 明暗与动画都要挂在玻璃**里面**：宿主视图是我们自己建的，外面的环境与
+        // `.animation` 都到不了它。条变宽时，外面那条管的是玻璃的尺寸，格子自己往两边
+        // 让开则要靠这一条。理由同浮层，见 `float`。
+        let inner = row(layout)
             .fixedSize(horizontal: true, vertical: false)
             .frame(height: BarMetrics.barHeight)
-        .environment(\.colorScheme, scheme)
+            .environment(\.colorScheme, scheme)
+            .animation(.spring(response: 0.30, dampingFraction: 0.82), value: layout.barWidth)
+        // 高度是恒定的（§3.1），只有宽度要量。尺寸报给 SwiftUI，由它逐帧插值地设到
+        // 玻璃上，条变宽变窄才是一段 spring 而不是一帧跳到位——见 `DockGlass`。
+        let measured = GlassRuler.size(of: inner).width
+        return DockGlass(size: CGSize(width: measured,
+                                      height: BarMetrics.barHeight),
+                         cornerRadius: BarMetrics.barRadius) { inner }
         // 探针垫在玻璃底下量背景明暗。它看不见，量的也不是这块玻璃，而是窗口背后的
         // 桌面——玻璃在它上面，不在它背后。见 `BackdropProbe`。
         .background {
-            ZStack {
-                BackdropProbe(name: "条") { model.noteBackdrop($0) }
-                DockGlass(cornerRadius: BarMetrics.barRadius)
-            }
-            .allowsHitTesting(false)
+            BackdropProbe(name: "条") { model.noteBackdrop($0) }
+                .allowsHitTesting(false)
         }
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
-            action: { model.setBarFrame($0) }
+        // 条自己也登记一份，供「右键落在条的空白处」判定
+        .zone("bar", in: model.barZone)
         // 背板不参与命中测试，条的空白处要自己给出可右键的形状
         .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius, style: .continuous))
     }
@@ -544,15 +505,13 @@ struct BarContent: View {
                 // 插入 / 移除都是原地生长与收拢，不是凭空出现和消失。
                 // 邻居的让位由 HStack 自己的位移过渡承担。
                 .transition(flight(item, overflowing: !layout.overflow.isEmpty))
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.rootSpace)).midX }
-                    action: { cellAnchors[item.id] = $0 }
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.rootSpace)) }
-                    action: { model.setMenuZone(item.id, $0) }
-                .onDisappear { model.setMenuZone(item.id, nil) }
+                // 这一格在窗口坐标里的位置。**登记的是视图，不是量出来的数**——
+                // 为什么不能量、量出来的数会怎么过期，见 `ZoneRegistry`。
+                // 浮层的锚点、右键的命中区都从这一份现问。
+                .zone(item.id, in: model.menuZones)
             }
         }
         .padding(.horizontal, BarMetrics.barPaddingH)
-        .coordinateSpace(name: Self.barSpace)
         .animation(.spring(response: 0.34, dampingFraction: 0.72), value: layout.signature)
     }
 
@@ -918,9 +877,10 @@ struct BarContent: View {
         let plain = AnyTransition.scale(scale: 0.55, anchor: .bottom).combined(with: .opacity)
         var insertion = plain
         var removal = plain
-        if overflowing, let mine = cellAnchors[item.id] {
+        if overflowing, let mine = model.menuZones.midX(of: item.id),
+           let exit = model.menuZones.midX(of: "overflow") {
             let fly = AnyTransition.modifier(
-                active: Flight(dx: overflowAnchor - mine, gone: true),
+                active: Flight(dx: exit - mine, gone: true),
                 identity: Flight(dx: 0, gone: false))
             removal = fly
             if case .window(let cell) = item, model.justReturned.contains(cell.id) { insertion = fly }
@@ -993,22 +953,20 @@ struct BarContent: View {
         case .overflow(let cells):
             OverflowEntry(count: cells.count, metrics: metrics, backing: backing(item.id))
                 .hoverTracked(item.id, $hoveredItem)
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.rootSpace)).midX }
-                    action: { overflowAnchor = $0 }
-                .onTapGesture { toggleOverflow(anchorX: overflowAnchor) }
+                // 位置到用的时候现问，见 `ZoneRegistry`
+                .onTapGesture {
+                    guard let center = model.menuZones.midX(of: item.id) else { return }
+                    toggleOverflow(anchorX: center)
+                }
                 .help("还有 \(cells.count) 个窗口")
 
         case .cluster(let cluster):
             FoldedCluster(cluster: cluster, icons: cluster.windows.map(model.world.icon(for:)),
                           metrics: metrics, backing: backing(item.id))
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.rootSpace)).midX }
-                    action: { center in
-                        clusterAnchors[cluster.id] = center
-                        if panel?.kind == .cluster(cluster.id) { panel?.anchorX = center }
-                    }
                 .hoverTracked(item.id, $hoveredItem)
+                // 位置到用的时候现问，见 `ZoneRegistry`
                 .onHover { hovering in
-                    guard let center = clusterAnchors[cluster.id] else { return }
+                    guard let center = model.menuZones.midX(of: item.id) else { return }
                     hovering ? schedulePanel(.cluster(cluster.id), anchorX: center)
                              : dismissPanel()
                 }
@@ -1083,11 +1041,82 @@ struct BarContent: View {
         }
     }
 
+    /// 条上方那块浮层。
+    ///
+    /// **尺寸不在这里算。** 内容装在玻璃的 `contentView` 里，多大由它自己报上来
+    /// （见 `DockGlass.sizeThatFits`）；这里只管把它摆到该在的位置。
+    private func float(_ stage: FloatStage, in layout: BarLayout,
+                       container: CGSize) -> some View {
+        // 玻璃里的内容住在它自己那张 SwiftUI 图里（宿主视图是我们建的），**外面的环境与
+        // 动画都到不了它**。凡是要作用到内容身上的，都得跟着一起进来：
+        //
+        //   · 明暗——不挂进来，浮层一律按玻璃的默认外观画，深色桌面上一整片黑字。
+        //   · 动画——不挂进来，外面那两条只管得到玻璃的尺寸，管不到卡片内部的排版。
+        //     按空格从小预览长成大预览，靠的正是卡片里缩略图那个 `.frame` 的动画；
+        //     罩不到它，那一下就是硬切，而不是小图连贯地放大成大图。
+        //
+        // 两边用同一组值、同一条曲线：玻璃与它装着的东西才是一起动的。
+        let inner = floatContent(stage, in: layout, available: container.width)
+            .environment(\.colorScheme, model.floatScheme)
+            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: stage)
+            .animation(.spring(response: 0.36, dampingFraction: 0.88), value: model.peeking)
+        // 锚点已经是窗口坐标了（见 `ZoneRegistry`）。宿主从窗口左沿铺满，根坐标系的 x
+        // 与窗口坐标的 x 因此相等，这里不必再换算——原先那套「条内坐标 + 条在面板里的位置」
+        // 就是从这儿开始出错的。
+        let anchorX = stage.anchorX
+        // 尺寸由内容量出来，报给 SwiftUI，由它逐帧插值地设到玻璃上（见 `DockGlass`）
+        return DockGlass(size: GlassRuler.size(of: inner),
+                         cornerRadius: BarMetrics.barRadius) { inner }
+        .background {
+            BackdropProbe(name: "浮层") { model.noteFloatBackdrop($0) }
+                .allowsHitTesting(false)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius, style: .continuous))
+        // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有要动手的东西
+        // （见 `interactive`）
+        .allowsHitTesting(stage.isList || interactive(stage))
+        // 悬停判定必须挂在定位之前。定位交回来的是一个铺满可用空间的容器，
+        // 挂在它后面，判定就变成了整块根视图，面板因此收不回去。
+        .onHover { inside in
+            if inside {
+                keepPanel()
+                keepPreview()
+                keepItem()
+            } else {
+                dismissPanel()
+                dismissPreview()
+                if let hoveredItem { holdItem(hoveredItem) }
+            }
+        }
+        // 从那一格的位置长出来，收回时缩回同一个点
+        .transition(.scale(scale: 0.28, anchor: panelAnchor(anchorX, in: container))
+            .combined(with: .opacity))
+        // 贴着格子居中，但不许越出屏幕边缘。**只有贴边那一下用得着宽度**——中间的位置
+        // 就是格子的横坐标本身，与浮层多宽无关。所以读上一帧量到的宽度是够用的：
+        // 真正会差一帧的只有贴着屏幕边缘的那种。
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { floatWidth = $0 }
+        .offset(x: floatingX(anchorX, in: container.width, half: floatWidth / 2)
+                   - container.width / 2)
+        // 底边对齐：浮层贴着条的上沿往上长，长大缩小时下面这条边不动，名字那一行因此
+        // 原地不动，缩略图从它上方展开。这是**排版**排出来的，不再靠「算出高度、再减去
+        // 一半」摆位置——高度已经没人算了。
+        .padding(.bottom, BarMetrics.bottomGap + BarMetrics.barHeight + Self.floatGap)
+        // 动效挂在浮层自己身上，不挂在整棵树上：挂在外面的话，悬停与键盘在同一次事务里
+        // 都变了时，两条 .animation 会互相打架。
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: stage)
+        // 长成大预览是另一段曲线：东西大得多，同一条曲线读起来会显轻飘。
+        // 与上一条各管各的值，不会在同一次事务里打架。
+        .animation(.spring(response: 0.36, dampingFraction: 0.88), value: model.peeking)
+    }
+
     /// 此刻该显示哪一档。三档互斥，按信息量从多到少挑。
     private func floatStage(_ layout: BarLayout) -> FloatStage? {
         guard !model.hidden else { return nil }
         if let panel, let content = panelContent(panel.kind, in: layout), !content.windows.isEmpty {
-            return FloatStage(kind: .list(panel.kind), anchorX: panel.anchorX)
+            // 现问一次：簇或溢出入口会随条变宽而挪，浮层要跟着它，
+            // 而不是停在打开那一刻记下的数上。
+            return FloatStage(kind: .list(panel.kind),
+                              anchorX: keyAnchor(panel.kind, in: layout) ?? panel.anchorX)
         }
         if let preview {
             return FloatStage(kind: .preview(preview), anchorX: preview.anchorX)
@@ -1119,16 +1148,6 @@ struct BarContent: View {
             - Self.floatGap - Self.peekInset
         return CGSize(width: frame.width - Self.peekInset * 2,
                       height: min(room, frame.height * Self.peekHeightRatio))
-    }
-
-    private func floatSize(_ stage: FloatStage, in size: CGSize, layout: BarLayout) -> CGSize {
-        guard case .list(let kind) = stage.kind else {
-            return PreviewCard.size(title: cardTitle(stage), detail: cardDetail(stage),
-                                    peek: peekBox, content: cardStatus(stage))
-        }
-        guard let content = panelContent(kind, in: layout) else { return .zero }
-        return CGSize(width: WindowPanel.width(content.windows.count, available: size.width),
-                      height: WindowPanel.height(content.windows.count, available: size.width))
     }
 
     private func cardTitle(_ stage: FloatStage) -> String {
@@ -1213,7 +1232,7 @@ struct BarContent: View {
                                 else if hoveredItem == key { hoveredItem = nil }
                             },
                             onRecall: { model.world.recall($0) },
-                            onMenuZone: { model.setMenuZone("panel.w\($0)", $1) },
+                            zones: model.menuZones,
                             metrics: layout.metrics,
                             drag: panelDrag)
                     // 换档时两份内容会同时在场。让它们各自快进快出，把这段重叠压短，
@@ -1274,7 +1293,7 @@ struct BarContent: View {
               let window = model.world.windows.first(where: { $0.id == id }),
               let item = layout.items.first(where: { keySelected($0) }),
               case .window(let cell) = item, cell.id == id,
-              let anchorX = cellAnchors[item.id]
+              let anchorX = model.menuZones.midX(of: item.id)
         else {
             schedulePreview(nil, from: hoveredCell ?? 0)
             return
@@ -1293,18 +1312,18 @@ struct BarContent: View {
             guard let item = layout.items.first(where: { item in
                       if case .window(let cell) = item { return cell.id == id } else { return false }
                   }),
-                  let anchorX = cellAnchors[item.id], let text = name(of: item)
+                  let anchorX = model.menuZones.midX(of: item.id), let text = name(of: item)
             else { return nil }
             return (text, nil, anchorX)
         }
         // 键盘会话次之。指针可能停在某处一动不动，那不是用户此刻的注意力所在。
         if model.keyVisible {
             guard let item = layout.items.first(where: { keySelected($0) }),
-                  let anchorX = cellAnchors[item.id], let text = name(of: item)
+                  let anchorX = model.menuZones.midX(of: item.id), let text = name(of: item)
             else { return nil }
             return (text, nil, anchorX)
         }
-        guard let hoveredItem, let anchorX = cellAnchors[hoveredItem],
+        guard let hoveredItem, let anchorX = model.menuZones.midX(of: hoveredItem),
               let item = layout.items.first(where: { $0.id == hoveredItem }),
               let text = name(of: item)
         else { return nil }
@@ -1368,8 +1387,8 @@ struct BarContent: View {
         return DockCell(slot: slot, metrics: metrics,
                         backing: backing(item.id, key: slot.key),
                         levels: model.world.mediaLevels,
-                        onHover: { anchorX in
-                            guard let anchorX else {
+                        onHover: { inside in
+                            guard inside else {
                                 // 相邻两格的「进入」与「离开」谁先到并不保证，晚到的这一条
                                 // 不该把邻格刚排下的停留掐掉（同 `schedulePreview`）
                                 if hoveredItem == item.id { scheduleStatus(nil) }
@@ -1395,6 +1414,15 @@ struct BarContent: View {
                             // 挪回格子时，卡不该在手底下塌回名牌再长一遍。
                             if statusItem != item.id { statusItem = nil }
                             scheduleStatus(slot.cell == nil && slot.status != nil ? item.id : nil)
+                            // 锚点现问，不用格子自己量的——量出来的数会过期，见 `ZoneRegistry`。
+                            // **只有浮层用得着它**：悬停本身（底色、停留、名牌的目标）
+                            // 与位置无关，早先把整段 hover 挂在它下面，一次问不到就等于
+                            // 整条 bar 不响应悬停。问不到就说出来，不要静悄悄地什么都不做。
+                            guard let anchorX = model.menuZones.midX(of: item.id) else {
+                                Timeline.log("⚠️ \(item.id) 没登记命中区，浮层这一次不开——"
+                                             + "格子应当由 row 里的 .zone 登记，见 ZoneRegistry")
+                                return
+                            }
                             guard let cell = slot.cell else {
                                 // 空心圈那一档：浮出它在别的屏上的窗口。这一格没有本屏的
                                 // 窗口可预览，能给的正是「它在别处有什么」。
@@ -1578,7 +1606,9 @@ private struct DockCell: View {
     /// 均衡器的实时电平。只穿到那三根柱子那里，不进 `Slot`——它一秒变三十次，
     /// 而 `Slot` 是每次条重排都要整个重建的值。
     let levels: MediaLevels
-    let onHover: (CGFloat?) -> Void
+    /// 进出这一格。**只报在不在，不报在哪**——位置由调用方到用的时候现问，
+    /// 见 `ZoneRegistry`。
+    let onHover: (Bool) -> Void
     let onTap: () -> Void
 
     /// 换歌时条上这一档的编排。与卡片上那一套同一条曲线——同一件事换了，
@@ -1589,7 +1619,6 @@ private struct DockCell: View {
     /// 糊到读不出字为止。字比卡片上小，模糊也小一档。
     private static let labelBlur: CGFloat = 3
 
-    @State private var frame: CGRect = .zero
 
     var body: some View {
         HStack(spacing: metrics.labelGap) {
@@ -1625,9 +1654,8 @@ private struct DockCell: View {
         // 计划书 §3：最小化的格子原地变灰，绝不挪位
         .opacity(slot.minimized ? 0.42 : 1)
         .contentShape(Rectangle())
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("moor.root")) }
-            action: { frame = $0 }
-        .onHover { onHover($0 ? frame.midX : nil) }
+        // 条内坐标。这一格住在条的玻璃里，报不出根坐标，见 `BarContent.row`
+        .onHover { onHover($0) }
         .onTapGesture(perform: onTap)
     }
 
@@ -2339,7 +2367,9 @@ extension View {
             .animation(.spring(response: 0.24, dampingFraction: 0.7), value: drag.lifted(unit))
             .animation(.spring(response: 0.22, dampingFraction: 0.6), value: drag.merging(unit))
             // 最小距离 0：按下也要拿到。阈值判定在 DragBinding.changed 里。
-            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("moor.bar"))
+            // 只取 `translation`，与坐标系无关；这里曾写着一个具名坐标系，
+            // 那个名字后来没有了，而它照样"能用"——正因为读的是位移。
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { drag.changed(unit, $0.translation) }
                 .onEnded { _ in drag.ended(unit) })
             .overlay {
@@ -2389,8 +2419,8 @@ private extension View {
 extension View {
     /// 把这一项登记为可接收文件的落点。位置报给 model，由 `DropCatcher` 在 AppKit 层判定命中。
     func dropZone(_ id: String, model: BarModel) -> some View {
-        onGeometryChange(for: CGRect.self) { $0.frame(in: .named("moor.root")) }
-            action: { model.setDropZone(id, $0) }
+        // 位置到判定那一刻才现问，见 `ZoneRegistry`
+        zone(id, in: model.dropZones)
     }
 }
 

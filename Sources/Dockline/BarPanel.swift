@@ -71,7 +71,7 @@ final class BarPanel: NSPanel {
         catcher.zone = { [weak model] point in model?.dropZone(at: point) }
         catcher.hover = { [weak model] id in model?.setFileDropTarget(id) }
         catcher.drop = { [weak model] id, urls in model?.acceptDrop(id, urls) ?? false }
-        catcher.zoneReport = { [weak model] in model?.dropZoneReport ?? "（模型已释放）" }
+        catcher.zoneReport = { [weak model] in model?.dropZones.report ?? "（模型已释放）" }
         catcher.moved = { [weak model] point in model?.dragMoved(to: point) }
         catcher.entered = { [weak self] in self?.beginDrag() }
         catcher.left = { [weak self, weak model] in
@@ -85,7 +85,19 @@ final class BarPanel: NSPanel {
         let host = NSHostingView(rootView: BarContent(model: model))
         host.frame = catcher.bounds
         host.autoresizingMask = [.width, .height]
-        catcher.addSubview(host)
+        // 条与浮层各是一块玻璃，套进同一个容器里：合成器成批处理它们（少走一遍渲染），
+        // 而将来把 `spacing` 放开，两块靠近时就能互相吸引、融成一块——那正是要拿来做
+        // 浮层与条之间形变的东西。实测容器认得出藏在 SwiftUI 宿主深处的玻璃
+        // （`_enclosingGlassEffectContainerView` 指得回来），不必为它把视图树拆成 AppKit 的形状。
+        //
+        // **亮度探针必须留在容器外面**，成批合成不认它那个 alpha=0.01。见 `BackdropProbe`。
+        let container = NSGlassEffectContainerView(frame: catcher.bounds)
+        container.autoresizingMask = [.width, .height]
+        // 0 = 只成批、不融合。融合是另一种观感，计划书 §3 当时没有采用；那时条上只有一块
+        // 玻璃，本来也无从融起。要不要走这条路是后面的决定，路先铺好。
+        container.spacing = 0
+        container.contentView = host
+        catcher.addSubview(container)
         contentView = catcher
 
         model.onFloatRoom = { [weak self] needed in self?.setExpanded(needed) }
@@ -190,8 +202,6 @@ final class BarPanel: NSPanel {
             Timeline.log(String(format: "面板改高  %.0f → %.0f%@",
                                 self.frame.height, height, dragging ? "  ⚠️ 拖拽进行中" : ""))
         }
-        // 必须先于 setFrame：视图侧随后上报的矩形要按这个高度换算成离底边的距离
-        model.setPanelHeight(height)
         let frame = homeScreen.frame
         model.availableWidth = homeScreen.visibleFrame.width
         model.setBarDisplay(displayID(homeScreen))

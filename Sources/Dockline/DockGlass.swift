@@ -11,8 +11,30 @@ import SwiftUI
 /// 全部是 AppKit 内部实现，不需要关 SIP，风险面是「系统更新后内部名字变了」——
 /// 因此逐个 `responds(to:)` 自检，缺了就跳过并报出来，绝不静默。
 /// 失效的后果只是回到 `.clear` 的观感，不影响任何功能。
-struct DockGlass: NSViewRepresentable {
+///
+/// **内容装在玻璃里面，不是垫在玻璃底下。** 前一种写法（内容与 `DockGlass` 并排放进
+/// 一个 ZStack）在画面上看不出区别，但玻璃对内容的那一套——折射、边缘的高光、内容
+/// 明暗跟着背景走——全都作用在 `contentView` 上，并排的内容一样都拿不到。
+///
+/// 尺寸也跟着换了主人：由内容自己量出来（见 `GlassRuler`），外面不再另算一份。
+/// 原先浮层那三档各有一套与视图树平行的尺寸算法，改一处就要记得改两处。
+///
+/// **尺寸从 `sizeThatFits` 报出去，不要在外面再套一层 `.frame`，更不要加 `Animatable`。**
+/// 这条是量出来的：SwiftUI 会把 representable 那个 NSView 的 frame 逐帧插值地设过去
+/// （实测一次 0.6 秒的 spring 里 `setFrameSize` 被调用 114 次，宽度从 102 一路走到 300），
+/// 玻璃与它装着的内容因此跟着一起流动。而**加上 `Animatable` 就等于告诉 SwiftUI「这个
+/// 视图自己管动画」，那份内建的逐帧插值当场消失**，只剩一步到位的跳变。
+struct DockGlass<Content: View>: NSViewRepresentable {
+    /// 内容量出来的理想尺寸，见 `GlassRuler`。
+    let size: CGSize
     let cornerRadius: CGFloat
+    let content: Content
+
+    init(size: CGSize, cornerRadius: CGFloat, @ViewBuilder content: () -> Content) {
+        self.size = size
+        self.cornerRadius = cornerRadius
+        self.content = content()
+    }
 
     /// 内部材质档位。逆向所得的全表，记在这里免得下次又要重新查。
     /// 取 `.appIcons` 而不是 `.dock`：实测更接近系统程序坞的观感。
@@ -25,14 +47,47 @@ struct DockGlass: NSViewRepresentable {
         case camera = 22, cartouchePopover = 23
     }
 
+    @MainActor
+    final class Coordinator {
+        /// 真正装进玻璃、真正画出来的那一份。
+        let host: NSHostingView<Content>
+
+        init(content: Content) {
+            host = NSHostingView(rootView: content)
+            // **画的那一份不许发布固有尺寸。** 玻璃把 `contentView` 的四条边钉死在自己
+            // 身上，宿主再报一份固有尺寸，就与 SwiftUI 定下的 frame 正面相撞：约束引擎
+            // 每一轮破一条约束、破完又把视图标脏，窗口被逼着一轮轮重来，最后死在
+            //「Update Constraints 次数比窗口里的视图还多」这条 NSGenericException 上。
+            // 症状是启动几秒后闪退，中间还夹着「条只剩一个点」。
+            host.sizingOptions = []
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(content: content) }
+
     func makeNSView(context: Context) -> NSGlassEffectView {
         let glass = NSGlassEffectView()
         Self.configure(glass, cornerRadius: cornerRadius)
+        glass.contentView = context.coordinator.host
         return glass
     }
 
     func updateNSView(_ glass: NSGlassEffectView, context: Context) {
         glass.cornerRadius = cornerRadius
+        // 跟着外面那次事务改，玻璃里的内容才与玻璃本身同一条曲线
+        withTransaction(context.transaction) {
+            context.coordinator.host.rootView = content
+        }
+    }
+
+    /// 玻璃就是内容量出来的那么大，**不听提议**。
+    ///
+    /// 听提议是错的：浮层待在一个铺满面板的 ZStack 里，提议就是整块屏（实测玻璃因此被
+    /// 设成 1470×795，还引出一轮约 460ms 的布局循环）。要定宽定高的地方（条的高度）
+    /// 由调用方在 `size` 里写死，不靠这里去接。
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView glass: NSGlassEffectView,
+                      context: Context) -> CGSize? {
+        size
     }
 
     /// 三处玻璃（条、簇面板、预览卡）共用的配置，只此一份。
@@ -52,6 +107,49 @@ struct DockGlass: NSViewRepresentable {
             return
         }
         glass.setValue(value, forKey: key)
+    }
+}
+
+/// 量一段 SwiftUI 内容的理想尺寸。
+///
+/// 玻璃的内容装在自己的 `NSHostingView` 里（见 `DockGlass`），SwiftUI 那边因此看不见它
+/// 有多大。这把尺子把这个数补回去，而且是在 SwiftUI 那一侧补——量出来的数当作 `.frame`
+/// 的值传下去，spring 于是有起点也有终点。换成在 `sizeThatFits` 里量就只剩跳变。
+///
+/// 尺子**从不进任何视图树**：因此既不参与窗口的约束引擎（进去就会与玻璃钉在 contentView
+/// 上的那几条约束对撞，把窗口逼进无穷次 Update Constraints），也不跑内容里的 `.onAppear`
+/// / `.task`——实测只有进了窗口的那一份会跑，浮层里每 1.2 秒抓一张缩略图的循环不会被量出
+/// 第二份来。
+///
+/// **但它照样会把内容里的 `NSViewRepresentable` 整套实例化一遍。** 那些 NSView 建出来了，
+/// 只是永远进不了窗口。凡是「一建出来就往外登记自己」的表示层都得自己认这一条，
+/// 否则尺子那份会用同样的身份把真正画出来的那份挤掉，而且一路不报错——
+/// `ZoneView` 因此只在进了窗口之后才入册。
+///
+/// 每种内容各留一把，反复改 `rootView` 而不是每次新建：换档期间 body 一帧跑一次，
+/// 每帧新建一个宿主视图是白扔的。
+@MainActor
+enum GlassRuler {
+    private static var rulers: [ObjectIdentifier: NSView] = [:]
+
+    static func size<V: View>(of content: V) -> CGSize {
+        let key = ObjectIdentifier(V.self)
+        let ruler: NSHostingView<V>
+        if let cached = rulers[key] as? NSHostingView<V> {
+            ruler = cached
+        } else {
+            ruler = NSHostingView(rootView: content)
+            ruler.sizingOptions = [.intrinsicContentSize]
+            rulers[key] = ruler
+        }
+        ruler.rootView = content
+        let size = ruler.intrinsicContentSize
+        // 固有尺寸缺一轴时 AppKit 返回 -1，玻璃会就此塌掉。内容自己没表达宽高，
+        // 谁也替它猜不出来——说出来，别让它变成一个说不清来由的点。
+        if size.width < 0 || size.height < 0 {
+            Timeline.log("⚠️ \(V.self) 报不出固有尺寸 \(size)——玻璃会塌，给内容补上尺寸约束")
+        }
+        return CGSize(width: max(size.width, 0), height: max(size.height, 0))
     }
 }
 

@@ -41,6 +41,9 @@ struct BackdropProbe: NSViewRepresentable {
         private let name: String
         var onChange: ((ColorScheme) -> Void)?
 
+        /// 玻璃此刻挂在谁身上。见 `viewDidMoveToWindow`——它不挂在本视图上。
+        private var anchor: NSView?
+
         private let glass = NSGlassEffectView()
         /// 自适应的结果作用在内容视图的 `effectiveAppearance` 上，所以读数口就是它。
         /// 内容视图必须**是** `NSTextField`，玻璃才走内容明暗自适应那一档（见 `DockGlass`）。
@@ -57,7 +60,9 @@ struct BackdropProbe: NSViewRepresentable {
             // 而探针垫在同一个 `.background` 里，会连这个环境一起继承——于是探针的读数
             // 成了自己上一次读数的函数，明暗在两档之间自己抖起来（实测三秒翻三次）。
             // 钉住之后玻璃的自适应照常盖在它上面，环是断的。
-            appearance = NSAppearance(named: .aqua)
+            // 外观要钉在**玻璃自己**身上，不能钉在本视图上等它继承：玻璃已经不是本视图的
+            // 子视图了（见 `viewDidMoveToWindow`），继承来的是根视图的外观。
+            glass.appearance = NSAppearance(named: .aqua)
             readout.textColor = .clear
             readout.translatesAutoresizingMaskIntoConstraints = false
             widthConstraint = readout.widthAnchor.constraint(equalToConstant: 1)
@@ -67,10 +72,34 @@ struct BackdropProbe: NSViewRepresentable {
 
             glass.contentView = readout
             glass.alphaValue = Self.opacity
-            addSubview(glass)
         }
 
         required init?(coder: NSCoder) { fatalError("不从 nib 加载") }
+
+        /// **玻璃挂到窗口根视图上去，不挂在本视图身上。**
+        ///
+        /// 条与浮层的玻璃套在一个 `NSGlassEffectContainerView` 里，为的是将来两块玻璃能
+        /// 互相形变（见 `BarPanel`）。而那个容器会把子树里的玻璃**成批**合成，成批之后
+        /// 不再按每块玻璃各自的 alpha 走——探针那个 0.01 就此失效，画面上变成条的玻璃里
+        /// 又套着一块玻璃。实测如此。
+        ///
+        /// 探针本来也不是界面的一部分，它是一件量具。位置照旧由 SwiftUI 排（留在树里的是
+        /// 这个空占位视图），真正那块玻璃挂到容器**外面**，两件事就此各归各的。
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let root = window?.contentView else {
+                // 浮层收回去时占位视图会离场，量具跟着撤掉，否则会留在画面上不走
+                glass.removeFromSuperview()
+                anchor = nil
+                return
+            }
+            guard glass.superview !== root else { return }
+            // 压在最底下。半透明的玻璃盖在探针上面不算遮挡，不影响读数（见 `DockGlass`
+            // 里那张实测表）；反过来盖住它的若是不透明窗口，读数才会停。
+            root.addSubview(glass, positioned: .below, relativeTo: nil)
+            anchor = root
+            needsLayout = true
+        }
 
         override func layout() {
             super.layout()
@@ -80,9 +109,12 @@ struct BackdropProbe: NSViewRepresentable {
             heightConstraint.constant = height
             // 玻璃走 autoresizing，不吃上面那两条约束，尺寸必须明写——不写它就是 0×0，
             // 而 0×0 的玻璃什么都不报也不报错，症状是「明暗从此不动」，指不到原因。
-            glass.frame = NSRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
-                                 width: width, height: height)
-            layoutSubtreeIfNeeded()
+            let box = NSRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
+                             width: width, height: height)
+            // 挂在别人身上，位置就要换算过去。还没进窗口时无从谈起，等 `viewDidMoveToWindow`。
+            guard let anchor else { return }
+            glass.frame = convert(box, to: anchor)
+            glass.layoutSubtreeIfNeeded()
             // 越过那道闸同样是静悄悄地失效，必须说出来
             if glass.frame.height > 64, !warnedAboutHeight {
                 warnedAboutHeight = true
