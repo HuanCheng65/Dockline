@@ -47,53 +47,61 @@ struct DockGlass<Content: View>: NSViewRepresentable {
         case camera = 22, cartouchePopover = 23
     }
 
-    /// 玻璃与宿主之间的那一层。**裁切与定位都归它。**
+    /// 内容在宿主里**自己贴底**，不靠 SwiftUI 的默认居中。
+    ///
+    /// 这一层是整件事的关键。宿主的尺寸和它装的内容永远不在同一拍上更新——`rootView`
+    /// 的赋值只是排一次更新，而尺寸无论从哪儿来（外面推、或读 `intrinsicContentSize`）
+    /// 都是当场生效。于是总有那么一两帧两者对不上，而 SwiftUI 默认把内容**居中**摆在
+    /// 宿主里（实测：200 高的宿主里 40 高的内容落在正中），一居中就被裁到看不见：
+    /// 名牌换预览卡的那两帧里，文字整个消失，随后才「从上面掉回来」。
+    ///
+    /// 贴底之后两个滞后方向都变得无害：宿主已经变大而内容还是名牌，名牌贴在底边、
+    /// 看得见；宿主还小而内容已是卡片，卡片贴底、上半截溢出去被裁掉，露出来的正好是
+    /// 标题那一行。**尺寸对不对，不再影响内容在哪。**
+    struct Anchored<C: View>: View {
+        let content: C
+        var body: some View {
+            content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    /// 玻璃与宿主之间的那一层。**只负责裁切。**
     ///
     /// 玻璃的 frame 由 SwiftUI 逐帧插值地设过去，这一层是它的 `contentView`、跟着一起变，
-    /// 所以它的边界就是「此刻玻璃有多大」。宿主则**不跟着缩**：它永远是内容的理想尺寸，
-    /// 底边贴着这一层的底边（AppKit 非翻转坐标里 y=0 就是底边），水平居中。
-    /// 于是玻璃长大时标题那一行原地不动，上面的东西从它上方一点点露出来。
+    /// 所以它的边界就是「此刻玻璃有多大」。宿主铺满它，内容在宿主里贴底（见 `Anchored`）
+    /// ——于是玻璃长大时，贴着底边那一行原地不动，上面的东西从它上方一点点露出来。
     ///
-    /// 让宿主跟着一起缩是不行的，试过：宿主并不把自己的尺寸传给里面那棵 SwiftUI 树，
-    /// 树照自己的理想尺寸排版（实测换档时卡片一帧就到终态，中间没有任何一个值），
-    /// 结果只是被从**中间**裁开——标题行跟着上下滑，逐帧看就是穿帮。
+    /// 宿主**没有自己的尺寸**：不从外面推，也不问 `intrinsicContentSize`。两种都试过，
+    /// 两种都会和内容差一两拍。这里干脆不给它第二个来源。
     final class ClipBox: NSView {
-        /// 内容的理想尺寸，由 `DockGlass.size` 给。
-        var contentSize: CGSize = .zero {
-            didSet {
-                guard contentSize != oldValue else { return }
-                needsLayout = true
-            }
-        }
-
         override func layout() {
             super.layout()
-            guard let content = subviews.first else { return }
-            content.frame = NSRect(x: ((bounds.width - contentSize.width) / 2).rounded(),
-                                   y: 0,
-                                   width: contentSize.width,
-                                   height: contentSize.height)
+            subviews.first?.frame = bounds
         }
     }
 
     @MainActor
     final class Coordinator {
-        /// 真正装进玻璃、真正画出来的那一份。
-        let host: NSHostingView<Content>
+        /// 真正装进玻璃、真正画出来的那一份。装的是贴底包装过的内容，见 `Anchored`。
+        let host: NSHostingView<Anchored<Content>>
         /// 装着宿主的那一层，见 `ClipBox`。
         let box = ClipBox()
 
         init(content: Content) {
-            host = NSHostingView(rootView: content)
-            // **画的那一份不许发布固有尺寸。** 玻璃把 `contentView` 的四条边钉死在自己
-            // 身上，宿主再报一份固有尺寸，就与 SwiftUI 定下的 frame 正面相撞：约束引擎
-            // 每一轮破一条约束、破完又把视图标脏，窗口被逼着一轮轮重来，最后死在
-            //「Update Constraints 次数比窗口里的视图还多」这条 NSGenericException 上。
-            // 症状是启动几秒后闪退，中间还夹着「条只剩一个点」。
+            host = NSHostingView(rootView: Anchored(content: content))
+            // 宿主铺满盒子，尺寸没有第二个来源；内容自己在里面贴底（见 `Anchored`）。
+            // 这里曾经是「不报固有尺寸 + 从外面推一个尺寸进来」，后来又改成「问宿主自己
+            // 报固有尺寸」——两种都会和 `rootView` 的更新差一两拍，而差的那一两帧里
+            // 内容被居中顶出玻璃，文字就消失一下。**尺寸这条线整个去掉才治本。**
+            //
+            // 顺带解释一条旧注释：当年给宿主开固有尺寸会引发无穷次 Update Constraints
+            // 然后闪退，是因为那时宿主是玻璃的 `contentView`、四条边被玻璃钉死。
+            // 现在被钉的是 `ClipBox`，宿主只是它下面一个跟着 bounds 走的子视图。
             host.sizingOptions = []
-            // 内容压根没在动，只有玻璃在动（见 `updateNSView`）。所以它整张会画在玻璃
-            // 外面——「内容先蹦出来、容器随后才追上」就是这么来的。裁到玻璃此刻的边界，
-            // 那一段就变成了**揭开**。裁与定位都在 `ClipBox` 里。
+            host.translatesAutoresizingMaskIntoConstraints = true
+            // 内容并不跟着玻璃逐帧缩放（见 `updateNSView`），换档那两帧它整张就是终态的
+            // 大小。裁到玻璃此刻的边界，那一段才成其为**揭开**；不裁就是内容先蹦出来、
+            // 玻璃随后才追上。圆角也在这一层，`cornerRadius` 要有遮罩才生效。
             box.wantsLayer = true
             box.layer?.masksToBounds = true
             box.addSubview(host)
@@ -105,7 +113,6 @@ struct DockGlass<Content: View>: NSViewRepresentable {
     func makeNSView(context: Context) -> NSGlassEffectView {
         let glass = NSGlassEffectView()
         Self.configure(glass, cornerRadius: cornerRadius)
-        context.coordinator.box.contentSize = size
         context.coordinator.box.layer?.cornerRadius = cornerRadius
         glass.contentView = context.coordinator.box
         return glass
@@ -113,9 +120,6 @@ struct DockGlass<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ glass: NSGlassEffectView, context: Context) {
         glass.cornerRadius = cornerRadius
-        // 玻璃在动画期间由 SwiftUI 逐帧改 frame，`ClipBox` 跟着变；宿主守着这个理想尺寸
-        // 不动，底边因此始终对齐。见 `ClipBox`。
-        context.coordinator.box.contentSize = size
         context.coordinator.box.layer?.cornerRadius = cornerRadius
         // 跟着外面那次事务改。**但别指望它能让玻璃里的内容也动起来**——实测不会：
         // 事务里确实带着那条 spring（`FluidSpringAnimation(response: 0.28)` 打得出来），
@@ -124,7 +128,7 @@ struct DockGlass<Content: View>: NSViewRepresentable {
         // 在这里补一次 `layoutSubtreeIfNeeded` 也不改变这一点（试过）。
         // 内容与玻璃对齐靠的是宿主那层裁切，见 `Coordinator.init`。
         withTransaction(context.transaction) {
-            context.coordinator.host.rootView = content
+            context.coordinator.host.rootView = Anchored(content: content)
         }
     }
 
