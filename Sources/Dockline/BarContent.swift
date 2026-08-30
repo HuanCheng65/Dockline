@@ -437,6 +437,9 @@ struct BarContent: View {
     }
 
     private func glassBar(_ layout: BarLayout) -> some View {
+        // 条此刻在不在画面上。收着（`hidden`）与让位（`yielding`）都算不在——
+        // 挂在玻璃外面的那两块（命中板与探针）不吃 SwiftUI 的 opacity，得自己认这一条。
+        let invisible = model.hidden || model.yielding
         // 宽度交给 SwiftUI 自己量，不按 BarLayout 算出来的数值硬设。
         // 原因是实测出来的：NSFont 量出的字宽比 SwiftUI 实际排版需要的少几个点，
         // 硬设宽度会让柔性的 Text 被挤掉（「Dockline」被截成「M…」）。
@@ -464,10 +467,19 @@ struct BarContent: View {
         return DockGlass(size: CGSize(width: measured,
                                       height: BarMetrics.barHeight),
                          cornerRadius: BarMetrics.barRadius) { inner }
+        // 条的命中形状。玻璃画出来的东西一概不进窗口的画面缓冲，少了这块板整条 bar
+        // 点不动——理由与那张实测表见 `HitPlate`。
+        .background {
+            HitPlate(cornerRadius: BarMetrics.barRadius, hidden: invisible)
+                .allowsHitTesting(false)
+        }
         // 探针垫在玻璃底下量背景明暗。它看不见，量的也不是这块玻璃，而是窗口背后的
         // 桌面——玻璃在它上面，不在它背后。见 `BackdropProbe`。
+        //
+        // 与命中板同一条可见性：探针那 0.01 同样进窗口形状，条让位的时候它留着，
+        // 调度中心底下就多出一块点不穿的死区。
         .background {
-            BackdropProbe(name: "条") { model.noteBackdrop($0) }
+            BackdropProbe(name: "条", hidden: invisible) { model.noteBackdrop($0) }
                 .allowsHitTesting(false)
         }
         // 条自己也登记一份，供「右键落在条的空白处」判定
@@ -1073,17 +1085,36 @@ struct BarContent: View {
         // 与窗口坐标的 x 因此相等，这里不必再换算——原先那套「条内坐标 + 条在面板里的位置」
         // 就是从这儿开始出错的。
         let anchorX = stage.anchorX
+        // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有要动手的东西
+        // （见 `interactive`）
+        let clickable = stage.isList || interactive(stage)
+        // 浮层此刻该不该在窗口形状里。挂在玻璃外面的那两块（命中板与探针）都吃这一条。
+        let inert = !clickable || model.yielding
         // 尺寸由内容量出来，报给 SwiftUI，由它逐帧插值地设到玻璃上（见 `DockGlass`）
         return DockGlass(size: GlassRuler.size(of: inner),
                          cornerRadius: BarMetrics.barRadius) { inner }
+        // 浮层的命中形状，与条同一条理由（见 `HitPlate`）：卡片画在玻璃里，一个像素都不进
+        // 窗口的画面缓冲。少了这块板，能点的只有浮层探针那 60pt 的中间带——预览卡比这高得多，
+        // 卡片上下两头的按钮（等着批的授权、播放控制）因此点不着。
+        //
+        // 只在这一档收事件的时候铺：说明性的那两档整档不收事件，那就该原样穿过去。
         .background {
-            BackdropProbe(name: "浮层") { model.noteFloatBackdrop($0) }
+            HitPlate(cornerRadius: BarMetrics.barRadius, hidden: inert)
+                .allowsHitTesting(false)
+        }
+        // 探针跟命中板同收同放。**光是不铺命中板并不等于穿得过去**：探针那 0.01 一样进
+        // 窗口形状，说明性的那两档留着它，卡片正中就还剩一条 60pt 宽的带子——落在那儿的
+        // 点击照旧算在本面板头上，而这一档 `allowsHitTesting` 是关的，于是没人接、也没人
+        // 往下传，等于凭空吞掉一次点击。
+        //
+        // 代价是这两档露着的时候没有明暗读数，卡上的字沿用上一次的（见 `BackdropProbe.hidden`）。
+        // 认这笔账：字色慢一拍能看出来是慢了一拍，吞掉的点击看上去只是「没反应」。
+        .background {
+            BackdropProbe(name: "浮层", hidden: inert) { model.noteFloatBackdrop($0) }
                 .allowsHitTesting(false)
         }
         .contentShape(RoundedRectangle(cornerRadius: BarMetrics.barRadius, style: .continuous))
-        // 一排窗口那一档是可操作的，另外两档纯是说明——除非卡上有要动手的东西
-        // （见 `interactive`）
-        .allowsHitTesting(stage.isList || interactive(stage))
+        .allowsHitTesting(clickable)
         // 悬停判定必须挂在定位之前。定位交回来的是一个铺满可用空间的容器，
         // 挂在它后面，判定就变成了整块根视图，面板因此收不回去。
         .onHover { inside in

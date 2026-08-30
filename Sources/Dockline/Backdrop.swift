@@ -17,16 +17,34 @@ import SwiftUI
 struct BackdropProbe: NSViewRepresentable {
     /// 只用于日志：条与浮层各有一个，两条 bar 又各有一份，读数要能分辨是谁的。
     let name: String
+    /// 被量的那块东西此刻收着没有。**必须是本结构体的存储属性**：靠它的变化把
+    /// `updateNSView` 逼出来，才轮得到下面那句收玻璃。
+    ///
+    /// 收起来的条只是被 SwiftUI 往下位移出了窗口，而玻璃挂在窗口根视图上、位置只在
+    /// `layout()` 里换算一次；纯位移不改尺寸，`layout()` 根本不会再跑，于是玻璃原地不动，
+    /// 停在条本来的那块地方。alpha 0.01 肉眼看不见，却已经越过窗口服务器那道
+    /// 0.005 的线（见 `BarPanel`）——条明明藏起来了，它那一块区域仍然点不穿。
+    ///
+    /// 收玻璃而不是搬玻璃：停着的那个位置对「条露出来时」永远是对的，露出来时不必再摆一次。
+    /// 代价是收着的这段时间没有读数，露出来的头几帧字色可能还是上一次的，直到玻璃
+    /// 重新算出明暗。
+    ///
+    /// **没有缺省值**：这一条与「被量的那块东西看不看得见」是同一件事，答不上来就说明
+    /// 调用处还没想清楚。给个 `false` 的缺省，下一处接进来的探针就会不声不响地在窗口形状
+    /// 里留一块点不穿的地方——浮层那一处正是这么来的。
+    var hidden: Bool
     let onChange: (ColorScheme) -> Void
 
     func makeNSView(context: Context) -> ProbeView {
         let view = ProbeView(name: name)
         view.onChange = onChange
+        view.setProbeHidden(hidden)
         return view
     }
 
     func updateNSView(_ view: ProbeView, context: Context) {
         view.onChange = onChange
+        view.setProbeHidden(hidden)
     }
 
     // MARK: -
@@ -75,6 +93,12 @@ struct BackdropProbe: NSViewRepresentable {
         }
 
         required init?(coder: NSCoder) { fatalError("不从 nib 加载") }
+
+        /// 条收起来的时候把量具一并收走。理由见 `BackdropProbe.hidden`。
+        func setProbeHidden(_ value: Bool) {
+            guard glass.isHidden != value else { return }
+            glass.isHidden = value
+        }
 
         /// **玻璃挂到窗口根视图上去，不挂在本视图身上。**
         ///
